@@ -214,12 +214,16 @@ def extract(a):
     if len(frames) < 2:
         sys.exit(f"pose not found in enough frames (missing {missing}); try --start/--end on a clearer span")
 
-    # constant scale: camera zoom / distance must not change body size, so scale every frame about
-    # its hip centre until the torso (shoulder-mid to hip-mid) matches the clip median
-    torso = [dist(mid(f["P"]["shL"], f["P"]["shR"]), mid(f["P"]["hipL"], f["P"]["hipR"])) for f in frames]
-    ref = sorted(torso)[len(torso) // 2]
-    for f, t in zip(frames, torso):
-        k, hc = ref / max(t, 1e-6), mid(f["P"]["hipL"], f["P"]["hipR"])
+    # constant scale: camera zoom / distance must not change body size. Per-frame pixels-per-metre =
+    # summed image bone length / summed metric (world) bone length projected to the same plane, so
+    # foreshortening cancels; scale every frame about its hip centre to the clip median.
+    def ppm(f):
+        return (sum(dist(f["P"][x], f["P"][y]) for x, y in BONES) /
+                max(sum(dist(f["W"][x][:2], f["W"][y][:2]) for x, y in BONES), 1e-6))
+    scales = [ppm(f) for f in frames]
+    ref = sorted(scales)[len(scales) // 2]
+    for f, sc in zip(frames, scales):
+        k, hc = ref / max(sc, 1e-6), mid(f["P"]["hipL"], f["P"]["hipR"])
         for j in LM:
             f["P"][j] = [hc[0] + (f["P"][j][0] - hc[0]) * k, hc[1] + (f["P"][j][1] - hc[1]) * k]
     # stabilize: remove camera pan / stage travel by centring each frame's hips horizontally
@@ -240,7 +244,9 @@ def extract(a):
     floor = sorted(max(f["P"]["anL"][1], f["P"]["anR"][1]) for f in frames)[int(0.85 * (len(frames) - 1))]
     body_h = sorted(floor - min(f["P"]["earL"][1], f["P"]["earR"][1]) for f in frames)[len(frames) // 2]
     for f in frames:
-        f["features"], f["cue"] = describe(f["P"], f["W"], floor, body_h)
+        # a moving camera has no fixed floor: with --stabilize the lower ankle counts as planted
+        fl = max(f["P"]["anL"][1], f["P"]["anR"][1]) if a.stabilize else floor
+        f["features"], f["cue"] = describe(f["P"], f["W"], fl, body_h)
 
     # motion energy -> keys (local minima: holds/extremes) and pilots (local maxima: fastest transitions)
     n = len(frames); loop = a.playback == "loop"
