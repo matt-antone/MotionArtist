@@ -226,11 +226,14 @@ def extract(a):
         k, hc = ref / max(sc, 1e-6), mid(f["P"]["hipL"], f["P"]["hipR"])
         for j in LM:
             f["P"][j] = [hc[0] + (f["P"][j][0] - hc[0]) * k, hc[1] + (f["P"][j][1] - hc[1]) * k]
-    # stabilize: remove camera pan / stage travel by centring each frame's hips horizontally
+    # stabilize: remove camera pan / tilt / stage travel. Centre each frame's hips horizontally and
+    # pin its planted (lower) ankle to one shared floor line; crouches keep their depth.
     if a.stabilize:
-        for f in frames:
-            cx = mid(f["P"]["hipL"], f["P"]["hipR"])[0]
-            for k in LM: f["P"][k][0] -= cx
+        lows = [max(f["P"]["anL"][1], f["P"]["anR"][1]) for f in frames]
+        floor_line = sorted(lows)[len(lows) // 2]
+        for f, low in zip(frames, lows):
+            cx, dy = mid(f["P"]["hipL"], f["P"]["hipR"])[0], floor_line - low
+            for k in LM: f["P"][k] = [f["P"][k][0] - cx, f["P"][k][1] + dy]
 
     # exaggerate: push every landmark away from its clip-mean position (animation wants extremes)
     if a.exaggerate != 1.0:
