@@ -70,5 +70,6 @@ source. Do not commit captures there; the repo excludes motion captures by polic
 - Dependencies: `yt-dlp`, `python3` with `opencv-python` and `mediapipe<1` (the 1.x wheel crashes in
   the Metal helper on macOS). Model is cached at `~/.cache/motion-artist/`.
 - `selftest` runs the pose-description checks: `python3 "$SKILL/scripts/motion_artist.py" selftest`.
+- Every frame is scaled about the hips so torso length matches the clip median: camera zoom or distance never changes skeleton size.
 - Cues are heuristic (elbow/knee angles from world landmarks, heights from image landmarks). They
   are guidance for the artist, not measurements.

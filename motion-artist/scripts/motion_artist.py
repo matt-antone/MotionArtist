@@ -214,6 +214,14 @@ def extract(a):
     if len(frames) < 2:
         sys.exit(f"pose not found in enough frames (missing {missing}); try --start/--end on a clearer span")
 
+    # constant scale: camera zoom / distance must not change body size, so scale every frame about
+    # its hip centre until the torso (shoulder-mid to hip-mid) matches the clip median
+    torso = [dist(mid(f["P"]["shL"], f["P"]["shR"]), mid(f["P"]["hipL"], f["P"]["hipR"])) for f in frames]
+    ref = sorted(torso)[len(torso) // 2]
+    for f, t in zip(frames, torso):
+        k, hc = ref / max(t, 1e-6), mid(f["P"]["hipL"], f["P"]["hipR"])
+        for j in LM:
+            f["P"][j] = [hc[0] + (f["P"][j][0] - hc[0]) * k, hc[1] + (f["P"][j][1] - hc[1]) * k]
     # stabilize: remove camera pan / stage travel by centring each frame's hips horizontally
     if a.stabilize:
         for f in frames:
