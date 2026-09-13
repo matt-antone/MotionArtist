@@ -21,7 +21,8 @@ roles: it controls motion only, never character scale, identity, view or prop ha
 | `--start` / `--end` | recommended | trim the span to inspect, seconds or `m:ss`. Without `--end`, the span is `frames / fps` seconds of real time from `--start`. With both, that span is time-stretched onto the frame count (the sheet reports the speed factor). |
 | `--playback` | default `loop` | `loop` (samples exclude `end`, so the last→first cut is one natural step), `one-shot`, `final-hold` |
 | `--name` | optional | slug for the output dir and title |
-| `--search` | optional | "find the best loop": slide a `frames / fps`-second window over `--start..--end`, score each start by loop-closure distance vs motion energy, and use the tightest seam among the livelier half. Prints the top candidates. |
+| `--search` | optional | "find the best loop": slide a `frames / fps`-second window over `--start..--end` (whole video when `--end` is omitted), score each start by loop-closure distance vs motion energy, and use the tightest seam among the livelier half. Prints the top candidates. |
+| `--stabilize` | optional | centre the hips horizontally in every frame. Use when the camera pans or the performer travels; otherwise the seam check and the strip show camera motion as body motion. |
 | `--exaggerate` | default `1.25` | amplify each landmark's deviation from the clip-mean pose; `1.0` = as filmed |
 
 If the user gives no trim and the video is longer than ~15 s, make a contact sheet first

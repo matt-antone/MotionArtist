@@ -48,7 +48,8 @@ python3 motion-artist/scripts/motion_artist.py render work/dance/motion.json
 | --- | --- |
 | `--fps`, `--frames` | rate and total frame count of the target animation (required) |
 | `--start`, `--end` | trim the span to inspect, seconds or `m:ss`. Without `--end`, the span is `frames / fps` seconds of real time. With both, the span is time-stretched onto the frame count. |
-| `--search` | find the best loop: slide a `frames / fps`-second window over `--start..--end`, score each start by loop-closure pose distance against motion energy, pick the tightest seam among the livelier half |
+| `--search` | find the best loop: slide a `frames / fps`-second window over `--start..--end` (whole video if `--end` is omitted), score each start by loop-closure pose distance against motion energy, pick the tightest seam among the livelier half |
+| `--stabilize` | centre the hips horizontally in every frame; use for a panning camera or a travelling performer |
 | `--playback` | `loop` (default), `one-shot`, `final-hold` |
 | `--exaggerate` | amplify each landmark's deviation from the clip-mean pose; default `1.25`, `1.0` = as filmed |
 | `--name`, `--out` | output slug and directory (default `work/<name>/`) |

@@ -185,8 +185,7 @@ def extract(a):
     start = a.start or 0.0
     mp, lm = landmarker()
     if a.search:
-        if a.end is None: sys.exit("--search needs --start and --end (the window to search)")
-        start, end, best = best_loop(cap, mp, lm, start, a.end, a.frames / a.fps, Wpx / Hpx)
+        start, end, best = best_loop(cap, mp, lm, start, a.end if a.end is not None else dur, a.frames / a.fps, Wpx / Hpx)
         print(f"search: best {a.frames / a.fps:.1f}s loop starts at {start:.2f}s "
               f"(seam {best['seam']:.2f}, energy {best['energy']:.2f}); candidates:\n  " +
               "\n  ".join(f"{c['t']:6.2f}s seam {c['seam']:.2f} energy {c['energy']:.2f}" for c in best['top']))
@@ -214,6 +213,12 @@ def extract(a):
         frames.append(dict(i=i, t=round(t, 3), P=P, W=W))
     if len(frames) < 2:
         sys.exit(f"pose not found in enough frames (missing {missing}); try --start/--end on a clearer span")
+
+    # stabilize: remove camera pan / stage travel by centring each frame's hips horizontally
+    if a.stabilize:
+        for f in frames:
+            cx = mid(f["P"]["hipL"], f["P"]["hipR"])[0]
+            for k in LM: f["P"][k][0] -= cx
 
     # exaggerate: push every landmark away from its clip-mean position (animation wants extremes)
     if a.exaggerate != 1.0:
@@ -251,7 +256,7 @@ def extract(a):
         title=name.replace("-", " ").title(), name=name,
         source=dict(url=a.source, file=src, title=title, start=start, end=round(end, 3),
                     speed_factor=round(speed, 2), duration=round(dur, 2)),
-        exaggerate=a.exaggerate,
+        exaggerate=a.exaggerate, stabilized=a.stabilize,
         fps=a.fps, frame_count=a.frames, playback=a.playback, view=view,
         seam=("clean" if seam < 1.5 else "needs blend") if loop else "n/a",
         missing_frames=missing, arc="",
@@ -583,6 +588,7 @@ def main():
     e.add_argument("--start", type=tstamp, help="trim: seconds or m:ss"); e.add_argument("--end", type=tstamp, help="trim: seconds or m:ss")
     e.add_argument("--name"); e.add_argument("--out")
     e.add_argument("--exaggerate", type=float, default=1.25, help="motion amplification about the mean pose (1.0 = as filmed)")
+    e.add_argument("--stabilize", action="store_true", help="centre hips horizontally each frame (moving camera / travelling performer)")
     e.add_argument("--search", action="store_true", help="slide a frames/fps-second window over --start..--end and pick the tightest loop")
     e.add_argument("--playback", choices=["loop", "one-shot", "final-hold"], default="loop")
     r = sub.add_parser("render"); r.add_argument("json"); r.add_argument("--out")
