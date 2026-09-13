@@ -3,4 +3,5 @@ work/
 __pycache__/
 .claude
 .omc
-work.fallow/
+work
+.fallow/
