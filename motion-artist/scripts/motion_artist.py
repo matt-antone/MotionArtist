@@ -1,0 +1,552 @@
+#!/usr/bin/env python3
+"""motion_artist: turn a video of a person moving into a frame-by-frame motion source.
+
+  motion_artist.py extract URL|FILE --fps N --frames N [--start S] [--end S] [--name SLUG]
+                   [--playback loop|one-shot|final-hold] [--out DIR]
+  motion_artist.py render DIR/motion.json [--out FILE.html]
+  motion_artist.py selftest
+
+`extract` writes DIR/motion.json (+ DIR/thumbs/*.jpg) and prints a compact frame table.
+`render` turns motion.json into a self-contained HTML motion sheet.
+Between the two, an agent may fill `arc`, `title` and per-frame `note` fields in motion.json.
+"""
+import argparse, base64, html, json, math, os, re, subprocess, sys, urllib.request
+
+MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
+             "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task")
+MODEL_PATH = os.path.expanduser("~/.cache/motion-artist/pose_landmarker_lite.task")
+
+# MediaPipe pose indices. "L"/"R" are the person's own sides == character-left / character-right.
+LM = dict(nose=0, eyeL=2, eyeR=5, earL=7, earR=8, shL=11, shR=12, elL=13, elR=14, wrL=15, wrR=16,
+          hipL=23, hipR=24, knL=25, knR=26, anL=27, anR=28, heelL=29, heelR=30, toeL=31, toeR=32)
+CORE = ["shL", "shR", "elL", "elR", "wrL", "wrR", "hipL", "hipR", "knL", "knR", "anL", "anR"]
+BONES = [("hipL", "knL"), ("knL", "anL"), ("anL", "toeL"), ("hipR", "knR"), ("knR", "anR"), ("anR", "toeR"),
+         ("hipL", "hipR"), ("shL", "shR"), ("shL", "elL"), ("elL", "wrL"), ("shR", "elR"), ("elR", "wrR")]
+
+
+# ---------------------------------------------------------------- geometry helpers
+def mid(a, b): return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]
+def dist(a, b): return math.hypot(a[0] - b[0], a[1] - b[1])
+
+
+def angle3(a, b, c):
+    """Angle at b (degrees) between segments b->a and b->c, any dimension."""
+    ba = [x - y for x, y in zip(a, b)]; bc = [x - y for x, y in zip(c, b)]
+    n = math.sqrt(sum(x * x for x in ba)) * math.sqrt(sum(x * x for x in bc)) or 1e-9
+    return math.degrees(math.acos(max(-1, min(1, sum(x * y for x, y in zip(ba, bc)) / n))))
+
+
+def bend_word(deg):
+    if deg > 150: return "straight"
+    if deg > 110: return "slightly bent"
+    if deg > 65: return "bent ~90°"
+    return "folded tight"
+
+
+# ---------------------------------------------------------------- feature extraction
+def facing(world):
+    """Yaw from world shoulder line. >0 => character-left side nearer camera (faces screen-left)."""
+    l, r = world["shL"], world["shR"]
+    yaw = math.degrees(math.atan2(r[2] - l[2], -(r[0] - l[0])))
+    a = abs(yaw)
+    if a < 22: view = "front"
+    elif a < 68: view = "3/4"
+    elif a < 112: view = "left" if yaw > 0 else "right"
+    else: view = "back"
+    return yaw, view
+
+
+def describe(P, W, floor_y, body_h):
+    """P: image-space 2D points (aspect-corrected), W: world 3D points. Returns (features, cue)."""
+    f = {}
+    yaw, view = facing(W)
+    f["yaw"] = round(yaw); f["view"] = view
+    side_near = "character-left" if yaw > 0 else "character-right"
+    front_ish = view in ("front", "3/4")
+    # screen-left in the image == character-right when facing camera, character-left when back-on.
+    def screen_to_char(screen_left):  # returns character side for a screen-left/right displacement
+        if view == "back": return "character-left" if screen_left else "character-right"
+        return "character-right" if screen_left else "character-left"
+
+    sh_mid, hip_mid = mid(P["shL"], P["shR"]), mid(P["hipL"], P["hipR"])
+    sh_w = max(dist(P["shL"], P["shR"]), 0.05 * body_h)
+
+    # arms
+    arms = {}
+    for s, name in (("L", "character-left"), ("R", "character-right")):
+        wr, sh = P["wr" + s], P["sh" + s]
+        if wr[1] < P["nose"][1] - 0.02 * body_h: h = "overhead"
+        elif wr[1] < sh[1] - 0.03 * body_h: h = "raised above shoulder"
+        elif wr[1] < hip_mid[1] - 0.03 * body_h: h = "at chest/waist height"
+        else: h = "low by the hip"
+        bend = angle3(W["sh" + s], W["el" + s], W["wr" + s])
+        # wrist crossing torso midline (image x), only meaningful when facing camera-ish
+        cross = ""
+        if front_ish:
+            other = P["shR" if s == "L" else "shL"]
+            if (wr[0] - other[0]) * (sh[0] - other[0]) < 0 and dist(wr, sh_mid) < 1.2 * sh_w:
+                cross = ", crossing the body"
+        arms[s] = dict(height=h, elbow=round(bend))
+        f["arm_" + s] = f"{name} arm {h}, elbow {bend_word(bend)}{cross}"
+
+    # legs / weight / airborne
+    anL, anR = P["anL"], P["anR"]
+    lift = 0.045 * body_h
+    plantedL, plantedR = anL[1] > floor_y - lift, anR[1] > floor_y - lift
+    kneeL, kneeR = angle3(W["hipL"], W["knL"], W["anL"]), angle3(W["hipR"], W["knR"], W["anR"])
+    f["knee_L"], f["knee_R"] = round(kneeL), round(kneeR)
+    f["airborne"] = not plantedL and not plantedR
+    if f["airborne"]:
+        f["weight"] = "airborne — both feet off the floor"
+    elif plantedL and plantedR:
+        # weight leans toward the foot the hip centre sits over
+        t = (hip_mid[0] - anL[0]) / ((anR[0] - anL[0]) or 1e-9)
+        f["weight"] = ("weight centred over both feet" if 0.35 < t < 0.65 else
+                       f"weight over the {'character-right' if t >= 0.65 else 'character-left'} foot, both feet down")
+    else:
+        up = "character-right" if plantedL else "character-left"
+        f["weight"] = f"weight on the {'character-left' if plantedL else 'character-right'} foot, {up} foot lifted"
+    stance = abs(anL[0] - anR[0]) / sh_w
+    f["stance"] = "feet together" if stance < 0.5 else "shoulder-width stance" if stance < 1.4 else "wide stance"
+    legs = []
+    for s, name in (("L", "character-left"), ("R", "character-right")):
+        k = kneeL if s == "L" else kneeR
+        if k < 150: legs.append(f"{name} knee {bend_word(k)}")
+    f["legs"] = ", ".join(legs) if legs else "legs straight"
+
+    # torso lean (image plane)
+    dx, dy = sh_mid[0] - hip_mid[0], hip_mid[1] - sh_mid[1]
+    lean = math.degrees(math.atan2(dx, dy or 1e-9))
+    f["lean_deg"] = round(lean)
+    if abs(lean) < 8: f["torso"] = "torso upright"
+    elif front_ish or view == "back": f["torso"] = f"torso leans {screen_to_char(lean < 0)}"
+    else:  # profile: screen-x lean is forward/back relative to the nose direction
+        nose_dir = P["nose"][0] - sh_mid[0]
+        f["torso"] = "torso leans forward" if nose_dir * dx > 0 else "torso leans back"
+
+    # hip and shoulder line tilt (which side is higher)
+    def tilt(a, b, what):
+        d = math.degrees(math.atan2(a[1] - b[1], abs(a[0] - b[0]) or 1e-9))  # + => L lower
+        if abs(d) < 7 or not front_ish and view != "back": return ""
+        return f"{'character-right' if d > 0 else 'character-left'} {what} raised"
+    f["hips"] = tilt(P["hipL"], P["hipR"], "hip")
+    f["shoulders"] = tilt(P["shL"], P["shR"], "shoulder")
+
+    # head turn
+    hx = (P["nose"][0] - sh_mid[0]) / sh_w
+    if front_ish and abs(hx) > 0.28: f["head"] = f"head turned {screen_to_char(hx < 0)}"
+    elif view == "back": f["head"] = "head away from camera"
+    else: f["head"] = "head forward"
+
+    cue = ". ".join(x for x in [
+        f["weight"][0].upper() + f["weight"][1:], f["stance"], f["legs"],
+        f["arm_L"], f["arm_R"], f["torso"], f["hips"], f["shoulders"], f["head"]] if x) + "."
+    return f, cue
+
+
+# ---------------------------------------------------------------- extract
+def fetch(url, out_dir):
+    """Download with yt-dlp (<=720p mp4). Returns (path, title)."""
+    os.makedirs(out_dir, exist_ok=True)
+    tmpl = os.path.join(out_dir, "source-%(id)s.%(ext)s")
+    r = subprocess.run(["yt-dlp", "-q", "--no-warnings", "--no-simulate",
+                        "-f", "bv*[height<=720][ext=mp4]/b[height<=720]/b",
+                        "--print", "after_move:%(filepath)s\t%(title)s", "-o", tmpl, url],
+                       capture_output=True, text=True, check=True)
+    path, title = r.stdout.strip().splitlines()[-1].split("\t", 1)
+    return path, title
+
+
+def landmarker():
+    import mediapipe as mp
+    from mediapipe.tasks import python as mpt
+    from mediapipe.tasks.python import vision
+    if not os.path.exists(MODEL_PATH):
+        os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
+        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+    opts = vision.PoseLandmarkerOptions(base_options=mpt.BaseOptions(model_asset_path=MODEL_PATH, delegate=mpt.BaseOptions.Delegate.CPU),
+                                        running_mode=vision.RunningMode.IMAGE, num_poses=1)
+    return mp, vision.PoseLandmarker.create_from_options(opts)
+
+
+def extract(a):
+    import cv2
+    out = a.out or os.path.join("work", a.name or "motion")
+    os.makedirs(os.path.join(out, "thumbs"), exist_ok=True)
+    if re.match(r"https?://", a.source):
+        src, title = fetch(a.source, out)
+    else:
+        src, title = a.source, os.path.basename(a.source)
+    name = a.name or re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:40] or "motion"
+
+    cap = cv2.VideoCapture(src)
+    dur = cap.get(cv2.CAP_PROP_FRAME_COUNT) / (cap.get(cv2.CAP_PROP_FPS) or 30)
+    Wpx, Hpx = cap.get(cv2.CAP_PROP_FRAME_WIDTH), cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+    start = a.start or 0.0
+    end = a.end if a.end is not None else min(dur, start + a.frames / a.fps)
+    span = end - start
+    # loop: samples exclusive of `end` so the last->first cut is one natural step
+    step = span / a.frames if a.playback == "loop" else span / max(a.frames - 1, 1)
+    speed = span / (a.frames / a.fps)  # 1.0 == real time; 2.0 == source played at 2x
+
+    mp, lm = landmarker()
+    frames, missing = [], []
+    for i in range(a.frames):
+        t = start + i * step
+        cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
+        ok, bgr = cap.read()
+        if not ok: missing.append(i); continue
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        res = lm.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
+        if not res.pose_landmarks: missing.append(i); continue
+        img, wld = res.pose_landmarks[0], res.pose_world_landmarks[0]
+        P = {k: [img[j].x * Wpx / Hpx, img[j].y] for k, j in LM.items()}   # aspect-corrected, y down
+        W = {k: [wld[j].x, wld[j].y, wld[j].z] for k, j in LM.items()}
+        th = cv2.resize(bgr, (200, int(200 * Hpx / Wpx)))
+        cv2.imwrite(os.path.join(out, "thumbs", f"f{i:02d}.jpg"), th, [cv2.IMWRITE_JPEG_QUALITY, 60])
+        frames.append(dict(i=i, t=round(t, 3), P=P, W=W))
+    if len(frames) < 2:
+        sys.exit(f"pose not found in enough frames (missing {missing}); try --start/--end on a clearer span")
+
+    # exaggerate: push every landmark away from its clip-mean position (animation wants extremes)
+    if a.exaggerate != 1.0:
+        for key, dims in (("P", 2), ("W", 3)):
+            for k in LM:
+                m = [sum(f[key][k][d] for f in frames) / len(frames) for d in range(dims)]
+                for f in frames:
+                    f[key][k] = [m[d] + a.exaggerate * (f[key][k][d] - m[d]) for d in range(dims)]
+
+    # clip-wide floor and body height; per-frame features
+    floor = sorted(max(f["P"]["anL"][1], f["P"]["anR"][1]) for f in frames)[int(0.85 * (len(frames) - 1))]
+    body_h = sorted(floor - min(f["P"]["earL"][1], f["P"]["earR"][1]) for f in frames)[len(frames) // 2]
+    for f in frames:
+        f["features"], f["cue"] = describe(f["P"], f["W"], floor, body_h)
+
+    # motion energy -> keys (local minima: holds/extremes) and pilots (local maxima: fastest transitions)
+    n = len(frames); loop = a.playback == "loop"
+    def energy(i):
+        j = (i + 1) % n if loop else min(i + 1, n - 1)
+        return sum(dist(frames[i]["P"][k], frames[j]["P"][k]) for k in CORE) / len(CORE) / body_h
+    E = [energy(i) for i in range(n)]
+    med = sorted(E)[n // 2] or 1e-9
+    for i, f in enumerate(frames):
+        prev, nxt = E[(i - 1) % n], E[(i + 1) % n]
+        if not loop and (i == 0 or i == n - 1): prev = nxt = E[i]
+        f["energy"] = round(E[i] / med, 2)
+        f["role"] = ("key" if i == 0 or (not loop and i == n - 1) or (E[i] <= prev and E[i] <= nxt)
+                     else "pilot" if E[i] >= prev and E[i] >= nxt and E[i] > 1.3 * med else "inbetween")
+        f["pace"] = "hold" if E[i] < 0.4 * med else "fast" if E[i] > 1.7 * med else "steady"
+    seam = sum(dist(frames[-1]["P"][k], frames[0]["P"][k]) for k in CORE) / len(CORE) / body_h / med
+    views = [f["features"]["view"] for f in frames]
+    view = max(set(views), key=views.count)
+
+    doc = dict(
+        title=name.replace("-", " ").title(), name=name,
+        source=dict(url=a.source, file=src, title=title, start=start, end=round(end, 3),
+                    speed_factor=round(speed, 2), duration=round(dur, 2)),
+        exaggerate=a.exaggerate,
+        fps=a.fps, frame_count=a.frames, playback=a.playback, view=view,
+        seam=("clean" if seam < 1.5 else "needs blend") if loop else "n/a",
+        missing_frames=missing, arc="",
+        frames=[dict(i=f["i"], t=f["t"], role=f["role"], pace=f["pace"], energy=f["energy"],
+                     cue=f["cue"], note="", features=f["features"],
+                     pts={k: [round(v[0], 4), round(v[1], 4)] for k, v in f["P"].items()})
+                for f in frames],
+        floor_y=round(floor, 4), body_h=round(body_h, 4))
+    jp = os.path.join(out, "motion.json")
+    json.dump(doc, open(jp, "w"), indent=1)
+
+    print(f"{jp}\n{title} | span {start:.2f}-{end:.2f}s | {a.frames}f @ {a.fps}fps | {a.playback} | "
+          f"view {view} | source speed x{speed:.2f} | seam {doc['seam']} | missing {missing}")
+    for f in doc["frames"]:
+        print(f"{f['i']:>3} {f['t']:6.2f}s {f['role']:<9} {f['pace']:<6} {f['cue']}")
+    return jp
+
+
+# ---------------------------------------------------------------- render
+def figure_svg(pts, box, body_scale, color, accent=None, label=""):
+    """Stick figure from image-space points. box = (x0, y0, w, h) of the clip's figure bounds."""
+    x0, y0, w, h = box
+    s = 200 / h
+    def X(p): return (p[0] - x0) * s + 10
+    def Y(p): return (p[1] - y0) * s + 10
+    L = []
+    for a, b in BONES:
+        L.append(f'<line x1="{X(pts[a]):.1f}" y1="{Y(pts[a]):.1f}" x2="{X(pts[b]):.1f}" y2="{Y(pts[b]):.1f}" '
+                 f'stroke="{color}" stroke-width="5" stroke-linecap="round"/>')
+    hm, sm = mid(pts["hipL"], pts["hipR"]), mid(pts["shL"], pts["shR"])
+    L.append(f'<line x1="{X(hm):.1f}" y1="{Y(hm):.1f}" x2="{X(sm):.1f}" y2="{Y(sm):.1f}" '
+             f'stroke="{color}" stroke-width="6" stroke-linecap="round"/>')
+    hc = mid(pts["earL"], pts["earR"])
+    r = 0.07 * body_scale * s
+    L.append(f'<circle cx="{X(hc):.1f}" cy="{Y(hc):.1f}" r="{r:.1f}" fill="none" stroke="{color}" stroke-width="5"/>')
+    # face centre line: hangs from the head centre to the rim, leaning toward the nose side,
+    # so front = vertical, turned = tilted, profile = horizontal toward the face
+    ear_w = max(abs(X(pts["earR"]) - X(pts["earL"])), 1e-6)
+    dx = max(-r, min(r, (X(pts["nose"]) - X(hc)) / ear_w * 2 * r))
+    L.append(f'<line x1="{X(hc):.1f}" y1="{Y(hc):.1f}" x2="{X(hc) + dx:.1f}" y2="{Y(hc) + math.sqrt(r * r - dx * dx):.1f}" '
+             f'stroke="{accent or color}" stroke-width="3" stroke-linecap="round"/>')
+    # character-right limbs get a hollow marker so sides read at a glance
+    for k in ("wrR", "anR"):
+        L.append(f'<circle cx="{X(pts[k]):.1f}" cy="{Y(pts[k]):.1f}" r="4.5" fill="var(--paper)" '
+                 f'stroke="{accent or color}" stroke-width="2.5"/>')
+    vw = w * s + 20
+    return (f'<svg viewBox="0 0 {vw:.0f} 220" role="img" aria-label="{html.escape(label)}">'
+            f'<line x1="0" y1="{Y([0, FLOOR]):.1f}" x2="{vw:.0f}" y2="{Y([0, FLOOR]):.1f}" '
+            f'stroke="{color}" stroke-width="1" opacity=".35" stroke-dasharray="3 4"/>{"".join(L)}</svg>')
+
+
+FLOOR = 0.0  # set by render() before figure_svg is called
+
+
+def render(a):
+    global FLOOR
+    d = json.load(open(a.json))
+    out = a.out or os.path.join(os.path.dirname(a.json), f"{d['name']}-motion.html")
+    tdir = os.path.join(os.path.dirname(a.json), "thumbs")
+    FLOOR = d["floor_y"]
+    xs = [v[0] for f in d["frames"] for v in f["pts"].values()]
+    ys = [v[1] for f in d["frames"] for v in f["pts"].values()] + [FLOOR]
+    pad = 0.08 * d["body_h"]
+    box = (min(xs) - pad, min(ys) - pad, max(xs) - min(xs) + 2 * pad, max(ys) - min(ys) + 2 * pad)
+    rates = sorted({1, 4, d["fps"]})
+
+    figs, thumbs = [], []
+    for f in d["frames"]:
+        col = {"key": "var(--step)", "pilot": "var(--tap)"}.get(f["role"], "var(--fig)")
+        figs.append(figure_svg(f["pts"], box, d["body_h"], "var(--fig)", col, f"Frame {f['i']}: {f['cue']}"))
+        tp = os.path.join(tdir, f"f{f['i']:02d}.jpg")
+        thumbs.append("data:image/jpeg;base64," + base64.b64encode(open(tp, "rb").read()).decode()
+                      if os.path.exists(tp) else "")
+    payload = dict(d, frames=[{k: v for k, v in f.items() if k != "pts"} for f in d["frames"]])
+    src = d["source"]
+    arc = "".join(f"<p>{html.escape(p)}</p>" for p in d["arc"].split("\n\n") if p.strip()) or \
+          "<p class=muted>No performance arc written yet — fill <code>arc</code> in motion.json and re-render.</p>"
+    n = len(d["frames"]); lap = n / d["fps"]
+    keys = [f["i"] for f in d["frames"] if f["role"] == "key"]
+    pilots = [f["i"] for f in d["frames"] if f["role"] == "pilot"]
+
+    rows = "".join(
+        f'<div class="maprow" style="--rowc:{ {"key": "var(--step)", "pilot": "var(--tap)"}.get(f["role"], "var(--muted)") }">'
+        f'<span class="mv">{f["i"]}</span><span class="ct">{f["t"]:.2f}s · {f["role"]} · {f["pace"]}</span>'
+        f'<span class="txt">{html.escape(f["cue"])}'
+        f'{("<br><b>Note:</b> " + html.escape(f["note"])) if f["note"] else ""}</span></div>'
+        for f in d["frames"])
+
+    page = TEMPLATE
+    for k, v in dict(
+        TITLE=html.escape(d["title"]),
+        DEK=(f'Motion source from <b>{html.escape(src["title"])}</b>, {src["start"]:.1f}–{src["end"]:.1f}s '
+             f'(source speed ×{src["speed_factor"]}, motion exaggerated ×{d.get("exaggerate", 1)}). Plays at <b>{d["fps"]} fps</b>; '
+             f'{n} frames, {lap:.2f} s per {"lap" if d["playback"] == "loop" else "run"}.'),
+        N=str(n), FPS=str(d["fps"]), LAP=f"{lap:.2f} s", PLAYBACK=d["playback"], VIEW=html.escape(d["view"]),
+        SEAM=d["seam"], KEYS=", ".join(map(str, keys)) or "—", PILOTS=", ".join(map(str, pilots)) or "—",
+        URL=html.escape(src["url"]), ARC=arc, ROWS=rows,
+        RATES="".join(f'<button data-fps="{r}" aria-pressed="{str(r == d["fps"]).lower()}">{r} fps</button>' for r in rates),
+        FIGS=json.dumps(figs), THUMBS=json.dumps(thumbs), DATA=json.dumps(payload).replace("</", "<\\/"),
+    ).items():
+        page = page.replace("{{" + k + "}}", v)
+    open(out, "w").write(page)
+    print(out)
+    return out
+
+
+TEMPLATE = r"""<title>{{TITLE}}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root{--paper:#EFEDF4;--surface:#FBFAFD;--sunk:#E5E2EE;--ink:#191A2B;--muted:#6E6B80;--line:#DAD6E6;--step:#C8236B;--step-wash:#F8DEE9;--tap:#4A44B8;--tap-wash:#E3E1F7;--fig:#3A3750;--focus:#4A44B8;--shadow:0 1px 2px rgba(25,26,43,.06),0 8px 24px -16px rgba(25,26,43,.35)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--paper:#14131C;--surface:#1D1B27;--sunk:#23212F;--ink:#EDEBF5;--muted:#9A96AC;--line:#302D3F;--step:#FF74A8;--step-wash:#3B1D2C;--tap:#A8A2FF;--tap-wash:#262347;--fig:#C9C5DA;--focus:#A8A2FF;--shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -16px rgba(0,0,0,.8)}}
+:root[data-theme="dark"]{--paper:#14131C;--surface:#1D1B27;--sunk:#23212F;--ink:#EDEBF5;--muted:#9A96AC;--line:#302D3F;--step:#FF74A8;--step-wash:#3B1D2C;--tap:#A8A2FF;--tap-wash:#262347;--fig:#C9C5DA;--focus:#A8A2FF;--shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -16px rgba(0,0,0,.8)}
+*{box-sizing:border-box}
+body{background:var(--paper);color:var(--ink);font-family:"IBM Plex Sans",system-ui,sans-serif;font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1100px;margin:0 auto;padding:32px 22px 64px;display:flex;flex-direction:column;gap:28px}
+h1,h2,h3{margin:0;text-wrap:balance;font-family:"Bricolage Grotesque","IBM Plex Sans",sans-serif}
+p{margin:0}.muted{color:var(--muted)}code{font-family:"IBM Plex Mono",monospace;font-size:.92em}
+.masthead{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:18px 24px}
+h1{font-size:clamp(30px,5vw,44px);font-weight:800;letter-spacing:-.02em;line-height:1.02}
+.dek{color:var(--muted);max-width:52ch;margin-top:8px}.dek b{color:var(--ink);font-weight:600}
+.spec{display:flex;flex-wrap:wrap;border:1px solid var(--line);border-radius:3px;overflow:hidden;background:var(--surface);font-family:"IBM Plex Mono",monospace;margin:0}
+.spec div{padding:7px 13px;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:1px}
+.spec div:last-child{border-right:0}
+.spec dt{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.spec dd{margin:0;font-size:15px;font-weight:600;font-variant-numeric:tabular-nums}
+.stage{display:grid;grid-template-columns:232px 200px 1fr;gap:22px;background:var(--surface);border:1px solid var(--line);border-radius:4px;padding:22px;box-shadow:var(--shadow)}
+.figbox,.refbox{background:var(--sunk);border-radius:3px;display:grid;place-items:center;padding:12px 6px;position:relative;min-height:240px}
+.figbox svg{width:100%;height:auto;max-height:300px;display:block}
+.figbox.mirrored svg{transform:scaleX(-1)}
+.refbox img{max-height:300px;border-radius:2px}
+.refbox.mirrored img{transform:scaleX(-1)}
+.tag{position:absolute;left:10px;bottom:9px;font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.readout{display:flex;flex-direction:column;gap:14px;min-width:0}
+.countline{display:flex;align-items:baseline;gap:14px}
+.bigcount{font-family:"Bricolage Grotesque",sans-serif;font-size:clamp(64px,13vw,104px);font-weight:800;line-height:.78;letter-spacing:-.045em;font-variant-numeric:tabular-nums;color:var(--accent,var(--step))}
+.phase{display:flex;flex-direction:column;gap:3px}
+.phase-name{font-family:"Bricolage Grotesque",sans-serif;font-weight:700;font-size:17px}
+.phase-of{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.cue{font-family:"Bricolage Grotesque",sans-serif;font-size:clamp(17px,2.2vw,21px);font-weight:500;line-height:1.3;letter-spacing:-.01em;min-height:3em}
+.note{color:var(--muted)}.note b{color:var(--ink)}
+.srcchip{align-self:flex-start;font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.06em;padding:4px 9px;border-radius:2px;background:var(--wash,var(--step-wash));color:var(--accent,var(--step));border:1px solid color-mix(in srgb,var(--accent,var(--step)) 28%,transparent)}
+.transport{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button{font:inherit;color:inherit;cursor:pointer;background:var(--surface);border:1px solid var(--line);border-radius:3px;padding:8px 13px;display:inline-flex;align-items:center;gap:7px}
+button:hover{border-color:color-mix(in srgb,var(--ink) 32%,var(--line))}
+button:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+button[aria-pressed="true"]{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.play{font-weight:600;padding-inline:17px}.play svg{width:11px;height:12px;fill:currentColor}
+.rate{display:flex;border:1px solid var(--line);border-radius:3px;overflow:hidden;background:var(--surface)}
+.rate button{border:0;border-right:1px solid var(--line);border-radius:0;font-family:"IBM Plex Mono",monospace;font-size:12px;padding:8px 11px}
+.rate button:last-child{border-right:0}
+.strip-head{display:flex;align-items:baseline;justify-content:space-between;gap:16px;margin-bottom:10px}
+.strip-head h2{font-size:15px;font-weight:700}
+.strip-head span{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
+.strip{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:6px}
+.cell{padding:0;overflow:hidden;display:flex;flex-direction:column;align-items:stretch;background:var(--surface);border:1px solid var(--line);border-radius:3px}
+.cell .num{font-family:"IBM Plex Mono",monospace;font-size:11px;font-weight:600;padding:4px 0 3px;color:var(--muted);border-bottom:1px solid var(--line);background:var(--sunk);font-variant-numeric:tabular-nums}
+.cell svg{width:100%;height:auto;display:block;padding:5px 3px}
+.cell[aria-current="true"]{border-color:var(--cellc);background:var(--cellw)}
+.cell[aria-current="true"] .num{background:var(--cellc);color:var(--surface);border-bottom-color:var(--cellc)}
+.cell[data-role="key"] .num{color:var(--step)}.cell[data-role="pilot"] .num{color:var(--tap)}
+.legend{display:flex;gap:16px;font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-top:8px}
+.legend b{font-weight:600}.legend .k{color:var(--step)}.legend .p{color:var(--tap)}
+.map h2,.arc h2,.brief h2{font-size:15px;font-weight:700;margin-bottom:10px}
+.arc{display:flex;flex-direction:column;gap:8px}
+.brief ul{margin:0;padding-left:20px}.brief li{margin:2px 0}
+.maprows{display:flex;flex-direction:column;border-top:1px solid var(--line)}
+.maprow{display:grid;grid-template-columns:44px 170px 1fr;gap:16px;align-items:baseline;padding:11px 2px;border-bottom:1px solid var(--line)}
+.maprow .mv{font-family:"Bricolage Grotesque",sans-serif;font-weight:700;font-size:15px;color:var(--rowc)}
+.maprow .ct{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+footer{color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding-top:14px}
+footer a{color:inherit}
+@media (max-width:860px){.stage{grid-template-columns:1fr 1fr}.readout{grid-column:1/-1}.strip{grid-template-columns:repeat(4,minmax(0,1fr))}.maprow{grid-template-columns:40px 120px 1fr;gap:10px}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+<div class="wrap">
+<header class="masthead">
+<div><h1>{{TITLE}}</h1><p class="dek">{{DEK}}</p></div>
+<dl class="spec">
+<div><dt>Frames</dt><dd>{{N}}</dd></div><div><dt>Rate</dt><dd id="specRate">{{FPS}} fps</dd></div>
+<div><dt>Lap</dt><dd id="specLap">{{LAP}}</dd></div><div><dt>Playback</dt><dd>{{PLAYBACK}}</dd></div>
+<div><dt>View</dt><dd>{{VIEW}}</dd></div><div><dt>Keys</dt><dd>{{KEYS}}</dd></div><div><dt>Pilots</dt><dd>{{PILOTS}}</dd></div>
+</dl></header>
+
+<section class="stage">
+<div class="figbox" id="figbox"><div id="bigFigure"></div><span class="tag" id="mirrorTag">As filmed</span></div>
+<div class="refbox" id="refbox"><img id="thumb" alt="Source video frame"><span class="tag">Source frame</span></div>
+<div class="readout">
+<div class="countline"><div class="bigcount" id="bigCount">0</div>
+<div class="phase"><div class="phase-name" id="phaseName"></div><div class="phase-of" id="phaseOf"></div></div></div>
+<p class="cue" id="cue" aria-live="polite"></p>
+<p class="note" id="note"></p>
+<span class="srcchip" id="srcChip"></span>
+<div class="transport">
+<button class="play" id="playBtn" aria-label="Pause"><svg viewBox="0 0 12 12" aria-hidden="true"><rect x="1" y="1" width="3.5" height="10"/><rect x="7.5" y="1" width="3.5" height="10"/></svg><span id="playLabel">Pause</span></button>
+<button id="prevBtn" aria-label="Previous frame">&larr;</button><button id="nextBtn" aria-label="Next frame">&rarr;</button>
+<div class="rate" role="group" aria-label="Playback rate">{{RATES}}</div>
+<button id="mirrorBtn" aria-pressed="false">Mirror</button>
+</div></div></section>
+
+<section><div class="strip-head"><h2>The sheet</h2><span>Click a frame to scrub · ←/→ · space</span></div>
+<div class="strip" id="strip"></div>
+<div class="legend"><span><b class="k">■</b> key (hold / extreme)</span><span><b class="p">■</b> pilot (fastest transition)</span><span>■ in-between</span><span>○ character-right wrist / ankle</span><span>dashed = floor</span></div>
+</section>
+
+<section class="arc"><h2>Performance arc</h2>{{ARC}}</section>
+
+<section class="brief"><h2>For the artist agent</h2><ul>
+<li>This is a <b>motion source</b>: it controls motion only. Fighter scale, proportions, identity, view and prop hand come from the manifest and approved authorities, never from this video.</li>
+<li>Every side is named <b>character-left</b> / <b>character-right</b> (the performer's own sides). Screen sides are never used for anatomy. The mirror button flips the drawing only; the text does not change.</li>
+<li>Playback is <b>{{PLAYBACK}}</b> at <b>{{FPS}} fps</b>, <b>{{N}}</b> frames. Loop seam: <b>{{SEAM}}</b> (frame {{N}} cuts back to frame 0).</li>
+<li>Grounded frames keep the supporting heel on the canonical baseline; frames marked airborne leave it only through a coherent takeoff, arc and landing.</li>
+<li>Draw keys first (pink), then pilots (blue), then in-betweens from locked neighbours. The frame notes below are the per-frame instruction set.</li>
+</ul></section>
+
+<section class="map"><h2>Frame notes</h2><div class="maprows">{{ROWS}}</div></section>
+
+<footer><p>Source: <a href="{{URL}}">{{URL}}</a>. Poses estimated with MediaPipe; treat joint angles as guidance, not measurement.</p></footer>
+</div>
+<script type="application/json" id="motion">{{DATA}}</script>
+<script>
+(function(){"use strict";
+var D=JSON.parse(document.getElementById("motion").textContent),F=D.frames,FIGS={{FIGS}},THUMBS={{THUMBS}};
+var COL={key:"var(--step)",pilot:"var(--tap)",inbetween:"var(--muted)"},WASH={key:"var(--step-wash)",pilot:"var(--tap-wash)",inbetween:"var(--sunk)"};
+var strip=document.getElementById("strip"),cells=[];
+F.forEach(function(f,i){var b=document.createElement("button");b.className="cell";b.type="button";b.dataset.role=f.role;
+b.style.setProperty("--cellc",COL[f.role]);b.style.setProperty("--cellw",WASH[f.role]);
+b.innerHTML='<span class="num">'+f.i+'</span>'+FIGS[i];b.addEventListener("click",function(){stop();go(i)});strip.appendChild(b);cells.push(b)});
+var idx=0,fps=D.fps,timer=null,mirrored=false,stage=document.querySelector(".stage");
+function render(){var f=F[idx];stage.style.setProperty("--accent",COL[f.role]);stage.style.setProperty("--wash",WASH[f.role]);
+document.getElementById("bigCount").textContent=f.i;
+document.getElementById("phaseName").textContent=f.role.charAt(0).toUpperCase()+f.role.slice(1)+" · "+f.pace;
+document.getElementById("phaseOf").textContent="frame "+(idx+1)+" of "+F.length+" · view "+f.features.view;
+document.getElementById("cue").textContent=f.cue;
+document.getElementById("note").innerHTML=f.note?"<b>Note:</b> "+f.note.replace(/</g,"&lt;"):"";
+document.getElementById("srcChip").textContent="source "+f.t.toFixed(2)+" s";
+document.getElementById("bigFigure").innerHTML=FIGS[idx];
+var im=document.getElementById("thumb");if(THUMBS[idx]){im.src=THUMBS[idx];im.hidden=false}else{im.hidden=true}
+cells.forEach(function(c,i){c.setAttribute("aria-current",i===idx?"true":"false")})}
+function go(i){idx=(i+F.length)%F.length;render()}
+var playBtn=document.getElementById("playBtn"),playLabel=document.getElementById("playLabel");
+function start(){if(timer)return;timer=setInterval(function(){if(D.playback!=="loop"&&idx===F.length-1){stop();return}go(idx+1)},1000/fps);playBtn.setAttribute("aria-label","Pause");playLabel.textContent="Pause";playBtn.querySelector("svg").innerHTML='<rect x="1" y="1" width="3.5" height="10"/><rect x="7.5" y="1" width="3.5" height="10"/>'}
+function stop(){clearInterval(timer);timer=null;playBtn.setAttribute("aria-label","Play");playLabel.textContent="Play";playBtn.querySelector("svg").innerHTML='<path d="M1.5 1 L11 6 L1.5 11 Z"/>'}
+playBtn.addEventListener("click",function(){if(timer)stop();else{if(D.playback!=="loop"&&idx===F.length-1)idx=-1;start()}});
+document.getElementById("prevBtn").addEventListener("click",function(){stop();go(idx-1)});
+document.getElementById("nextBtn").addEventListener("click",function(){stop();go(idx+1)});
+document.querySelectorAll(".rate button").forEach(function(b){b.addEventListener("click",function(){fps=Number(b.dataset.fps);
+document.querySelectorAll(".rate button").forEach(function(o){o.setAttribute("aria-pressed",o===b?"true":"false")});
+document.getElementById("specRate").textContent=fps+" fps";document.getElementById("specLap").textContent=(F.length/fps).toFixed(2)+" s";if(timer){clearInterval(timer);timer=null;start()}})});
+document.getElementById("mirrorBtn").addEventListener("click",function(){mirrored=!mirrored;this.setAttribute("aria-pressed",String(mirrored));
+document.getElementById("figbox").classList.toggle("mirrored",mirrored);document.getElementById("refbox").classList.toggle("mirrored",mirrored);
+document.getElementById("mirrorTag").textContent=mirrored?"Mirrored (sides in text unchanged)":"As filmed"});
+document.addEventListener("keydown",function(e){if(e.key==="ArrowRight"){stop();go(idx+1)}else if(e.key==="ArrowLeft"){stop();go(idx-1)}else if(e.key===" "&&e.target===document.body){e.preventDefault();timer?stop():start()}});
+render();if(window.matchMedia("(prefers-reduced-motion: reduce)").matches)stop();else start();
+})();
+</script>
+"""
+
+
+# ---------------------------------------------------------------- selftest
+def tstamp(v):
+    """'83', '1:23', '1:23.5' -> seconds."""
+    parts = [float(x) for x in str(v).split(":")]
+    return sum(p * 60 ** i for i, p in enumerate(reversed(parts)))
+
+
+def selftest():
+    """Synthetic poses: arm overhead + one foot lifted must be described as such."""
+    def pose(wrL_y, anR_y):
+        P = dict(nose=[0.5, 0.20], eyeL=[0.52, 0.19], eyeR=[0.48, 0.19], earL=[0.54, 0.20], earR=[0.46, 0.20],
+                 shL=[0.60, 0.30], shR=[0.40, 0.30], elL=[0.66, 0.42], elR=[0.34, 0.42], wrL=[0.70, wrL_y], wrR=[0.30, 0.55],
+                 hipL=[0.56, 0.55], hipR=[0.44, 0.55], knL=[0.56, 0.75], knR=[0.44, 0.75], anL=[0.56, 0.95], anR=[0.44, anR_y],
+                 heelL=[0.55, 0.96], heelR=[0.43, anR_y + .01], toeL=[0.59, 0.96], toeR=[0.47, anR_y + .01])
+        W = {k: [v[0] - 0.5, v[1] - 0.55, 0.0] for k, v in P.items()}
+        W["shL"][2] = -0.05  # character-left shoulder slightly nearer camera => 3/4 view
+        return P, W
+    f, cue = describe(*pose(0.10, 0.95), floor_y=0.95, body_h=0.75)
+    assert "overhead" in f["arm_L"] and "low" in f["arm_R"], f
+    assert "both feet down" in f["weight"] or "centred" in f["weight"], f
+    assert f["view"] in ("front", "3/4"), f
+    f, _ = describe(*pose(0.60, 0.80), floor_y=0.95, body_h=0.75)
+    assert "character-right foot lifted" in f["weight"], f
+    assert bend_word(170) == "straight" and bend_word(80) == "bent ~90°"
+    assert tstamp("1:23.5") == 83.5 and tstamp("7") == 7
+    print("selftest ok")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    e = sub.add_parser("extract"); e.add_argument("source")
+    e.add_argument("--fps", type=int, required=True); e.add_argument("--frames", type=int, required=True)
+    e.add_argument("--start", type=tstamp, help="trim: seconds or m:ss"); e.add_argument("--end", type=tstamp, help="trim: seconds or m:ss")
+    e.add_argument("--name"); e.add_argument("--out")
+    e.add_argument("--exaggerate", type=float, default=1.25, help="motion amplification about the mean pose (1.0 = as filmed)")
+    e.add_argument("--playback", choices=["loop", "one-shot", "final-hold"], default="loop")
+    r = sub.add_parser("render"); r.add_argument("json"); r.add_argument("--out")
+    sub.add_parser("selftest")
+    a = ap.parse_args()
+    {"extract": extract, "render": render, "selftest": lambda _: selftest()}[a.cmd](a)
+
+
+if __name__ == "__main__":
+    main()
