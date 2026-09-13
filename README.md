@@ -54,6 +54,7 @@ python3 motion-artist/scripts/motion_artist.py render work/dance/motion.json
 | `--exaggerate` | amplify each landmark's deviation from the clip-mean pose; default `1.25`, `1.0` = as filmed |
 | `--name`, `--out` | output slug and directory (default `work/<name>/`) |
 | `render --repeat N` | play the cycle N times back to back in the sheet |
+| `render --pingpong` | play the cycle out and back; the return leg reverses the out leg, so the seam is clean and only the out leg needs drawing |
 
 `extract` prints one line per frame (index, source time, key / pilot / in-between, pace, pose cue)
 and writes `motion.json` plus `thumbs/`. Between the two commands, fill `arc` and any per-frame

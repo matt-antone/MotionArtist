@@ -366,6 +366,12 @@ FLOOR = 0.0  # set by render() before figure_svg is called
 def render(a):
     global FLOOR
     d = json.load(open(a.json))
+    for f in d["frames"]: f.setdefault("src", f["i"])   # which source frame each cell draws from
+    if a.pingpong and len(d["frames"]) > 2:  # out and back: the return leg is the same poses reversed
+        base = d["frames"]
+        d["frames"] = base + [dict(f, i=len(base) + k, leg="back")
+                              for k, f in enumerate(reversed(base[1:-1]))]
+        d["pingpong"] = True
     if a.repeat > 1:  # play the cycle N times back to back; frame numbers run on, cues repeat
         base = d["frames"]
         d["frames"] = [dict(f, i=c * len(base) + f["i"], cycle=c + 1) for c in range(a.repeat) for f in base]
@@ -383,7 +389,7 @@ def render(a):
     for f in d["frames"]:
         col = {"key": "var(--step)", "pilot": "var(--tap)"}.get(f["role"], "var(--fig)")
         figs.append(figure_svg(f["pts"], box, d["body_h"], "var(--fig)", col, f"Frame {f['i']}: {f['cue']}"))
-        tp = os.path.join(tdir, f"f{f['i']:02d}.jpg")
+        tp = os.path.join(tdir, f"f{f['src']:02d}.jpg")
         thumbs.append("data:image/jpeg;base64," + base64.b64encode(open(tp, "rb").read()).decode()
                       if os.path.exists(tp) else "")
     payload = dict(d, frames=[{k: v for k, v in f.items() if k != "pts"} for f in d["frames"]])
@@ -407,9 +413,10 @@ def render(a):
         DEK=(f'Motion source from <b>{html.escape(src["title"])}</b>, {src["start"]:.1f}–{src["end"]:.1f}s '
              f'(source speed ×{src["speed_factor"]}, motion exaggerated ×{d.get("exaggerate", 1)}). Plays at <b>{d["fps"]} fps</b>; '
              f'{n} frames, {lap:.2f} s per {"lap" if d["playback"] == "loop" else "run"}'
-             + (f' ({d["repeat"]} cycles of {n // d["repeat"]} frames).' if d.get("repeat") else '.')),
+             + (f', {d["repeat"]} cycles' if d.get("repeat") else '')
+             + (' — out and back, the return leg reversing the out leg.' if d.get("pingpong") else '.')),
         N=str(n), FPS=str(d["fps"]), LAP=f"{lap:.2f} s", PLAYBACK=d["playback"], VIEW=html.escape(d["view"]),
-        SEAM=d["seam"], KEYS=", ".join(map(str, keys)) or "—", PILOTS=", ".join(map(str, pilots)) or "—",
+        SEAM=("clean — the return leg reverses the out leg" if d.get("pingpong") else d["seam"]), KEYS=", ".join(map(str, keys)) or "—", PILOTS=", ".join(map(str, pilots)) or "—",
         URL=html.escape(src["url"]), ARC=arc, ROWS=rows,
         RATES="".join(f'<button data-fps="{r}" aria-pressed="{str(r == d["fps"]).lower()}">{r} fps</button>' for r in rates),
         FIGS=json.dumps(figs), THUMBS=json.dumps(thumbs), DATA=json.dumps(payload).replace("</", "<\\/"),
@@ -547,7 +554,7 @@ var idx=0,fps=D.fps,timer=null,mirrored=false,stage=document.querySelector(".sta
 function render(){var f=F[idx];stage.style.setProperty("--accent",COL[f.role]);stage.style.setProperty("--wash",WASH[f.role]);
 document.getElementById("bigCount").textContent=f.i;
 document.getElementById("phaseName").textContent=f.role.charAt(0).toUpperCase()+f.role.slice(1)+" · "+f.pace;
-document.getElementById("phaseOf").textContent="frame "+(idx+1)+" of "+F.length+(f.cycle?" · cycle "+f.cycle:"")+" · view "+f.features.view;
+document.getElementById("phaseOf").textContent="frame "+(idx+1)+" of "+F.length+(f.leg==="back"?" · return leg":"")+(f.cycle?" · cycle "+f.cycle:"")+" · view "+f.features.view;
 document.getElementById("cue").textContent=f.cue;
 document.getElementById("note").innerHTML=f.note?"<b>Note:</b> "+f.note.replace(/</g,"&lt;"):"";
 document.getElementById("srcChip").textContent="source "+f.t.toFixed(2)+" s";
@@ -614,6 +621,7 @@ def main():
     e.add_argument("--search", action="store_true", help="slide a frames/fps-second window over --start..--end and pick the tightest loop")
     e.add_argument("--playback", choices=["loop", "one-shot", "final-hold"], default="loop")
     r = sub.add_parser("render"); r.add_argument("json"); r.add_argument("--out")
+    r.add_argument("--pingpong", action="store_true", help="play the cycle out and back (0..N..1) so the seam is the motion reversed")
     r.add_argument("--repeat", type=int, default=1, help="play the cycle N times back to back in the sheet")
     sub.add_parser("selftest")
     a = ap.parse_args()
