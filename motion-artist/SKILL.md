@@ -21,9 +21,12 @@ roles: it controls motion only, never fighter scale, identity, view or prop hand
 | `--start` / `--end` | recommended | trim the span to inspect, seconds or `m:ss`. Without `--end`, the span is `frames / fps` seconds of real time from `--start`. With both, that span is time-stretched onto the frame count (the sheet reports the speed factor). |
 | `--playback` | default `loop` | `loop` (samples exclude `end`, so the last→first cut is one natural step), `one-shot`, `final-hold` |
 | `--name` | optional | slug for the output dir and title |
+| `--search` | optional | "find the best loop": slide a `frames / fps`-second window over `--start..--end`, score each start by loop-closure distance vs motion energy, and use the tightest seam among the livelier half. Prints the top candidates. |
+| `--exaggerate` | default `1.25` | amplify each landmark's deviation from the clip-mean pose; `1.0` = as filmed |
 
 If the user gives no trim and the video is longer than ~15 s, make a contact sheet first
-(sample one frame per second with cv2, tile them, Read the image) and propose a span.
+(sample one frame per second with cv2, tile them, Read the image) and propose a span. If they
+ask for "the best loop" inside a range, pass the range as `--start/--end` plus `--search`.
 
 ## Steps
 

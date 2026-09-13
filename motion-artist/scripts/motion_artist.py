@@ -183,13 +183,20 @@ def extract(a):
     dur = cap.get(cv2.CAP_PROP_FRAME_COUNT) / (cap.get(cv2.CAP_PROP_FPS) or 30)
     Wpx, Hpx = cap.get(cv2.CAP_PROP_FRAME_WIDTH), cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
     start = a.start or 0.0
-    end = a.end if a.end is not None else min(dur, start + a.frames / a.fps)
+    mp, lm = landmarker()
+    if a.search:
+        if a.end is None: sys.exit("--search needs --start and --end (the window to search)")
+        start, end, best = best_loop(cap, mp, lm, start, a.end, a.frames / a.fps, Wpx / Hpx)
+        print(f"search: best {a.frames / a.fps:.1f}s loop starts at {start:.2f}s "
+              f"(seam {best['seam']:.2f}, energy {best['energy']:.2f}); candidates:\n  " +
+              "\n  ".join(f"{c['t']:6.2f}s seam {c['seam']:.2f} energy {c['energy']:.2f}" for c in best['top']))
+    end = a.end if a.end is not None and not a.search else min(dur, start + a.frames / a.fps)
+    if a.search: end = start + a.frames / a.fps
     span = end - start
     # loop: samples exclusive of `end` so the last->first cut is one natural step
     step = span / a.frames if a.playback == "loop" else span / max(a.frames - 1, 1)
     speed = span / (a.frames / a.fps)  # 1.0 == real time; 2.0 == source played at 2x
 
-    mp, lm = landmarker()
     frames, missing = [], []
     for i in range(a.frames):
         t = start + i * step
@@ -261,6 +268,41 @@ def extract(a):
     for f in doc["frames"]:
         print(f"{f['i']:>3} {f['t']:6.2f}s {f['role']:<9} {f['pace']:<6} {f['cue']}")
     return jp
+
+
+def best_loop(cap, mp, lm, t0, t1, length, aspect, hz=8):
+    """Slide a `length`-second window over [t0, t1]; return (start, end, info) minimising the pose
+    distance between window start and window end while keeping real motion inside the window."""
+    import cv2
+    poses, ts = [], []
+    t = t0
+    while t <= t1 + 1e-9:
+        cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
+        ok, bgr = cap.read()
+        res = lm.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))) if ok else None
+        if res and res.pose_landmarks:
+            img = res.pose_landmarks[0]
+            P = {k: [img[j].x * aspect, img[j].y] for k, j in LM.items()}
+            hip, h = mid(P["hipL"], P["hipR"]), max(dist(mid(P["shL"], P["shR"]), mid(P["hipL"], P["hipR"])), 1e-3)
+            poses.append({k: [(v[0] - hip[0]) / h, (v[1] - hip[1]) / h] for k, v in P.items()})  # hip-centred, torso-scaled
+        else:
+            poses.append(None)
+        ts.append(t); t += 1.0 / hz
+    def pd(a, b): return sum(dist(a[k], b[k]) for k in CORE) / len(CORE)
+    n = round(length * hz)
+    cands = []
+    for i in range(len(poses) - n):
+        win = poses[i:i + n + 1]
+        if any(p is None for p in win): continue
+        seam = pd(win[0], win[-1])
+        energy = sum(pd(win[j], win[j + 1]) for j in range(n)) / n
+        cands.append(dict(t=ts[i], seam=seam, energy=energy))
+    if not cands: sys.exit("search: no fully-tracked window; try a different range")
+    med = sorted(c["energy"] for c in cands)[len(cands) // 2]
+    live = [c for c in cands if c["energy"] >= med] or cands   # ponytail: 'best' = tightest seam among the livelier half
+    best = min(live, key=lambda c: c["seam"])
+    best["top"] = sorted(live, key=lambda c: c["seam"])[:5]
+    return best["t"], best["t"] + length, best
 
 
 # ---------------------------------------------------------------- render
@@ -541,6 +583,7 @@ def main():
     e.add_argument("--start", type=tstamp, help="trim: seconds or m:ss"); e.add_argument("--end", type=tstamp, help="trim: seconds or m:ss")
     e.add_argument("--name"); e.add_argument("--out")
     e.add_argument("--exaggerate", type=float, default=1.25, help="motion amplification about the mean pose (1.0 = as filmed)")
+    e.add_argument("--search", action="store_true", help="slide a frames/fps-second window over --start..--end and pick the tightest loop")
     e.add_argument("--playback", choices=["loop", "one-shot", "final-hold"], default="loop")
     r = sub.add_parser("render"); r.add_argument("json"); r.add_argument("--out")
     sub.add_parser("selftest")
