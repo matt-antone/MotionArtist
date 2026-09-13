@@ -51,6 +51,8 @@ ask for "the best loop" inside a range, pass the range as `--start/--end` plus `
    ```bash
    python3 "$SKILL/scripts/motion_artist.py" render work/dance/motion.json
    ```
+   Add `--repeat 2` to play the cycle twice back to back in the sheet (frame numbers run on), which
+   is how a loop seam should be reviewed.
    Output `work/dance/dance-motion.html`: masthead (frames, fps, lap, playback, view, key and pilot
    indices), a stage with the big stick figure, the source frame and the cue, a transport
    (play/scrub, rate, mirror), the frame strip, the arc, a fixed "for the artist agent" brief, and

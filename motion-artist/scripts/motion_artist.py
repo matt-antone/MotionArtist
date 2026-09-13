@@ -363,6 +363,10 @@ FLOOR = 0.0  # set by render() before figure_svg is called
 def render(a):
     global FLOOR
     d = json.load(open(a.json))
+    if a.repeat > 1:  # play the cycle N times back to back; frame numbers run on, cues repeat
+        base = d["frames"]
+        d["frames"] = [dict(f, i=c * len(base) + f["i"], cycle=c + 1) for c in range(a.repeat) for f in base]
+        d["repeat"] = a.repeat
     out = a.out or os.path.join(os.path.dirname(a.json), f"{d['name']}-motion.html")
     tdir = os.path.join(os.path.dirname(a.json), "thumbs")
     FLOOR = d["floor_y"]
@@ -399,7 +403,8 @@ def render(a):
         TITLE=html.escape(d["title"]),
         DEK=(f'Motion source from <b>{html.escape(src["title"])}</b>, {src["start"]:.1f}–{src["end"]:.1f}s '
              f'(source speed ×{src["speed_factor"]}, motion exaggerated ×{d.get("exaggerate", 1)}). Plays at <b>{d["fps"]} fps</b>; '
-             f'{n} frames, {lap:.2f} s per {"lap" if d["playback"] == "loop" else "run"}.'),
+             f'{n} frames, {lap:.2f} s per {"lap" if d["playback"] == "loop" else "run"}'
+             + (f' ({d["repeat"]} cycles of {n // d["repeat"]} frames).' if d.get("repeat") else '.')),
         N=str(n), FPS=str(d["fps"]), LAP=f"{lap:.2f} s", PLAYBACK=d["playback"], VIEW=html.escape(d["view"]),
         SEAM=d["seam"], KEYS=", ".join(map(str, keys)) or "—", PILOTS=", ".join(map(str, pilots)) or "—",
         URL=html.escape(src["url"]), ARC=arc, ROWS=rows,
@@ -539,7 +544,7 @@ var idx=0,fps=D.fps,timer=null,mirrored=false,stage=document.querySelector(".sta
 function render(){var f=F[idx];stage.style.setProperty("--accent",COL[f.role]);stage.style.setProperty("--wash",WASH[f.role]);
 document.getElementById("bigCount").textContent=f.i;
 document.getElementById("phaseName").textContent=f.role.charAt(0).toUpperCase()+f.role.slice(1)+" · "+f.pace;
-document.getElementById("phaseOf").textContent="frame "+(idx+1)+" of "+F.length+" · view "+f.features.view;
+document.getElementById("phaseOf").textContent="frame "+(idx+1)+" of "+F.length+(f.cycle?" · cycle "+f.cycle:"")+" · view "+f.features.view;
 document.getElementById("cue").textContent=f.cue;
 document.getElementById("note").innerHTML=f.note?"<b>Note:</b> "+f.note.replace(/</g,"&lt;"):"";
 document.getElementById("srcChip").textContent="source "+f.t.toFixed(2)+" s";
@@ -606,6 +611,7 @@ def main():
     e.add_argument("--search", action="store_true", help="slide a frames/fps-second window over --start..--end and pick the tightest loop")
     e.add_argument("--playback", choices=["loop", "one-shot", "final-hold"], default="loop")
     r = sub.add_parser("render"); r.add_argument("json"); r.add_argument("--out")
+    r.add_argument("--repeat", type=int, default=1, help="play the cycle N times back to back in the sheet")
     sub.add_parser("selftest")
     a = ap.parse_args()
     {"extract": extract, "render": render, "selftest": lambda _: selftest()}[a.cmd](a)
