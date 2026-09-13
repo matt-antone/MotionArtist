@@ -9,7 +9,7 @@ metadata:
 
 Video of a person moving → `motion.json` + a self-contained HTML motion sheet. The sheet is a
 **motion source** for the KaraokeParty-Graphics `motion_director` / `animation_keyframe_artist`
-roles: it controls motion only, never fighter scale, identity, view or prop hand.
+roles: it controls motion only, never character scale, identity, view or prop hand.
 
 ## Inputs (ask for anything missing)
 

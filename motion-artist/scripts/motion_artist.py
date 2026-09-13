@@ -496,7 +496,7 @@ footer a{color:inherit}
 <section class="arc"><h2>Performance arc</h2>{{ARC}}</section>
 
 <section class="brief"><h2>For the artist agent</h2><ul>
-<li>This is a <b>motion source</b>: it controls motion only. Fighter scale, proportions, identity, view and prop hand come from the manifest and approved authorities, never from this video.</li>
+<li>This is a <b>motion source</b>: it controls motion only. Character scale, proportions, identity, view and prop hand come from the manifest and approved authorities, never from this video.</li>
 <li>Every side is named <b>character-left</b> / <b>character-right</b> (the performer's own sides). Screen sides are never used for anatomy. The mirror button flips the drawing only; the text does not change.</li>
 <li>Playback is <b>{{PLAYBACK}}</b> at <b>{{FPS}} fps</b>, <b>{{N}}</b> frames. Loop seam: <b>{{SEAM}}</b> (frame {{N}} cuts back to frame 0).</li>
 <li>Grounded frames keep the supporting heel on the canonical baseline; frames marked airborne leave it only through a coherent takeoff, arc and landing.</li>
