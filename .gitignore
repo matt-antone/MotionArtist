@@ -1,0 +1,7 @@
+work/
+*.mp4
+__pycache__/
+.claude
+.omc
+work
+.fallow/
