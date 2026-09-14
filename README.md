@@ -48,10 +48,14 @@ python3 motion-artist/scripts/motion_artist.py render work/dance/motion.json
 | --- | --- |
 | `--fps`, `--frames` | rate and total frame count of the target animation (required) |
 | `--start`, `--end` | trim the span to inspect, seconds or `m:ss`. Without `--end`, the span is `frames / fps` seconds of real time. With both, the span is time-stretched onto the frame count. |
-| `--search` | find the best loop: slide a `frames / fps`-second window over `--start..--end`, score each start by loop-closure pose distance against motion energy, pick the tightest seam among the livelier half |
+| `--search` | find the best loop: slide a `frames / fps`-second window over `--start..--end` (whole video if `--end` is omitted), score each start by loop-closure pose distance against motion energy, pick the tightest seam among the livelier half |
+| `--window` | source seconds the search looks for, when that differs from `frames / fps` (a scene cut leaves a short usable span, or a fast move should play slower); the winner is stretched onto the frame count |
+| `--stabilize` | centre the hips horizontally in every frame; use for a moving camera or a travelling performer (airborne is then never called, since there is no fixed floor). Body scale is always normalised per frame from pixels-per-metre, so camera zoom never changes the skeleton's size |
 | `--playback` | `loop` (default), `one-shot`, `final-hold` |
 | `--exaggerate` | amplify each landmark's deviation from the clip-mean pose; default `1.25`, `1.0` = as filmed |
 | `--name`, `--out` | output slug and directory (default `work/<name>/`) |
+| `render --repeat N` | play the cycle N times back to back in the sheet |
+| `render --pingpong` | play the cycle out and back; the return leg reverses the out leg, so the seam is clean and only the out leg needs drawing |
 
 `extract` prints one line per frame (index, source time, key / pilot / in-between, pace, pose cue)
 and writes `motion.json` plus `thumbs/`. Between the two commands, fill `arc` and any per-frame
