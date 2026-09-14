@@ -184,13 +184,14 @@ def extract(a):
     Wpx, Hpx = cap.get(cv2.CAP_PROP_FRAME_WIDTH), cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
     start = a.start or 0.0
     mp, lm = landmarker()
+    win = a.window or a.frames / a.fps   # source seconds to look for; stretched onto the frame count
     if a.search:
-        start, end, best = best_loop(cap, mp, lm, start, a.end if a.end is not None else dur, a.frames / a.fps, Wpx / Hpx)
-        print(f"search: best {a.frames / a.fps:.1f}s loop starts at {start:.2f}s "
+        start, end, best = best_loop(cap, mp, lm, start, a.end if a.end is not None else dur, win, Wpx / Hpx)
+        print(f"search: best {win:.1f}s loop starts at {start:.2f}s "
               f"(seam {best['seam']:.2f}, energy {best['energy']:.2f}); candidates:\n  " +
               "\n  ".join(f"{c['t']:6.2f}s seam {c['seam']:.2f} energy {c['energy']:.2f}" for c in best['top']))
-    end = a.end if a.end is not None and not a.search else min(dur, start + a.frames / a.fps)
-    if a.search: end = start + a.frames / a.fps
+    end = a.end if a.end is not None and not a.search else min(dur, start + win)
+    if a.search: end = start + win
     span = end - start
     # loop: samples exclusive of `end` so the last->first cut is one natural step
     step = span / a.frames if a.playback == "loop" else span / max(a.frames - 1, 1)
@@ -618,6 +619,7 @@ def main():
     e.add_argument("--name"); e.add_argument("--out")
     e.add_argument("--exaggerate", type=float, default=1.25, help="motion amplification about the mean pose (1.0 = as filmed)")
     e.add_argument("--stabilize", action="store_true", help="centre hips horizontally each frame (moving camera / travelling performer)")
+    e.add_argument("--window", type=tstamp, help="source seconds the search looks for (default frames/fps); the winner is stretched onto the frame count")
     e.add_argument("--search", action="store_true", help="slide a frames/fps-second window over --start..--end and pick the tightest loop")
     e.add_argument("--playback", choices=["loop", "one-shot", "final-hold"], default="loop")
     r = sub.add_parser("render"); r.add_argument("json"); r.add_argument("--out")
