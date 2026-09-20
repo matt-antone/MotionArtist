@@ -12,7 +12,7 @@
 `export` bundles the json, sheet and thumbs with a SHA-256 manifest for hand-off.
 Between extract and render, an agent may fill `arc`, `title` and per-frame `note` in motion.json.
 """
-import argparse, base64, hashlib, html, json, math, os, re, subprocess, sys, urllib.request, zipfile
+import argparse, base64, glob, hashlib, html, json, math, os, re, subprocess, sys, urllib.request, zipfile
 
 MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
              "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task")
@@ -144,7 +144,16 @@ def describe(P, W, floor_y, body_h):
     plantedL, plantedR = soleL > floor_y - lift, soleR > floor_y - lift
     kneeL, kneeR = angle3(W["hipL"], W["knL"], W["anL"]), angle3(W["hipR"], W["knR"], W["anR"])
     f["knee_L"], f["knee_R"] = round(kneeL), round(kneeR)
-    f["airborne"] = not plantedL and not plantedR
+    # Airborne is a far stronger claim than "this heel is up", so it does not reuse `lift`, which is
+    # tuned for heel-lift and sits inside the frame-to-frame noise of a hip-normalised sole. cag
+    # agrees from the other side: it refuses to lift a grounded frame because soles "sit a few
+    # percent off floor_y by noise, and that would come out as jitter" (cag/mask.py placement) — and
+    # a false airborne there lifts the character clean off the contact row. Measured on the shuffle,
+    # the two classes are far apart: soles genuinely on the ground clear the floor by up to 0.075
+    # body heights, a genuinely lifted foot by 0.30-0.59. Nothing lands in between, so the cut sits
+    # in that empty band instead of hard against the noise.
+    off = 0.15 * body_h
+    f["airborne"] = soleL < floor_y - off and soleR < floor_y - off
     if f["airborne"]:
         f["weight"] = "airborne — both feet off the floor"
     elif plantedL and plantedR:
@@ -156,13 +165,13 @@ def describe(P, W, floor_y, body_h):
         up = "character-right" if plantedL else "character-left"
         f["weight"] = f"weight on the {'character-left' if plantedL else 'character-right'} foot, {up} foot lifted"
     # no stance word: ankle spread in image x cannot tell a wide stance from a fore-aft step seen
-    # at an angle, and the skeleton already draws foot spacing. Words that disagree with it strobe.
+    # at an angle, and the traced frame already shows foot spacing. Words that disagree with it strobe.
     legs = []
     for s, name in (("L", "character-left"), ("R", "character-right")):
         k = kneeL if s == "L" else kneeR
         if k < 150: legs.append(f"{name} knee {bend_word(k)}")
     f["legs"] = ", ".join(legs) if legs else "legs straight"
-    # legs overlapping in the image: a flat skeleton cannot show which is nearer, so say it in words
+    # legs overlapping in the image: a flat photograph cannot show which is nearer, so say it in words
     crossed = (anL[0] - anR[0]) * (P["hipL"][0] - P["hipR"][0]) < 0
     dz = zl["legL"] - zl["legR"]
     f["overlap"] = ""
@@ -525,137 +534,6 @@ def best_loop(cap, mp, lm, t0, t1, length, aspect, hz=8):
 
 
 # ---------------------------------------------------------------- render
-def figure_svg(pts, box, body_scale, color, accent=None, label=""):
-    """Stick figure from image-space points. box = (x0, y0, w, h) of the clip's figure bounds."""
-    x0, y0, w, h = box
-    s = 200 / h
-    def X(p): return (p[0] - x0) * s + 10
-    def Y(p): return (p[1] - y0) * s + 10
-    L = []
-    def z(k): return pts[k][2] if len(pts[k]) > 2 else 0.0   # schema 1 had no depth: flat is fine
-    hm, sm = mid(pts["hipL"], pts["hipR"]), mid(pts["shL"], pts["shR"])
-    # the pelvis and shoulder bars are what the dance turns on, so they are drawn as girdles —
-    # heavier and in the accent colour — not as two more bones lost in the mesh.
-    GIRDLE = (("hipL", "hipR"), ("shL", "shR"))
-    LIMB = {"L": "var(--limb-l)", "R": "var(--limb-r)"}
-    GIRDLE_INK = "var(--girdle)"   # its own ink on every frame, not the key/pilot accent: the hips
-    # turn just as hard on an in-between, and that is the half of the dance an artist keeps missing.
-    # each limb is inked by the side it belongs to, so character-left and character-right never
-    # have to be worked out from the pose. Only the spine, head and girdles stay neutral.
-    def side_ink(k): return LIMB["R"] if k.endswith("R") else LIMB["L"]
-    segs = [(pts[a], pts[b], 5, (z(a) + z(b)) / 2, side_ink(a))          # (a, b, stroke, depth, ink)
-            for a, b in BONES if (a, b) not in GIRDLE and b not in ("toeL", "toeR")]
-    segs += [(pts["an" + k], pts["heel" + k], 4, z("an" + k), LIMB[k]) for k in ("L", "R")]
-    segs.append((hm, sm, 6, (z("hipL") + z("hipR") + z("shL") + z("shR")) / 4, color))
-    for pa, pb, sw, _, ink in sorted(segs, key=lambda s: -s[3]):   # far bones first, near drawn over
-        L.append(f'<line x1="{X(pa):.1f}" y1="{Y(pa):.1f}" x2="{X(pb):.1f}" y2="{Y(pb):.1f}" '
-                 f'stroke="{ink}" stroke-width="{sw}" stroke-linecap="round"/>')
-    # everything that needs to show a turn is a box, not a bar: a bar seen from an angle is just a
-    # shorter bar, so the turn reads as nothing. Image x,y already ARE the orthographic projection
-    # and z is in the same units, so a corner is drawn by dropping its z.
-    def P3(k): return [pts[k][0], pts[k][1], z(k)]
-
-    def box3(a, b, depth, thick, ink, back_w=2, face_w=3.5):
-        """A box with a->b as its long edge, `depth` across it horizontally and `thick` off it in
-        the remaining direction. The face turned toward the camera is drawn heavy, so which way the
-        box points is legible at strip size without reading a marker."""
-        u = [b[i] - a[i] for i in range(3)]
-        span = math.hypot(u[0], u[2])
-        d = [-u[2] / span, 0.0, u[0] / span] if span > 1e-6 else [1.0, 0.0, 0.0]
-        if d[2] > 0: d = [-d[0], 0.0, -d[2]]                  # point the depth axis at the camera
-        d = [x * depth for x in d]
-        n = [u[1] * d[2] - u[2] * d[1], u[2] * d[0] - u[0] * d[2], u[0] * d[1] - u[1] * d[0]]
-        ln = math.hypot(*n) or 1e-9
-        n = [x * thick / ln for x in n]
-        if n[1] < 0: n = [-x for x in n]                      # body of the box sits below its edge
-        def corner(t, sd, off):
-            return [a[i] + t * u[i] + sd * d[i] / 2 + off * n[i] for i in range(2)]
-        def quad(sd):
-            c4 = (corner(0, sd, 0), corner(1, sd, 0), corner(1, sd, 1), corner(0, sd, 1))
-            return "M" + "L".join(f"{X(q):.1f} {Y(q):.1f}" for q in c4) + "Z"
-        edges = "".join(f"M{X(corner(t, sd, 0)):.1f} {Y(corner(t, sd, 0)):.1f}"
-                        f"L{X(corner(t, sd, 1)):.1f} {Y(corner(t, sd, 1)):.1f}"
-                        for t in (0, 1) for sd in (-1, 1))
-        L.append(f'<path d="{quad(-1)}{edges}" fill="none" stroke="{ink}" stroke-width="{back_w}" '
-                 f'stroke-linejoin="round" opacity=".55"/>')
-        L.append(f'<path d="{quad(1)}" fill="none" stroke="{ink}" stroke-width="{face_w}" '
-                 f'stroke-linejoin="round"/>')
-
-    def girth(lk, rk):   # true width of a girdle: horizontal, so the turn cannot shrink it
-        return math.hypot(pts[rk][0] - pts[lk][0], z(rk) - z(lk)) or 1e-6
-    # the girdles are sized off the spine, not off their own width, so a turn that narrows one
-    # cannot also shrink its box and cancel the very thing it is drawn to show
-    spine = max(dist(hm, sm), 1e-6)
-    box3(P3("hipL"), P3("hipR"), 0.62 * girth("hipL", "hipR"), 0.34 * spine, GIRDLE_INK)
-    box3(P3("shL"), P3("shR"), 0.52 * girth("shL", "shR"), 0.62 * spine, GIRDLE_INK)
-
-    for sfx in ("L", "R"):
-        # foot in two parts hinged at the ball, because that hinge IS the footwork: on the ball the
-        # sole pitches up and the toes stay down, and one rigid foot box cannot show that.
-        heel, ball = P3("heel" + sfx), P3("toe" + sfx)
-        flen = max(dist(heel, ball), 1e-6)
-        box3(heel, ball, 0.55 * flen, 0.22 * flen, LIMB[sfx], 1.5, 2.5)          # sole, heel to ball
-        v = [ball[i] - heel[i] for i in range(3)]
-        # nothing is tracked past the ball, so the toes are inferred: they flatten toward the floor
-        # once the heel lifts, and otherwise carry on the line of the sole
-        if v[1] > 0: v = [v[0], v[1] * 0.25, v[2]]
-        box3(ball, [ball[i] + 0.45 * v[i] for i in range(3)],
-             0.55 * flen, 0.22 * flen, LIMB[sfx], 1.5, 2.5)                      # toes
-        # hand. The finger landmarks are the least reliable thing MediaPipe returns — on this clip
-        # the index-to-pinky span collapses to a few thousandths of body height — so they are used
-        # only when they resolve to a believable hand width, and otherwise the hand is guessed to
-        # carry on the line of the forearm, which is what an artist would assume anyway.
-        wr, el = P3("wr" + sfx), P3("el" + sfx)
-        fore = max(dist(wr, el), 1e-6)
-        seen = all(k in pts for k in ("index" + sfx, "pinky" + sfx)) and \
-            dist(pts["index" + sfx], pts["pinky" + sfx]) > 0.25 * fore
-        aim = mid(pts["index" + sfx], pts["pinky" + sfx]) if seen else None
-        v = ([aim[0] - wr[0], aim[1] - wr[1], (z("index" + sfx) + z("pinky" + sfx)) / 2 - wr[2]]
-             if seen else [wr[i] - el[i] for i in range(3)])
-        n = math.hypot(*v) or 1e-9
-        hand = 0.62 * fore
-        box3(wr, [wr[i] + v[i] / n * hand for i in range(3)],
-             0.46 * hand, 0.22 * hand, LIMB[sfx], 1.5, 2.5)
-    hc = mid(pts["earL"], pts["earR"])
-    r = 0.07 * body_scale * s
-    L.append(f'<circle cx="{X(hc):.1f}" cy="{Y(hc):.1f}" r="{r:.1f}" fill="none" stroke="{color}" stroke-width="5"/>')
-    # face: a brow across the eyes and a nose line off it, both built from the real landmarks and
-    # blown up to head size. Head roll tilts the brow, a turn foreshortens it, and the nose says
-    # which way the face points — no trigonometry, and it degrades to a stub in profile by itself.
-    em = mid(pts["eyeL"], pts["eyeR"])
-    def face_line(a, b, reach, width, both_ways=False):
-        """`a`->`b` scaled until it reaches `reach` of the head radius. Returns "" when the two
-        landmarks sit on top of each other, which is what a head turned fully away looks like."""
-        v = [b[0] - a[0], b[1] - a[1]]
-        n = math.hypot(*v)
-        if n < 1e-6: return ""
-        k = reach * r / (n * s)                       # r is in rendered units, v in image units
-        tip = [a[0] + v[0] * k, a[1] + v[1] * k]
-        tail = [a[0] - v[0] * k, a[1] - v[1] * k] if both_ways else a
-        return (f'<line x1="{X(tail):.1f}" y1="{Y(tail):.1f}" x2="{X(tip):.1f}" y2="{Y(tip):.1f}" '
-                f'stroke="{accent or color}" stroke-width="{width}" stroke-linecap="round"/>')
-    L.append(face_line(em, pts["eyeL"], 0.58, 3, both_ways=True))   # brow
-    L.append(face_line(em, pts["nose"], 0.95, 2.5))                 # nose
-    vw = w * s + 20   # w is the clip box width, unpacked at the top
-    return (f'<svg viewBox="0 0 {vw:.0f} 220" role="img" aria-label="{html.escape(label)}">'
-            f'<line x1="0" y1="{Y([0, FLOOR]):.1f}" x2="{vw:.0f}" y2="{Y([0, FLOOR]):.1f}" '
-            f'stroke="{color}" stroke-width="1" opacity=".35" stroke-dasharray="3 4"/>{"".join(L)}</svg>')
-
-
-FLOOR = 0.0  # set by compute_box() before figure_svg is called
-
-
-def compute_box(d):
-    """Bounding box (x0, y0, w, h) covering every landmark across every frame, padded — the shared
-    figure frame so all cells in a sheet sit at identical scale. Also sets the module-level FLOOR
-    (see figure_svg): the deepest sole in the clip, not d["floor_y"] (see render())."""
-    global FLOOR
-    soles = [v[1] for f in d["frames"] for k, v in f["pts"].items() if k[:4] in ("heel", "toe")]
-    FLOOR = max(soles) if soles else d["floor_y"]
-    xs = [v[0] for f in d["frames"] for v in f["pts"].values()]
-    ys = [v[1] for f in d["frames"] for v in f["pts"].values()] + [FLOOR]
-    pad = 0.08 * d["body_h"]
-    return (min(xs) - pad, min(ys) - pad, max(xs) - min(xs) + 2 * pad, max(ys) - min(ys) + 2 * pad)
 
 
 def render(a):
@@ -668,13 +546,10 @@ def render(a):
         d["pingpong"] = True
     out = a.out or os.path.join(os.path.dirname(a.json), f"{d['name']}-motion.html")
     tdir = os.path.join(os.path.dirname(a.json), "thumbs")
-    box = compute_box(d)
     rates = sorted({1, 4, d["fps"]})
 
-    figs, thumbs = [], []
+    thumbs = []
     for f in d["frames"]:
-        col = {"key": "var(--step)", "pilot": "var(--tap)"}.get(f["role"], "var(--fig)")
-        figs.append(figure_svg(f["pts"], box, d["body_h"], "var(--fig)", col, f"Frame {f['i']}: {f['cue']}"))
         tp = os.path.join(tdir, f"f{f['src']:02d}.jpg")
         thumbs.append("data:image/jpeg;base64," + base64.b64encode(open(tp, "rb").read()).decode()
                       if os.path.exists(tp) else "")
@@ -705,7 +580,7 @@ def render(a):
         SEAM=("clean — the return leg reverses the out leg" if d.get("pingpong") else d["seam"]), KEYS=", ".join(map(str, keys)) or "—", PILOTS=", ".join(map(str, pilots)) or "—",
         URL=html.escape(src["url"]), ARC=arc, ROWS=rows,
         RATES="".join(f'<button data-fps="{r}" aria-pressed="{str(r == d["fps"]).lower()}">{r} fps</button>' for r in rates),
-        FIGS=json.dumps(figs), THUMBS=json.dumps(thumbs), DATA=json.dumps(payload).replace("</", "<\\/"),
+        THUMBS=json.dumps(thumbs), DATA=json.dumps(payload).replace("</", "<\\/"),
     ).items():
         page = page.replace("{{" + k + "}}", v)
     open(out, "w").write(page)
@@ -772,14 +647,6 @@ def selftest():
     assert f["twist_deg"] < -10, f["twist_deg"]
     for k in ("hipL", "hipR", "shL", "shR"): W[k][2] = 0.0   # both girdles square: no twist word
     assert describe(P, W, floor_y=0.95, body_h=0.75)[0]["twist"] == ""
-    # a head turned fully away collapses the eye and nose landmarks onto one another: the brow and
-    # nose lines must drop out rather than divide by zero
-    P, W = pose(0.60, 0.95)
-    box = (0, 0, 1, 1)
-    faced = figure_svg(P, box, 0.75, "var(--fig)")
-    blank = {k: list(v) for k, v in P.items()}
-    blank["eyeL"] = blank["eyeR"] = blank["nose"] = list(blank["earL"])
-    assert figure_svg(blank, box, 0.75, "var(--fig)").count("<line") == faced.count("<line") - 2
     # a re-extract must not eat the hand-written arc when it lands on the same span, and must not
     # silently keep it when the span moved, because the notes then point at different poses
     import tempfile
@@ -824,11 +691,6 @@ def selftest():
     # a lifted foot is not reported: the cue already says the foot is off the floor
     f2, cue2, _ = describe(*pose(0.60, 0.80), floor_y=0.95, body_h=0.75)
     assert "character-right" not in f2["feet"], f2["feet"]
-    # the hand box falls back to the forearm line when the finger landmarks collapse, and either
-    # way every extremity still draws: 2 boxes per foot + 1 per hand == 6 boxes, 12 paths
-    flat = {k: list(v) for k, v in P.items()}
-    for k in ("indexL", "pinkyL", "indexR", "pinkyR"): flat[k] = list(flat["wr" + k[-1]])
-    assert figure_svg(flat, (0, 0, 1, 1), 0.75, "var(--fig)").count("<path") == 16   # + 2 girdles
     assert bend_word(170) == "straight" and bend_word(80) == "bent ~90°"
     assert tstamp("1:23.5") == 83.5 and tstamp("7") == 7
     # the manifest carries the capture's own seam verdict and the number behind it: CAG reads the
@@ -872,70 +734,70 @@ def bundle_manifest(d, files):
         files={rel: sha256(p) for rel, p in files})
 
 
-SPRITE_SCALE = 3   # PNG px per SVG unit at rsvg-convert time — consumers slicing the PNG need this
 
 
-def spritesheet(a):
+def pose_grid(a):
     """Grid of every frame's stick figure at identical scale, in one image — a single pose-reference
     to hand an image generator so it draws the whole sprite across every frame in one call, instead
-    of frame by frame (which is where style and proportions drift). Writes a `<name>-spritesheet.json`
-    sidecar declaring the exact grid geometry, so a consumer slices by stated numbers instead of
+    of frame by frame (which is where style and proportions drift). Writes a `<name>-pose-grid.json`
+    sidecar declaring the exact geometry, so a consumer slices by stated numbers instead of
     reverse-engineering the pixels (thresholding, finding bands, measuring gaps)."""
     d = json.load(open(a.json))
-    box = compute_box(d)
+    import cv2, numpy as np
     n = len(d["frames"])
-    s = 200 / box[3]
-    cell_w, cell_h, gap = box[2] * s + 20, 220, 16
-    label_h = 0 if a.no_labels else 20
+    tdir = os.path.join(os.path.dirname(a.json), "thumbs")
+    thumbs = [os.path.join(tdir, f"f{f['i']:02d}.jpg") for f in d["frames"]]
+    missing = [p for p in thumbs if not os.path.exists(p)]
+    if missing:
+        sys.exit(f"pose-grid needs one traced frame per motion frame; missing {len(missing)} "
+                 f"(first: {os.path.basename(missing[0])}). Re-run extract.")
+    imgs = [cv2.imread(p) for p in thumbs]
+    cell_w, cell_h = max(i.shape[1] for i in imgs), max(i.shape[0] for i in imgs)
+    gap = 8
+    label_h = 0 if a.no_labels else 22
     tile_w, tile_h = cell_w + gap, cell_h + label_h + gap
-    # bias columns by the cell's own aspect so the sheet comes out roughly square regardless of
-    # whether the figure reads tall (arms in) or wide (a lunge, limbs flung out)
-    cols = a.cols or max(1, round(math.sqrt(n * tile_h / tile_w)))
-    rows = math.ceil(n / cols)
-    role_ink = {"key": "#FF74A8", "pilot": "#A8A2FF"}
-    # figure_svg inks limbs/girdle with CSS custom properties (var(--limb-l) etc.) that only resolve
-    # inside the HTML sheet's own stylesheet. This SVG stands alone, so those strokes paint nothing
-    # unless resolved to literal hex here — same values as templates/sheet.html's :root.
-    themevars = {"var(--limb-l)": "#4FD1C0", "var(--limb-r)": "#C9A0E8", "var(--girdle)": "#F0A05A"}
-    cells = []
-    for f in d["frames"]:
-        r, c = divmod(f["i"], cols)
-        ink = role_ink.get(f["role"], "#9A96AC")
-        fig = figure_svg(f["pts"], box, d["body_h"], "#C9C5DA", ink, f"Frame {f['i']}: {f['cue']}")
-        inner = fig.split(">", 1)[1].rsplit("</svg>", 1)[0]   # strip figure_svg's own <svg> wrapper
-        for var, hexval in themevars.items(): inner = inner.replace(var, hexval)
-        label = ('' if a.no_labels else
-                 f'<text x="2" y="14" font-family="monospace" font-size="13" fill="{ink}">{f["i"]:02d}</text>')
-        cells.append(
-            f'<g transform="translate({c * tile_w},{r * tile_h})">{label}'
-            f'<g transform="translate(0,{label_h})">{inner}</g></g>')
-    # every tile gets its full width/height; only the trailing gap past the last column/row is
-    # trimmed off the canvas, so no figure is ever cut — the grid just has no margin on its far edge.
-    tw, th = cols * tile_w - gap, rows * tile_h - gap
-    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {tw:.0f} {th:.0f}">'
-           f'<rect width="100%" height="100%" fill="#14131C"/>{"".join(cells)}</svg>')
-    out = a.out or os.path.join(os.path.dirname(a.json), f"{d['name']}-spritesheet.svg")
-    open(out, "w").write(svg)
-    png = os.path.splitext(out)[0] + ".png"
-    try:
-        subprocess.run(["rsvg-convert", "-w", str(round(tw * SPRITE_SCALE)), "-o", png, out], check=True)
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        png = None   # ponytail: no rsvg-convert on PATH -> SVG only, install it for a PNG
+    # Four across and twelve to a sheet is cag's own render grid (FIGURES_PER_ROW, SHEET_FRAMES), so
+    # a sheet here is exactly one of its generation calls. A longer motion chunks across several
+    # sheets rather than growing one, because that is how it will be drawn either way.
+    cols = a.cols or 4
+    per_sheet = 12
+    # BGR, matching templates/sheet.html's :root — key #FF74A8, pilot #A8A2FF, otherwise --muted.
+    role_ink = {"key": (168, 116, 255), "pilot": (255, 162, 168)}
+    out = a.out or os.path.join(os.path.dirname(a.json), f"{d['name']}-pose-grid.png")
+    stem = out[:-4] if out.endswith(".png") else out
+    chunks = [range(s, min(s + per_sheet, n)) for s in range(0, n, per_sheet)]
+    written = []
+    for c_i, chunk in enumerate(chunks):
+        rows = math.ceil(len(chunk) / cols)
+        sheet = np.full((rows * tile_h - gap, cols * tile_w - gap, 3), (28, 19, 20), np.uint8)
+        for slot, fi in enumerate(chunk):
+            f, im = d["frames"][fi], imgs[fi]
+            r, c = divmod(slot, cols)
+            x, y = c * tile_w, r * tile_h
+            if not a.no_labels:
+                cv2.putText(sheet, f"{f['i']:02d}", (x + 3, y + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                            role_ink.get(f["role"], (172, 150, 154)), 1, cv2.LINE_AA)
+            sheet[y + label_h:y + label_h + im.shape[0], x:x + im.shape[1]] = im
+        # one chunk keeps the plain name; several get numbered.
+        path = f"{stem}.png" if len(chunks) == 1 else f"{stem}-{c_i:02d}.png"
+        cv2.imwrite(path, sheet)
+        written.append(path)
     layout = dict(
-        cols=cols, rows=rows, frame_count=n, scale=SPRITE_SCALE,
-        # SVG units — multiply by `scale` for PNG pixels. Frame i sits at row i//cols, col i%cols,
-        # tile origin (col*tile_w, row*tile_h) from the sheet's top-left (no outer margin). The
-        # figure itself is drawn at (0, label_h)-(cell_w, label_h+cell_h) within that tile; the
-        # frame-number label (absent when built with --no-labels) occupies (0,0)-(*, label_h).
-        tile_w=round(tile_w, 2), tile_h=round(tile_h, 2),
-        cell_w=round(cell_w, 2), cell_h=round(cell_h, 2),
-        label_h=label_h, gap=round(gap, 2),
-        sheet_w=round(tw, 2), sheet_h=round(th, 2), labeled=not a.no_labels)
-    sidecar = os.path.splitext(out)[0] + ".json"
+        cols=cols, rows=math.ceil(min(per_sheet, n) / cols), frame_count=n, scale=1,
+        # PNG pixels already. Frame i sits on sheet i//12, at slot i%12: row slot//cols, col
+        # slot%cols, tile origin (col*tile_w, row*tile_h) from the top-left, no outer margin. The
+        # photograph occupies (0, label_h)-(cell_w, label_h+cell_h) inside that tile; the
+        # frame-number band (absent with --no-labels) occupies (0,0)-(*, label_h).
+        tile_w=tile_w, tile_h=tile_h, cell_w=cell_w, cell_h=cell_h,
+        label_h=label_h, gap=gap, per_sheet=per_sheet, sheets=len(chunks),
+        sheet_w=cols * tile_w - gap, sheet_h=math.ceil(min(per_sheet, n) / cols) * tile_h - gap,
+        labeled=not a.no_labels, source="thumbs")
+    sidecar = f"{stem}.json"
     json.dump(layout, open(sidecar, "w"), indent=1)
-    print(f"{out}\n{png or '(rsvg-convert not found — install it for a PNG)'}\n{sidecar}")
-    print(f"{cols}x{rows} grid, {n} frames, {cell_w:.0f}x{cell_h:.0f}px cells (x{SPRITE_SCALE} in the PNG)")
-    return out
+    print("\n".join(written) + f"\n{sidecar}")
+    print(f"{cols} across, {per_sheet} per image, {len(chunks)} image(s), {n} frames, "
+          f"{cell_w}x{cell_h}px cells")
+    return written[0]
 
 
 def export(a):
@@ -951,17 +813,19 @@ def export(a):
     if os.path.isdir(tdir):
         files += [(f"thumbs/{n}", os.path.join(tdir, n)) for n in sorted(os.listdir(tdir))
                   if os.path.isfile(os.path.join(tdir, n))]
-    # spritesheet is optional — only `spritesheet` produces it, and not every capture needs one —
+    # the pose grid is optional — only `pose-grid` produces it, and not every capture needs one —
     # so it rides along when found next to the json rather than requiring its own export flag.
-    for ext in (".svg", ".png"):
-        p = os.path.join(src, f"{d['name']}-spritesheet{ext}")
-        if os.path.exists(p): files.append((os.path.basename(p), p))
+    # glob, not an exact name: a motion longer than one image chunks into -00.png, -01.png … and an
+    # exact `<name>-pose-grid.png` matched none of them, so the images silently never reached the
+    # bundle while the manifest still described them.
+    for p in sorted(glob.glob(os.path.join(src, f"{d['name']}-pose-grid*.png"))):
+        files.append((os.path.basename(p), p))
     man = bundle_manifest(d, files)
-    # the spritesheet's grid geometry (cols/rows/tile pitch/label band) rides in the manifest too,
-    # not just as a sidecar file, so a consumer slices the PNG by declared numbers instead of
-    # measuring pixels back out of it.
-    layout_p = os.path.join(src, f"{d['name']}-spritesheet.json")
-    if os.path.exists(layout_p): man["spritesheet"] = json.load(open(layout_p))
+    # the pose grid's geometry (cols/rows/tile pitch/label band) rides in the manifest too, not
+    # just as a sidecar file, so a consumer slices the PNG by declared numbers instead of measuring
+    # pixels back out of it.
+    layout_p = os.path.join(src, f"{d['name']}-pose-grid.json")
+    if os.path.exists(layout_p): man["pose_grid"] = json.load(open(layout_p))
     # Bundles land in exports/ beside work/, not in the capture dir: one place to hand off from. The
     # name carries frame count and fps — exports/ is flat, and two cuts of one move differ only there.
     exports = os.path.join(os.path.dirname(os.path.dirname(src)), "exports")
@@ -1003,14 +867,14 @@ def main():
     r = sub.add_parser("render"); r.add_argument("json"); r.add_argument("--out")
     r.add_argument("--template", help=f"sheet template to render into (default {TEMPLATE_PATH})")
     r.add_argument("--pingpong", action="store_true", help="walk the frames out and back (0..N-1..1) so the seam is the motion reversed")
-    sp = sub.add_parser("spritesheet"); sp.add_argument("json"); sp.add_argument("--out")
+    sp = sub.add_parser("pose-grid"); sp.add_argument("json"); sp.add_argument("--out")
     sp.add_argument("--cols", type=int, help="grid columns (default: near-square given the figure's own aspect)")
     sp.add_argument("--no-labels", action="store_true", help="omit the per-cell frame-number text (nothing for an image generator to copy into the art)")
     x = sub.add_parser("export"); x.add_argument("json"); x.add_argument("--out")
     x.add_argument("--sheet", help="motion sheet HTML (default <name>-motion.html beside the json)")
     sub.add_parser("selftest")
     a = ap.parse_args()
-    {"extract": extract, "render": render, "spritesheet": spritesheet, "export": export,
+    {"extract": extract, "render": render, "pose-grid": pose_grid, "export": export,
      "selftest": lambda _: selftest()}[a.cmd](a)
 
 

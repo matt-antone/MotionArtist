@@ -6,7 +6,7 @@ Everything else is docs and ignored scratch.
 
 ```
 motion-artist/SKILL.md                 the skill an agent loads
-motion-artist/scripts/motion_artist.py extract | render | export | selftest  (single file, ~590 lines)
+motion-artist/scripts/motion_artist.py extract | render | pose-grid | export | selftest  (single file, ~1030 lines)
 motion-artist/templates/sheet.html     the motion sheet: markup, CSS and player, with {{PLACEHOLDER}}s
                                        render() fills. Edit the sheet's design here, not in the script
 .claude/skills/motion-artist           symlink to motion-artist/, so the skill loads in this repo —
@@ -46,12 +46,15 @@ after linking; skills are read at startup.
 
 ## The pipeline
 
-Four steps, in order. A capture is not finished until step 4.
+Five steps, in order. A capture is not finished until step 5.
 
 1. `extract` — video → `work/<name>/motion.json` + `thumbs/`, and a printed frame table.
 2. Author the arc — fill `arc`, and per-frame `note` only where the generated cue misses intent.
 3. `render` — `motion.json` → the self-contained HTML motion sheet.
-4. `export` — zip the json, sheet, thumbs and a generated `manifest.json` with a SHA-256 per file.
+4. `pose-grid` — `thumbs/` → the pose grid: traced frames as pose cards, four across, twelve per
+   image. Traced frames are the only pose reference; nothing in this repo draws a figure.
+5. `export` — zip the motion sheet, the HTML, the traced frames, any pose grid images and a
+   generated `manifest.json` with a SHA-256 per file.
    The printed bundle path and zip digest are what a KaraokeParty-Graphics job input references.
 
 Every bundle lands in `exports/` at the repo root, one flat directory of
@@ -68,6 +71,25 @@ rescaled to the same units as x, negative toward the camera, hips at zero. Each 
 `depth` = `{near_side, limbs}` (`near`/`far`/`level` per `legL`/`legR`/`armL`/`armR`), and the cue
 says which leg is behind whenever the legs overlap in the image. A consumer that sorts bones by
 mean z and draws the far ones first no longer has to guess.
+
+## Vocabulary
+
+**The term table lives in `motion-artist/SKILL.md`.** Read it before naming anything. It is there
+rather than here because the skill ships standalone — `motion-artist/` is symlinked into a skills
+directory without this file — and two copies of a glossary drift.
+
+The rules that bind work in this repo:
+
+- **Never write "sprite sheet", "spritesheet" or "skeleton"**, in code, filenames, manifest keys,
+  comments, commit messages or conversation. All three are retired. "Sheet" unqualified and "grid"
+  unqualified are banned too: between them they named eight different objects across this repo and
+  the character generator's, which produced three wrong conclusions in one session and cost a
+  feature that had been asked for twice.
+- The pose images this repo makes are a **pose grid** of **pose cards** built from **traced frames**.
+  The finished drawn character is the consumer's **frame sheet**, and we never produce one.
+- `motion sheet` is the only allowed bare "sheet", and it means the contents of `motion.json`.
+- **Agree a term before using it.** If something here has no name, name it in SKILL.md's table first,
+  and tell the consumer's side, rather than reaching for "sheet" again.
 
 ## Verifying a change
 
