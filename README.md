@@ -88,6 +88,8 @@ frames, against its own batch size. The grid here is for handing a generator the
 generated
 `manifest.json` (fps, frame count, playback, view, seam, source, and a SHA-256 per file), and
 prints the bundle path and the zip's SHA-256 — the pair a KaraokeParty-Graphics motion-director
-job input references. It warns if `arc` is empty or any frame has no pose.
+job input references. It warns if `arc` is empty or any frame has no pose. Two cuts of one
+move get two names, never one overwritten file, so a copy into a consuming repo removes the bundle
+it supersedes in the same step.
 
 Outputs live under `work/` (git-ignored, as are downloaded videos).

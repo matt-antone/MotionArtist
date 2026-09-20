@@ -65,6 +65,9 @@ construction, and the same string is the bundle directory, the manifest `name` a
 `motion.json` `name`, so a bundle cannot advertise one name and say another inside.
 Hand off that zip as it is. Do not unpack it, and do not copy loose `motion.json`/`thumbs/` into a
 consuming repo — the zip is the unit, and its `manifest.json` is what verifies it.
+Copying a re-cut in supersedes an older bundle of the same move: delete that one in the same step.
+Because the name carries the trace, the re-cut lands *beside* its predecessor instead of over it,
+and a spec still pointed at the stale zip renders the old motion under the new bundle's digest.
 
 Read the printed table, not `motion.json` — the JSON is large and mostly landmarks. Never hand-edit
 `cue`, `role`, `pts`, `depth` or `t`; they are extractor output. Re-run `extract` instead.
