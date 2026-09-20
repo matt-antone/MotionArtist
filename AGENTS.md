@@ -58,8 +58,11 @@ Five steps, in order. A capture is not finished until step 5.
    The printed bundle path and zip digest are what a KaraokeParty-Graphics job input references.
 
 Every bundle lands in `exports/` at the repo root, one flat directory of
-`<name>-<frames>f-<fps>fps-motion-source.zip` — the name states the playback the capture was cut
-for, so two captures of the same move at different rates never collide.
+`<name>-<video id>-<start>s-<frames>f-<fps>fps-motion-source.zip`. The label alone is not an
+identifier — "shuffle" is a genre, and two different dances landed on it once and one silently
+overwrote the other on a directory copy. The video id and start second make the name unique by
+construction, and the same string is the bundle directory, the manifest `name` and the shipped
+`motion.json` `name`, so a bundle cannot advertise one name and say another inside.
 Hand off that zip as it is. Do not unpack it, and do not copy loose `motion.json`/`thumbs/` into a
 consuming repo — the zip is the unit, and its `manifest.json` is what verifies it.
 
