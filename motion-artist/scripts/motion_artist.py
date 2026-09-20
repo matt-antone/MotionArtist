@@ -92,28 +92,56 @@ def describe(P, W, floor_y, body_h):
                  limbs={k: nearness(v) for k, v in zl.items()})
 
     # arms
-    arms = {}
     for s, name in (("L", "character-left"), ("R", "character-right")):
         wr, sh = P["wr" + s], P["sh" + s]
+        # "chest/waist" alone spanned the whole torso — 56 of 128 arm-frames across the two
+        # reference captures, 22 of them a hand level with the shoulder being called waist-high.
+        # Subdivide it by where the wrist sits between shoulder (0) and hip (1); the cuts are the
+        # two real gaps in that distribution, and splitting here adds no word-change that happens
+        # while the wrist is standing still. The outer bounds are left exactly as they were.
+        drop = (wr[1] - sh[1]) / max(hip_mid[1] - sh[1], 1e-6)
         if wr[1] < P["nose"][1] - 0.02 * body_h: h = "overhead"
         elif wr[1] < sh[1] - 0.03 * body_h: h = "raised above shoulder"
-        elif wr[1] < hip_mid[1] - 0.03 * body_h: h = "at chest/waist height"
+        elif wr[1] < hip_mid[1] - 0.03 * body_h:
+            h = ("at shoulder height" if drop < 0.16 else
+                 "at chest height" if drop < 0.44 else "at waist height")
         else: h = "low by the hip"
         bend = angle3(W["sh" + s], W["el" + s], W["wr" + s])
-        # wrist crossing torso midline (image x), only meaningful when facing camera-ish
-        cross = ""
+        # Lateral reach. Height and elbow alone leave the wrist anywhere from across the chest to
+        # flung out sideways, and a generator draws only what the words name. Measure the wrist from
+        # its OWN shoulder along the outward direction, in shoulder widths, so it survives scale:
+        # negative is inward (toward and past the midline), positive is outward. Taking the outward
+        # direction from the shoulder itself, rather than from the view, keeps the sign right
+        # whichever way the body faces. Image x only, so it needs a camera-ish view like `cross` did.
+        out_dir = 1.0 if sh[0] >= sh_mid[0] else -1.0
+        reach = (wr[0] - sh[0]) * out_dir / sh_w
+        # Cuts are measured, not guessed: over both reference captures (128 arm-frames) the gap at
+        # -0.55 is the widest in the whole distribution and falls where the wrist passes the midline,
+        # and -0.35 sits in the next gap. +0.50 is the one outward cut that never changed the word
+        # while the wrist was standing still — cutting higher (0.91, 1.00) is stabler only because it
+        # collapses 97% of frames into one word, which is the failure this term exists to fix.
+        # Whether an arm is level with or in front of the torso is a z question and z is the weak
+        # axis, so it is named only where `cross` already trusted it: a wrist across the body.
+        lateral = ""
         if front_ish:
-            other = P["shR" if s == "L" else "shL"]
-            if (wr[0] - other[0]) * (sh[0] - other[0]) < 0 and dist(wr, sh_mid) < 1.2 * sh_w:
-                cross = ", crossing the body" + {"near": " in front of the torso",
+            if reach < -0.55:
+                lateral = ", across the body" + {"near": " in front of the torso",
                                                  "far": " behind the torso"}.get(nearness(zl["arm" + s]), "")
-        arms[s] = dict(height=h, elbow=round(bend))
-        f["arm_" + s] = f"{name} arm {h}, elbow {bend_word(bend)}{cross}"
+            elif reach < -0.35: lateral = ", inside the shoulder"
+            elif reach < 0.50: lateral = ", by the side"
+            else: lateral = ", out to the side"
+        # the number behind the word, for anyone A/B-ing the cue against the render
+        f["reach_" + s] = round(reach, 2)
+        f["arm_" + s] = f"{name} arm {h}, elbow {bend_word(bend)}{lateral}"
 
     # legs / weight / airborne
     anL, anR = P["anL"], P["anR"]
     lift = 0.045 * body_h
-    plantedL, plantedR = anL[1] > floor_y - lift, anR[1] > floor_y - lift
+    # planted is a SOLE question, not an ankle one: on the balls of the feet the ankle sits well
+    # above its flat-footed height while the toe is still on the ground, and an ankle-only test
+    # reads that as airborne. Use whichever of heel/toe sits lower (larger y = closer to the floor).
+    soleL, soleR = max(P["heelL"][1], P["toeL"][1]), max(P["heelR"][1], P["toeR"][1])
+    plantedL, plantedR = soleL > floor_y - lift, soleR > floor_y - lift
     kneeL, kneeR = angle3(W["hipL"], W["knL"], W["anL"]), angle3(W["hipR"], W["knR"], W["anR"])
     f["knee_L"], f["knee_R"] = round(kneeL), round(kneeR)
     f["airborne"] = not plantedL and not plantedR
@@ -326,12 +354,15 @@ def extract(a):
                 for f in frames:
                     f[key][k] = [m[d] + a.exaggerate * (f[key][k][d] - m[d]) for d in range(dims)]
 
-    # clip-wide floor and body height; per-frame features
-    floor = sorted(max(f["P"]["anL"][1], f["P"]["anR"][1]) for f in frames)[int(0.85 * (len(frames) - 1))]
+    # clip-wide floor and body height; per-frame features. Floor is calibrated against the SOLE
+    # (heel or toe, whichever sits lower) rather than the ankle — see describe() — so a dancer who
+    # stays on the balls of her feet the whole clip does not read as airborne throughout.
+    def sole_y(f): return max(f["P"]["heelL"][1], f["P"]["toeL"][1], f["P"]["heelR"][1], f["P"]["toeR"][1])
+    floor = sorted(sole_y(f) for f in frames)[int(0.85 * (len(frames) - 1))]
     body_h = sorted(floor - min(f["P"]["earL"][1], f["P"]["earR"][1]) for f in frames)[len(frames) // 2]
     for f in frames:
-        # a moving camera has no fixed floor: with --stabilize the lower ankle counts as planted
-        fl = max(f["P"]["anL"][1], f["P"]["anR"][1]) if a.stabilize else floor
+        # a moving camera has no fixed floor: with --stabilize the lower sole counts as planted
+        fl = sole_y(f) if a.stabilize else floor
         f["features"], f["cue"], f["depth"] = describe(f["P"], f["W"], fl, body_h)
 
     # motion energy -> keys (local minima: holds/extremes) and pilots (local maxima: fastest transitions)
@@ -381,6 +412,12 @@ def extract(a):
     print(kept)
     print(f"{jp}\n{title} | span {start:.2f}-{end:.2f}s | {a.frames}f @ {a.fps}fps | {a.playback} | "
           f"view {view} | source speed x{speed:.2f} | seam {doc['seam']} | missing {missing}")
+    # loop rule: the seam is what the artist draws over and over, so its two ends should be
+    # something a figure can hold — grounded, not mid-air — or the loop point has no stable pose.
+    if a.playback == "loop" and (doc["frames"][0]["features"]["airborne"] or doc["frames"][-1]["features"]["airborne"]):
+        print(f"warning: loop boundary is airborne (frame 0 {'airborne' if doc['frames'][0]['features']['airborne'] else 'grounded'}, "
+              f"frame {a.frames - 1} {'airborne' if doc['frames'][-1]['features']['airborne'] else 'grounded'}) — "
+              f"re-run with a different --start/--search window for a loop that lands on its feet")
     for f in doc["frames"]:
         print(f"{f['i']:>3} {f['t']:6.2f}s {f['role']:<9} {f['pace']:<6} {f['cue']}")
     return jp
@@ -605,11 +642,23 @@ def figure_svg(pts, box, body_scale, color, accent=None, label=""):
             f'stroke="{color}" stroke-width="1" opacity=".35" stroke-dasharray="3 4"/>{"".join(L)}</svg>')
 
 
-FLOOR = 0.0  # set by render() before figure_svg is called
+FLOOR = 0.0  # set by compute_box() before figure_svg is called
+
+
+def compute_box(d):
+    """Bounding box (x0, y0, w, h) covering every landmark across every frame, padded — the shared
+    figure frame so all cells in a sheet sit at identical scale. Also sets the module-level FLOOR
+    (see figure_svg): the deepest sole in the clip, not d["floor_y"] (see render())."""
+    global FLOOR
+    soles = [v[1] for f in d["frames"] for k, v in f["pts"].items() if k[:4] in ("heel", "toe")]
+    FLOOR = max(soles) if soles else d["floor_y"]
+    xs = [v[0] for f in d["frames"] for v in f["pts"].values()]
+    ys = [v[1] for f in d["frames"] for v in f["pts"].values()] + [FLOOR]
+    pad = 0.08 * d["body_h"]
+    return (min(xs) - pad, min(ys) - pad, max(xs) - min(xs) + 2 * pad, max(ys) - min(ys) + 2 * pad)
 
 
 def render(a):
-    global FLOOR
     d = json.load(open(a.json))
     for f in d["frames"]: f.setdefault("src", f["i"])   # which source frame each cell draws from
     # The sheet holds exactly the frames the animation was specified with — one cell each, no more.
@@ -619,16 +668,7 @@ def render(a):
         d["pingpong"] = True
     out = a.out or os.path.join(os.path.dirname(a.json), f"{d['name']}-motion.html")
     tdir = os.path.join(os.path.dirname(a.json), "thumbs")
-    # The drawn floor is the deepest sole in the clip, not d["floor_y"]: that one is an 85th
-    # percentile of the lower ANKLE, which the heel and toe hang below, so drawing it put a line
-    # through every foot in the set. It stays the reference the pose logic is calibrated against —
-    # airborne and planted compare ankles to it — but it is not where the ground is.
-    soles = [v[1] for f in d["frames"] for k, v in f["pts"].items() if k[:4] in ("heel", "toe")]
-    FLOOR = max(soles) if soles else d["floor_y"]
-    xs = [v[0] for f in d["frames"] for v in f["pts"].values()]
-    ys = [v[1] for f in d["frames"] for v in f["pts"].values()] + [FLOOR]
-    pad = 0.08 * d["body_h"]
-    box = (min(xs) - pad, min(ys) - pad, max(xs) - min(xs) + 2 * pad, max(ys) - min(ys) + 2 * pad)
+    box = compute_box(d)
     rates = sorted({1, 4, d["fps"]})
 
     figs, thumbs = [], []
@@ -832,6 +872,72 @@ def bundle_manifest(d, files):
         files={rel: sha256(p) for rel, p in files})
 
 
+SPRITE_SCALE = 3   # PNG px per SVG unit at rsvg-convert time — consumers slicing the PNG need this
+
+
+def spritesheet(a):
+    """Grid of every frame's stick figure at identical scale, in one image — a single pose-reference
+    to hand an image generator so it draws the whole sprite across every frame in one call, instead
+    of frame by frame (which is where style and proportions drift). Writes a `<name>-spritesheet.json`
+    sidecar declaring the exact grid geometry, so a consumer slices by stated numbers instead of
+    reverse-engineering the pixels (thresholding, finding bands, measuring gaps)."""
+    d = json.load(open(a.json))
+    box = compute_box(d)
+    n = len(d["frames"])
+    s = 200 / box[3]
+    cell_w, cell_h, gap = box[2] * s + 20, 220, 16
+    label_h = 0 if a.no_labels else 20
+    tile_w, tile_h = cell_w + gap, cell_h + label_h + gap
+    # bias columns by the cell's own aspect so the sheet comes out roughly square regardless of
+    # whether the figure reads tall (arms in) or wide (a lunge, limbs flung out)
+    cols = a.cols or max(1, round(math.sqrt(n * tile_h / tile_w)))
+    rows = math.ceil(n / cols)
+    role_ink = {"key": "#FF74A8", "pilot": "#A8A2FF"}
+    # figure_svg inks limbs/girdle with CSS custom properties (var(--limb-l) etc.) that only resolve
+    # inside the HTML sheet's own stylesheet. This SVG stands alone, so those strokes paint nothing
+    # unless resolved to literal hex here — same values as templates/sheet.html's :root.
+    themevars = {"var(--limb-l)": "#4FD1C0", "var(--limb-r)": "#C9A0E8", "var(--girdle)": "#F0A05A"}
+    cells = []
+    for f in d["frames"]:
+        r, c = divmod(f["i"], cols)
+        ink = role_ink.get(f["role"], "#9A96AC")
+        fig = figure_svg(f["pts"], box, d["body_h"], "#C9C5DA", ink, f"Frame {f['i']}: {f['cue']}")
+        inner = fig.split(">", 1)[1].rsplit("</svg>", 1)[0]   # strip figure_svg's own <svg> wrapper
+        for var, hexval in themevars.items(): inner = inner.replace(var, hexval)
+        label = ('' if a.no_labels else
+                 f'<text x="2" y="14" font-family="monospace" font-size="13" fill="{ink}">{f["i"]:02d}</text>')
+        cells.append(
+            f'<g transform="translate({c * tile_w},{r * tile_h})">{label}'
+            f'<g transform="translate(0,{label_h})">{inner}</g></g>')
+    # every tile gets its full width/height; only the trailing gap past the last column/row is
+    # trimmed off the canvas, so no figure is ever cut — the grid just has no margin on its far edge.
+    tw, th = cols * tile_w - gap, rows * tile_h - gap
+    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {tw:.0f} {th:.0f}">'
+           f'<rect width="100%" height="100%" fill="#14131C"/>{"".join(cells)}</svg>')
+    out = a.out or os.path.join(os.path.dirname(a.json), f"{d['name']}-spritesheet.svg")
+    open(out, "w").write(svg)
+    png = os.path.splitext(out)[0] + ".png"
+    try:
+        subprocess.run(["rsvg-convert", "-w", str(round(tw * SPRITE_SCALE)), "-o", png, out], check=True)
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        png = None   # ponytail: no rsvg-convert on PATH -> SVG only, install it for a PNG
+    layout = dict(
+        cols=cols, rows=rows, frame_count=n, scale=SPRITE_SCALE,
+        # SVG units — multiply by `scale` for PNG pixels. Frame i sits at row i//cols, col i%cols,
+        # tile origin (col*tile_w, row*tile_h) from the sheet's top-left (no outer margin). The
+        # figure itself is drawn at (0, label_h)-(cell_w, label_h+cell_h) within that tile; the
+        # frame-number label (absent when built with --no-labels) occupies (0,0)-(*, label_h).
+        tile_w=round(tile_w, 2), tile_h=round(tile_h, 2),
+        cell_w=round(cell_w, 2), cell_h=round(cell_h, 2),
+        label_h=label_h, gap=round(gap, 2),
+        sheet_w=round(tw, 2), sheet_h=round(th, 2), labeled=not a.no_labels)
+    sidecar = os.path.splitext(out)[0] + ".json"
+    json.dump(layout, open(sidecar, "w"), indent=1)
+    print(f"{out}\n{png or '(rsvg-convert not found — install it for a PNG)'}\n{sidecar}")
+    print(f"{cols}x{rows} grid, {n} frames, {cell_w:.0f}x{cell_h:.0f}px cells (x{SPRITE_SCALE} in the PNG)")
+    return out
+
+
 def export(a):
     """Zip motion.json + the sheet + thumbs with a SHA-256 manifest, ready for KP-Graphics."""
     jp = a.json
@@ -845,7 +951,17 @@ def export(a):
     if os.path.isdir(tdir):
         files += [(f"thumbs/{n}", os.path.join(tdir, n)) for n in sorted(os.listdir(tdir))
                   if os.path.isfile(os.path.join(tdir, n))]
+    # spritesheet is optional — only `spritesheet` produces it, and not every capture needs one —
+    # so it rides along when found next to the json rather than requiring its own export flag.
+    for ext in (".svg", ".png"):
+        p = os.path.join(src, f"{d['name']}-spritesheet{ext}")
+        if os.path.exists(p): files.append((os.path.basename(p), p))
     man = bundle_manifest(d, files)
+    # the spritesheet's grid geometry (cols/rows/tile pitch/label band) rides in the manifest too,
+    # not just as a sidecar file, so a consumer slices the PNG by declared numbers instead of
+    # measuring pixels back out of it.
+    layout_p = os.path.join(src, f"{d['name']}-spritesheet.json")
+    if os.path.exists(layout_p): man["spritesheet"] = json.load(open(layout_p))
     # Bundles land in exports/ beside work/, not in the capture dir: one place to hand off from. The
     # name carries frame count and fps — exports/ is flat, and two cuts of one move differ only there.
     exports = os.path.join(os.path.dirname(os.path.dirname(src)), "exports")
@@ -887,11 +1003,15 @@ def main():
     r = sub.add_parser("render"); r.add_argument("json"); r.add_argument("--out")
     r.add_argument("--template", help=f"sheet template to render into (default {TEMPLATE_PATH})")
     r.add_argument("--pingpong", action="store_true", help="walk the frames out and back (0..N-1..1) so the seam is the motion reversed")
+    sp = sub.add_parser("spritesheet"); sp.add_argument("json"); sp.add_argument("--out")
+    sp.add_argument("--cols", type=int, help="grid columns (default: near-square given the figure's own aspect)")
+    sp.add_argument("--no-labels", action="store_true", help="omit the per-cell frame-number text (nothing for an image generator to copy into the art)")
     x = sub.add_parser("export"); x.add_argument("json"); x.add_argument("--out")
     x.add_argument("--sheet", help="motion sheet HTML (default <name>-motion.html beside the json)")
     sub.add_parser("selftest")
     a = ap.parse_args()
-    {"extract": extract, "render": render, "export": export, "selftest": lambda _: selftest()}[a.cmd](a)
+    {"extract": extract, "render": render, "spritesheet": spritesheet, "export": export,
+     "selftest": lambda _: selftest()}[a.cmd](a)
 
 
 if __name__ == "__main__":
