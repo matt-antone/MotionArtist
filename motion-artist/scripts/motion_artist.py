@@ -492,7 +492,7 @@ h1{font-size:clamp(30px,5vw,44px);font-weight:800;letter-spacing:-.02em;line-hei
 .figbox,.refbox{background:var(--sunk);border-radius:3px;display:grid;place-items:center;padding:12px 6px;position:relative;min-height:240px}
 .figbox svg{width:100%;height:auto;max-height:300px;display:block}
 .figbox.mirrored svg{transform:scaleX(-1)}
-.refbox img{max-height:300px;border-radius:2px}
+.refbox img{height:300px;width:auto;object-fit:contain;border-radius:2px}  /* fixed: an unsized img collapses between src swaps and the stage jumps */
 .refbox.mirrored img{transform:scaleX(-1)}
 .tag{position:absolute;left:10px;bottom:9px;font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
 .readout{display:flex;flex-direction:column;gap:14px;min-width:0}
@@ -618,7 +618,14 @@ document.getElementById("mirrorBtn").addEventListener("click",function(){mirrore
 document.getElementById("figbox").classList.toggle("mirrored",mirrored);document.getElementById("refbox").classList.toggle("mirrored",mirrored);
 document.getElementById("mirrorTag").textContent=mirrored?"Mirrored (sides in text unchanged)":"As filmed"});
 document.addEventListener("keydown",function(e){if(e.key==="ArrowRight"){stop();go(idx+1)}else if(e.key==="ArrowLeft"){stop();go(idx-1)}else if(e.key===" "&&e.target===document.body){e.preventDefault();timer?stop():start()}});
-render();if(window.matchMedia("(prefers-reduced-motion: reduce)").matches)stop();else start();
+// The cue and note are a different length on every frame, so the stage row would grow and shrink
+// under playback and shove the page around. Walk the frames once, reserve the tallest, hold it.
+var HOLD=[stage,document.getElementById("cue"),document.getElementById("note")];
+function reserve(){var was=idx,mx=HOLD.map(function(e){e.style.minHeight="";return 0});
+for(var k=0;k<F.length;k++){go(k);HOLD.forEach(function(e,j){mx[j]=Math.max(mx[j],e.getBoundingClientRect().height)})}
+go(was);HOLD.forEach(function(e,j){e.style.minHeight=Math.ceil(mx[j])+"px"})}
+var rt=null;window.addEventListener("resize",function(){clearTimeout(rt);rt=setTimeout(reserve,150)});
+render();reserve();if(window.matchMedia("(prefers-reduced-motion: reduce)").matches)stop();else start();
 })();
 </script>
 """
