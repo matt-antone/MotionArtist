@@ -15,7 +15,7 @@ Demo sheets:
 ```
 motion-artist/
   SKILL.md                 # the skill (what Claude does, step by step)
-  scripts/motion_artist.py # extract (video → motion.json + thumbs) and render (motion.json → HTML)
+  scripts/motion_artist.py # extract (video → motion.json + thumbs), render (→ HTML), export (→ bundle)
 ```
 
 ## Install
@@ -42,6 +42,7 @@ Or by hand:
 python3 motion-artist/scripts/motion_artist.py extract "https://www.youtube.com/shorts/…" \
   --fps 4 --frames 16 --start 0:16 --end 0:20 --name dance
 python3 motion-artist/scripts/motion_artist.py render work/dance/motion.json
+python3 motion-artist/scripts/motion_artist.py export work/dance/motion.json
 ```
 
 | Flag | Meaning |
@@ -56,6 +57,7 @@ python3 motion-artist/scripts/motion_artist.py render work/dance/motion.json
 | `--name`, `--out` | output slug and directory (default `work/<name>/`) |
 | `render --repeat N` | play the cycle N times back to back in the sheet |
 | `render --pingpong` | play the cycle out and back; the return leg reverses the out leg, so the seam is clean and only the out leg needs drawing |
+| `export --out`, `--sheet` | bundle path (default `work/<name>/<name>-motion-source.zip`) and the sheet HTML to include (default `<name>-motion.html` beside the json) |
 
 `extract` prints one line per frame (index, source time, key / pilot / in-between, pace, pose cue)
 and writes `motion.json` plus `thumbs/`. Between the two commands, fill `arc` and any per-frame
@@ -64,5 +66,10 @@ and writes `motion.json` plus `thumbs/`. Between the two commands, fill `arc` an
 The rendered sheet has the stick figure beside the source frame, play / scrub / rate / mirror
 controls, the frame strip (keys pink, pilots blue), a facing line on the head, the performance
 arc, a brief for the artist agent, the frame-note table, and the data as embedded JSON.
+
+`export` is the last step: it zips `motion.json`, the sheet and `thumbs/` with a generated
+`manifest.json` (fps, frame count, playback, view, seam, source, and a SHA-256 per file), and
+prints the bundle path and the zip's SHA-256 — the pair a KaraokeParty-Graphics motion-director
+job input references. It warns if `arc` is empty or any frame has no pose.
 
 Outputs live under `work/` (git-ignored, as are downloaded videos).

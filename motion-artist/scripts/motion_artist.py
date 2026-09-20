@@ -10,7 +10,7 @@
 `render` turns motion.json into a self-contained HTML motion sheet.
 Between the two, an agent may fill `arc`, `title` and per-frame `note` fields in motion.json.
 """
-import argparse, base64, html, json, math, os, re, subprocess, sys, urllib.request
+import argparse, base64, hashlib, html, json, math, os, re, subprocess, sys, urllib.request, zipfile
 
 MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
              "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task")
@@ -607,7 +607,55 @@ def selftest():
     assert "character-right foot lifted" in f["weight"], f
     assert bend_word(170) == "straight" and bend_word(80) == "bent ~90°"
     assert tstamp("1:23.5") == 83.5 and tstamp("7") == 7
+    man = bundle_manifest(dict(name="t", title="T", fps=4, frame_count=2, playback="loop", view="front",
+                               seam="clean", source={}, arc="  "), [("motion.json", __file__)])
+    assert man["files"]["motion.json"] == sha256(__file__) and len(man["files"]["motion.json"]) == 64
+    assert man["arc_written"] is False and man["bundle"] == "motion-source"
     print("selftest ok")
+
+
+# ---------------------------------------------------------------- export
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""): h.update(chunk)
+    return h.hexdigest()
+
+
+def bundle_manifest(d, files):
+    """What the motion-director job input references: what the capture is, and a SHA-256 per file."""
+    return dict(
+        bundle="motion-source", name=d["name"], title=d["title"],
+        fps=d["fps"], frame_count=d["frame_count"], playback=d["playback"], view=d["view"],
+        seam=d["seam"], stabilized=d.get("stabilized", False), exaggerate=d.get("exaggerate"),
+        missing_frames=d.get("missing_frames", []), source=d["source"],
+        arc_written=bool(d.get("arc", "").strip()),
+        files={rel: sha256(p) for rel, p in files})
+
+
+def export(a):
+    """Zip motion.json + the sheet + thumbs with a SHA-256 manifest, ready for KP-Graphics."""
+    d = json.load(open(a.json))
+    src = os.path.dirname(os.path.abspath(a.json))
+    sheet = a.sheet or os.path.join(src, f"{d['name']}-motion.html")
+    if not os.path.exists(sheet):
+        sys.exit(f"export: no motion sheet at {sheet} — run `render` first, or pass --sheet")
+    files = [("motion.json", os.path.abspath(a.json)), (os.path.basename(sheet), sheet)]
+    tdir = os.path.join(src, "thumbs")
+    if os.path.isdir(tdir):
+        files += [(f"thumbs/{n}", os.path.join(tdir, n)) for n in sorted(os.listdir(tdir))
+                  if os.path.isfile(os.path.join(tdir, n))]
+    man = bundle_manifest(d, files)
+    out = a.out or os.path.join(src, f"{d['name']}-motion-source.zip")
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        for rel, p in files: z.write(p, f"{d['name']}/{rel}")
+        z.writestr(f"{d['name']}/manifest.json", json.dumps(man, indent=1))
+    print(f"{out}\nsha256 {sha256(out)} | {len(files) + 1} files | {d['frame_count']}f @ {d['fps']}fps | "
+          f"{d['playback']} | view {d['view']} | seam {d['seam']}")
+    if not man["arc_written"]:
+        print("warning: arc is empty — write the performance arc before hand-off")
+    if man["missing_frames"]:
+        print(f"warning: frames with no pose: {man['missing_frames']}")
 
 
 def main():
@@ -625,9 +673,11 @@ def main():
     r = sub.add_parser("render"); r.add_argument("json"); r.add_argument("--out")
     r.add_argument("--pingpong", action="store_true", help="play the cycle out and back (0..N..1) so the seam is the motion reversed")
     r.add_argument("--repeat", type=int, default=1, help="play the cycle N times back to back in the sheet")
+    x = sub.add_parser("export"); x.add_argument("json"); x.add_argument("--out")
+    x.add_argument("--sheet", help="motion sheet HTML (default <name>-motion.html beside the json)")
     sub.add_parser("selftest")
     a = ap.parse_args()
-    {"extract": extract, "render": render, "selftest": lambda _: selftest()}[a.cmd](a)
+    {"extract": extract, "render": render, "export": export, "selftest": lambda _: selftest()}[a.cmd](a)
 
 
 if __name__ == "__main__":

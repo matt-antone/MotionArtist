@@ -64,12 +64,23 @@ sample it to find the usable span, then search inside that span with `--window`.
    the full frame-note table. A `<script type="application/json" id="motion">` block carries the
    data for machine readers.
 4. Show it: open the HTML in the browser, or publish it as an Artifact when the user wants a link.
+5. Export — always finish here. The capture is not done until it is bundled:
+   ```bash
+   python3 "$SKILL/scripts/motion_artist.py" export work/dance/motion.json
+   ```
+   Writes `work/dance/dance-motion-source.zip`: `motion.json`, the sheet HTML, `thumbs/` and a
+   generated `manifest.json` (fps, frame count, playback, view, seam, source, and a SHA-256 per
+   file), all under a `<name>/` folder. Prints the bundle path and the zip's own SHA-256 — that
+   pair is what the motion-director job input references. It warns when `arc` is still empty or
+   frames are missing a pose; fix those and re-export rather than handing off a warned bundle.
 
 ## Hand-off to KaraokeParty-Graphics
 
-Copy `motion.json`, the HTML and `thumbs/` into that repo's ignored `work/<character>/motion-source/`
-and reference them by path and SHA-256 in the motion-director job input as the authorized motion
-source. Do not commit captures there; the repo excludes motion captures by policy. The sheet's
+Copy the exported `<name>-motion-source.zip` into that repo's ignored
+`work/<character>/motion-source/` and reference it by path and by the SHA-256 the export printed,
+as the authorized motion source in the motion-director job input. The bundle's `manifest.json`
+carries a SHA-256 per file, so an unzipped copy can be verified file by file. Do not commit
+captures there; the repo excludes motion captures by policy. The sheet's
 "view" is the *filmed* view — the manifest's `view` still governs the rendered character.
 
 ## Notes
