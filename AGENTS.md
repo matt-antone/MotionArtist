@@ -90,3 +90,7 @@ Match what is there rather than introducing a second style.
   line when stabilized", not "fix". Body explains why, wrapped at ~76 columns. Small, atomic commits.
 - PRs target `main` and are merged with a merge commit.
 - Never commit anything under `work/`, any `.mp4`, or a capture bundle.
+
+## graft skill
+
+This repo is indexed by graft. Use the graft skill for codebase context — `graft_find_code`, `graft_find_all`, `graft_trace_calls`, `graft_file_api`, `graft_repo_map` — before grepping or reading source files. Never commit graft caches.
