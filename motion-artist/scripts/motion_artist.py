@@ -3,18 +3,23 @@
 
   motion_artist.py extract URL|FILE --fps N --frames N [--start S] [--end S] [--name SLUG]
                    [--playback loop|one-shot|final-hold] [--out DIR]
-  motion_artist.py render DIR/motion.json [--out FILE.html]
+  motion_artist.py render DIR/motion.json [--out FILE.html] [--repeat N] [--pingpong]
+  motion_artist.py export DIR/motion.json [--out FILE.zip] [--sheet FILE.html]
   motion_artist.py selftest
 
 `extract` writes DIR/motion.json (+ DIR/thumbs/*.jpg) and prints a compact frame table.
 `render` turns motion.json into a self-contained HTML motion sheet.
-Between the two, an agent may fill `arc`, `title` and per-frame `note` fields in motion.json.
+`export` bundles the json, sheet and thumbs with a SHA-256 manifest for hand-off.
+Between extract and render, an agent may fill `arc`, `title` and per-frame `note` in motion.json.
 """
 import argparse, base64, hashlib, html, json, math, os, re, subprocess, sys, urllib.request, zipfile
 
 MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
              "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task")
 MODEL_PATH = os.path.expanduser("~/.cache/motion-artist/pose_landmarker_lite.task")
+
+# Bump when a field changes meaning or disappears, so a consumer fails loudly instead of mis-parsing.
+SCHEMA = "motion-artist/1"
 
 # MediaPipe pose indices. "L"/"R" are the person's own sides == character-left / character-right.
 LM = dict(nose=0, eyeL=2, eyeR=5, earL=7, earR=8, shL=11, shR=12, elL=13, elR=14, wrL=15, wrR=16,
@@ -169,6 +174,12 @@ def landmarker():
     return mp, vision.PoseLandmarker.create_from_options(opts)
 
 
+def portable(p):
+    """A bundle is handed to other machines: never bake an absolute home path into it."""
+    ap = os.path.abspath(p)
+    return os.path.relpath(ap) if ap.startswith(os.getcwd() + os.sep) else os.path.basename(p)
+
+
 def extract(a):
     import cv2
     out = a.out or os.path.join("work", a.name or "motion")
@@ -271,8 +282,10 @@ def extract(a):
     view = max(set(views), key=views.count)
 
     doc = dict(
+        schema=SCHEMA,
         title=name.replace("-", " ").title(), name=name,
-        source=dict(url=a.source, file=src, title=title, start=start, end=round(end, 3),
+        source=dict(url=a.source if re.match(r"https?://", a.source) else portable(a.source),
+                    file=portable(src), title=title, start=start, end=round(end, 3),
                     speed_factor=round(speed, 2), duration=round(dur, 2)),
         exaggerate=a.exaggerate, stabilized=a.stabilize,
         fps=a.fps, frame_count=a.frames, playback=a.playback, view=view,
@@ -368,6 +381,9 @@ def render(a):
     global FLOOR
     d = json.load(open(a.json))
     for f in d["frames"]: f.setdefault("src", f["i"])   # which source frame each cell draws from
+    # The spec below is the target animation's, fixed at extract. --repeat and --pingpong add cells
+    # to the strip for reviewing the seam; they must not restate how long the animation is.
+    cycle = len(d["frames"])
     if a.pingpong and len(d["frames"]) > 2:  # out and back: the return leg is the same poses reversed
         base = d["frames"]
         d["frames"] = base + [dict(f, i=len(base) + k, leg="back")
@@ -397,9 +413,9 @@ def render(a):
     src = d["source"]
     arc = "".join(f"<p>{html.escape(p)}</p>" for p in d["arc"].split("\n\n") if p.strip()) or \
           "<p class=muted>No performance arc written yet — fill <code>arc</code> in motion.json and re-render.</p>"
-    n = len(d["frames"]); lap = n / d["fps"]
-    keys = [f["i"] for f in d["frames"] if f["role"] == "key"]
-    pilots = [f["i"] for f in d["frames"] if f["role"] == "pilot"]
+    n = cycle; lap = n / d["fps"]; cells = len(d["frames"])
+    keys = [f["i"] for f in d["frames"][:cycle] if f["role"] == "key"]
+    pilots = [f["i"] for f in d["frames"][:cycle] if f["role"] == "pilot"]
 
     rows = "".join(
         f'<div class="maprow" style="--rowc:{ {"key": "var(--step)", "pilot": "var(--tap)"}.get(f["role"], "var(--muted)") }">'
@@ -415,7 +431,9 @@ def render(a):
              f'(source speed ×{src["speed_factor"]}, motion exaggerated ×{d.get("exaggerate", 1)}). Plays at <b>{d["fps"]} fps</b>; '
              f'{n} frames, {lap:.2f} s per {"lap" if d["playback"] == "loop" else "run"}'
              + (f', {d["repeat"]} cycles' if d.get("repeat") else '')
-             + (' — out and back, the return leg reversing the out leg.' if d.get("pingpong") else '.')),
+             + (' — out and back, the return leg reversing the out leg' if d.get("pingpong") else '')
+             + (f'. The strip below holds {cells} cells for review; the animation is {n} frames.'
+                if cells != n else '.')),
         N=str(n), FPS=str(d["fps"]), LAP=f"{lap:.2f} s", PLAYBACK=d["playback"], VIEW=html.escape(d["view"]),
         SEAM=("clean — the return leg reverses the out leg" if d.get("pingpong") else d["seam"]), KEYS=", ".join(map(str, keys)) or "—", PILOTS=", ".join(map(str, pilots)) or "—",
         URL=html.escape(src["url"]), ARC=arc, ROWS=rows,
@@ -611,6 +629,8 @@ def selftest():
                                seam="clean", source={}, arc="  "), [("motion.json", __file__)])
     assert man["files"]["motion.json"] == sha256(__file__) and len(man["files"]["motion.json"]) == 64
     assert man["arc_written"] is False and man["bundle"] == "motion-source"
+    assert portable(os.path.join(os.getcwd(), "work", "x.mp4")) == os.path.join("work", "x.mp4")
+    assert portable("/somewhere/else/x.mp4") == "x.mp4"
     print("selftest ok")
 
 
@@ -625,7 +645,7 @@ def sha256(path):
 def bundle_manifest(d, files):
     """What the motion-director job input references: what the capture is, and a SHA-256 per file."""
     return dict(
-        bundle="motion-source", name=d["name"], title=d["title"],
+        bundle="motion-source", schema=d.get("schema", SCHEMA), name=d["name"], title=d["title"],
         fps=d["fps"], frame_count=d["frame_count"], playback=d["playback"], view=d["view"],
         seam=d["seam"], stabilized=d.get("stabilized", False), exaggerate=d.get("exaggerate"),
         missing_frames=d.get("missing_frames", []), source=d["source"],
@@ -646,7 +666,11 @@ def export(a):
         files += [(f"thumbs/{n}", os.path.join(tdir, n)) for n in sorted(os.listdir(tdir))
                   if os.path.isfile(os.path.join(tdir, n))]
     man = bundle_manifest(d, files)
-    out = a.out or os.path.join(src, f"{d['name']}-motion-source.zip")
+    # Bundles land in exports/ beside work/, not in the capture dir: one place to hand off from. The
+    # name carries frame count and fps — exports/ is flat, and two cuts of one move differ only there.
+    exports = os.path.join(os.path.dirname(os.path.dirname(src)), "exports")
+    out = a.out or os.path.join(exports, f"{d['name']}-{d['frame_count']}f-{d['fps']}fps-motion-source.zip")
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         for rel, p in files: z.write(p, f"{d['name']}/{rel}")
         z.writestr(f"{d['name']}/manifest.json", json.dumps(man, indent=1))
