@@ -380,11 +380,11 @@ def figure_svg(pts, box, body_scale, color, accent=None, label=""):
     L = []
     def z(k): return pts[k][2] if len(pts[k]) > 2 else 0.0   # schema 1 had no depth: flat is fine
     hm, sm = mid(pts["hipL"], pts["hipR"]), mid(pts["shL"], pts["shR"])
-    segs = [(pts[a], pts[b], 5, (z(a) + z(b)) / 2) for a, b in BONES]
+    segs = [(pts[a], pts[b], 5, (z(a) + z(b)) / 2) for a, b in BONES]   # (a, b, stroke, depth)
     segs.append((hm, sm, 6, (z("hipL") + z("hipR") + z("shL") + z("shR")) / 4))
-    for pa, pb, w, _ in sorted(segs, key=lambda s: -s[3]):   # far bones first, near ones drawn over
+    for pa, pb, sw, _ in sorted(segs, key=lambda s: -s[3]):   # far bones first, near ones drawn over
         L.append(f'<line x1="{X(pa):.1f}" y1="{Y(pa):.1f}" x2="{X(pb):.1f}" y2="{Y(pb):.1f}" '
-                 f'stroke="{color}" stroke-width="{w}" stroke-linecap="round"/>')
+                 f'stroke="{color}" stroke-width="{sw}" stroke-linecap="round"/>')
     hc = mid(pts["earL"], pts["earR"])
     r = 0.07 * body_scale * s
     L.append(f'<circle cx="{X(hc):.1f}" cy="{Y(hc):.1f}" r="{r:.1f}" fill="none" stroke="{color}" stroke-width="5"/>')
@@ -398,7 +398,7 @@ def figure_svg(pts, box, body_scale, color, accent=None, label=""):
     for k in ("wrR", "anR"):
         L.append(f'<circle cx="{X(pts[k]):.1f}" cy="{Y(pts[k]):.1f}" r="4.5" fill="var(--paper)" '
                  f'stroke="{accent or color}" stroke-width="2.5"/>')
-    vw = w * s + 20
+    vw = w * s + 20   # w is the clip box width, unpacked at the top
     return (f'<svg viewBox="0 0 {vw:.0f} 220" role="img" aria-label="{html.escape(label)}">'
             f'<line x1="0" y1="{Y([0, FLOOR]):.1f}" x2="{vw:.0f}" y2="{Y([0, FLOOR]):.1f}" '
             f'stroke="{color}" stroke-width="1" opacity=".35" stroke-dasharray="3 4"/>{"".join(L)}</svg>')
