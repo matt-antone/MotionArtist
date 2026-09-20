@@ -23,6 +23,7 @@ SCHEMA = "motion-artist/2"
 
 # MediaPipe pose indices. "L"/"R" are the person's own sides == character-left / character-right.
 LM = dict(nose=0, eyeL=2, eyeR=5, earL=7, earR=8, shL=11, shR=12, elL=13, elR=14, wrL=15, wrR=16,
+          pinkyL=17, pinkyR=18, indexL=19, indexR=20,
           hipL=23, hipR=24, knL=25, knR=26, anL=27, anR=28, heelL=29, heelR=30, toeL=31, toeR=32)
 CORE = ["shL", "shR", "elL", "elR", "wrL", "wrR", "hipL", "hipR", "knL", "knR", "anL", "anR"]
 BONES = [("hipL", "knL"), ("knL", "anL"), ("anL", "toeL"), ("hipR", "knR"), ("knR", "anR"), ("anR", "toeR"),
@@ -126,8 +127,8 @@ def describe(P, W, floor_y, body_h):
     else:
         up = "character-right" if plantedL else "character-left"
         f["weight"] = f"weight on the {'character-left' if plantedL else 'character-right'} foot, {up} foot lifted"
-    stance = abs(anL[0] - anR[0]) / sh_w
-    f["stance"] = "feet together" if stance < 0.5 else "shoulder-width stance" if stance < 1.4 else "wide stance"
+    # no stance word: ankle spread in image x cannot tell a wide stance from a fore-aft step seen
+    # at an angle, and the skeleton already draws foot spacing. Words that disagree with it strobe.
     legs = []
     for s, name in (("L", "character-left"), ("R", "character-right")):
         k = kneeL if s == "L" else kneeR
@@ -142,6 +143,23 @@ def describe(P, W, floor_y, body_h):
         back, front = ("character-left", "character-right") if dz > 0 else ("character-right", "character-left")
         f["overlap"] = f"The {back} leg passes behind the {front}"
 
+    # footwork: the pitch of each planted sole. A dancer working on the balls of her feet never
+    # puts a heel down, and nothing else in the cue carries that — knee angle and weight say where
+    # the leg is, not what the foot under it is doing.
+    pitch = {}
+    for sfx, nm, planted in (("L", "character-left", plantedL), ("R", "character-right", plantedR)):
+        if planted:
+            h, b = W["heel" + sfx], W["toe" + sfx]
+            pitch[nm] = math.degrees(math.atan2(b[1] - h[1],
+                                                math.hypot(b[0] - h[0], b[2] - h[2]) or 1e-9))
+    ball = [nm for nm, deg in pitch.items() if deg > 15]
+    rock = [nm for nm, deg in pitch.items() if deg < -15]
+    feet = ["on the balls of both feet, heels lifted"] if len(ball) == 2 else \
+           [f"on the ball of the {nm} foot, heel lifted" for nm in ball]
+    feet += ["both heels down, toes up"] if len(rock) == 2 else \
+            [f"{nm} heel down, toe up" for nm in rock]
+    f["feet"] = ", ".join(feet)
+
     # torso lean (image plane)
     dx, dy = sh_mid[0] - hip_mid[0], hip_mid[1] - sh_mid[1]
     lean = math.degrees(math.atan2(dx, dy or 1e-9))
@@ -155,8 +173,16 @@ def describe(P, W, floor_y, body_h):
     # hip and shoulder line tilt (which side is higher)
     def tilt(a, b, what):
         d = math.degrees(math.atan2(a[1] - b[1], abs(a[0] - b[0]) or 1e-9))  # + => L lower
-        if abs(d) < 7 or not front_ish and view != "back": return ""
+        if abs(d) < 5 or not front_ish and view != "back": return ""
         return f"{'character-right' if d > 0 else 'character-left'} {what} raised"
+    # the pelvis turning against the shoulders is the engine of most dance, and no other cue can
+    # carry it: knee and elbow angles say nothing about it, and both lines tilt the same way under
+    # a plain lean. Yaw each girdle off its own world z, and report only the difference.
+    def girdle_yaw(l, r): return math.degrees(math.atan2(W[r][2] - W[l][2], -(W[r][0] - W[l][0])))
+    twist = girdle_yaw("hipL", "hipR") - girdle_yaw("shL", "shR")
+    f["twist_deg"] = round(twist)
+    f["twist"] = (f"hips turned {'character-left' if twist > 0 else 'character-right'} against the "
+                  "shoulders" if abs(twist) >= 10 else "")
     f["hips"] = tilt(P["hipL"], P["hipR"], "hip")
     f["shoulders"] = tilt(P["shL"], P["shR"], "shoulder")
 
@@ -167,8 +193,8 @@ def describe(P, W, floor_y, body_h):
     else: f["head"] = "head forward"
 
     cue = ". ".join(x for x in [
-        f["weight"][0].upper() + f["weight"][1:], f["stance"], f["legs"], f["overlap"],
-        f["arm_L"], f["arm_R"], f["torso"], f["hips"], f["shoulders"], f["head"]] if x) + "."
+        f["weight"][0].upper() + f["weight"][1:], f["legs"], f["overlap"], f["feet"],
+        f["arm_L"], f["arm_R"], f["torso"], f["hips"], f["shoulders"], f["twist"], f["head"]] if x) + "."
     return f, cue, depth
 
 
@@ -224,8 +250,20 @@ def extract(a):
         print(f"search: best {win:.1f}s loop starts at {start:.2f}s "
               f"(seam {best['seam']:.2f}, energy {best['energy']:.2f}); candidates:\n  " +
               "\n  ".join(f"{c['t']:6.2f}s seam {c['seam']:.2f} energy {c['energy']:.2f}" for c in best['top']))
-    end = a.end if a.end is not None and not a.search else min(dur, start + win)
-    if a.search: end = start + win
+        end = start + win
+    else:
+        end = min(dur, a.end if a.end is not None else start + win)
+        if a.margin > 0:
+            ts, poses = sample_poses(cap, mp, lm, max(0.0, start - a.margin), min(dur, end + a.margin), Wpx / Hpx)
+            snap = pick_span(ts, poses, start, end, a.margin, a.playback == "loop")
+            if snap:
+                print(f"snap: {start:.2f}-{end:.2f}s -> {snap['t']:.2f}-{snap['end']:.2f}s "
+                      f"(seam {snap['seam']:.2f}, energy {snap['energy']:.2f}); candidates:\n  " +
+                      "\n  ".join(f"{c['t']:6.2f}-{c['end']:.2f}s seam {c['seam']:.2f} energy {c['energy']:.2f}"
+                                  for c in snap["top"]))
+                start, end = snap["t"], snap["end"]
+            else:
+                print(f"snap: no fully-tracked cut within {a.margin:.2f}s of either end; span used as given")
     span = end - start
     # loop: samples exclusive of `end` so the last->first cut is one natural step
     step = span / a.frames if a.playback == "loop" else span / max(a.frames - 1, 1)
@@ -326,8 +364,10 @@ def extract(a):
                 for f in frames],
         floor_y=round(floor, 4), body_h=round(body_h, 4))
     jp = os.path.join(out, "motion.json")
+    kept = carry_over_writing(jp, doc)
     json.dump(doc, open(jp, "w"), indent=1)
 
+    print(kept)
     print(f"{jp}\n{title} | span {start:.2f}-{end:.2f}s | {a.frames}f @ {a.fps}fps | {a.playback} | "
           f"view {view} | source speed x{speed:.2f} | seam {doc['seam']} | missing {missing}")
     for f in doc["frames"]:
@@ -335,9 +375,41 @@ def extract(a):
     return jp
 
 
-def best_loop(cap, mp, lm, t0, t1, length, aspect, hz=8):
-    """Slide a `length`-second window over [t0, t1]; return (start, end, info) minimising the pose
-    distance between window start and window end while keeping real motion inside the window."""
+def carry_over_writing(jp, doc):
+    """A re-run rebuilds motion.json from the video, which silently destroyed the hand-written arc
+    and frame notes — the one part of the file a human made and the extractor cannot regenerate.
+    Carry them over when the new capture lands on the same span, fps and frame count, so the same
+    frame index still holds the same pose. When the span moved, the notes point at different poses,
+    so they are dropped on purpose and said so out loud. Returns a line for the operator."""
+    if not os.path.exists(jp): return "arc: new capture, nothing to carry over"
+    try:
+        old = json.load(open(jp))
+    except (ValueError, OSError) as e:
+        return f"arc: could not read the previous {jp} ({e}); nothing carried over"
+    notes = {f["i"]: f.get("note", "") for f in old.get("frames", []) if f.get("note")}
+    if not old.get("arc") and not notes: return "arc: previous capture had none, nothing to carry over"
+    same = (old.get("fps") == doc["fps"] and old.get("frame_count") == doc["frame_count"]
+            and old.get("playback") == doc["playback"]
+            and abs(old.get("source", {}).get("start", -1) - doc["source"]["start"]) < 1e-6
+            and abs(old.get("source", {}).get("end", -1) - doc["source"]["end"]) < 1e-6)
+    if not same:
+        o, n = old.get("source", {}), doc["source"]
+        return (f"arc: DROPPED — the span moved ({o.get('start')}-{o.get('end')}s @ "
+                f"{old.get('fps')}fps x{old.get('frame_count')} -> {n['start']}-{n['end']}s @ "
+                f"{doc['fps']}fps x{doc['frame_count']}), so the old notes point at different "
+                f"poses. Re-author the arc before export.")
+    doc["arc"] = old.get("arc", "")
+    for f in doc["frames"]:
+        f["note"] = notes.get(f["i"], "")
+    return f"arc: carried over from the previous capture ({len(notes)} frame notes), span unchanged"
+
+
+def pose_dist(a, b): return sum(dist(a[k], b[k]) for k in CORE) / len(CORE)
+
+
+def sample_poses(cap, mp, lm, t0, t1, aspect, hz=8):
+    """Walk [t0, t1] at `hz`, returning (times, poses). A pose is hip-centred and torso-scaled so
+    the comparison is shape only; an untracked sample is None."""
     import cv2
     poses, ts = [], []
     t = t0
@@ -349,11 +421,46 @@ def best_loop(cap, mp, lm, t0, t1, length, aspect, hz=8):
             img = res.pose_landmarks[0]
             P = {k: [img[j].x * aspect, img[j].y] for k, j in LM.items()}
             hip, h = mid(P["hipL"], P["hipR"]), max(dist(mid(P["shL"], P["shR"]), mid(P["hipL"], P["hipR"])), 1e-3)
-            poses.append({k: [(v[0] - hip[0]) / h, (v[1] - hip[1]) / h] for k, v in P.items()})  # hip-centred, torso-scaled
+            poses.append({k: [(v[0] - hip[0]) / h, (v[1] - hip[1]) / h] for k, v in P.items()})
         else:
             poses.append(None)
         ts.append(t); t += 1.0 / hz
-    def pd(a, b): return sum(dist(a[k], b[k]) for k in CORE) / len(CORE)
+    return ts, poses
+
+
+def livelier_half(cands):
+    """Drop the stillest half of the candidates: the cleanest cut in a clip is always the moment
+    nothing moves, and a motion source made of a held pose is worthless."""
+    med = sorted(c["energy"] for c in cands)[len(cands) // 2]
+    return [c for c in cands if c["energy"] >= med] or cands
+
+
+def pick_span(ts, poses, start, end, margin, loop):
+    """Both ends of the requested span are a guess; the move's own ending rarely lands on the
+    second the user typed. Probe every cut within ±margin of each end and return the cleanest —
+    for a loop the pair of poses that match, otherwise the stillest ending. Span length is free
+    inside the margin because the winner is time-stretched onto the frame count anyway."""
+    near = lambda t: [i for i, s in enumerate(ts) if abs(s - t) <= margin + 1e-9 and poses[i]]
+    heads, tails = near(start), near(end)
+    cands = []
+    for i in heads:
+        for j in tails:
+            if j - i < 2 or any(p is None for p in poses[i:j + 1]): continue
+            energy = sum(pose_dist(poses[k], poses[k + 1]) for k in range(i, j)) / (j - i)
+            cost = pose_dist(poses[i], poses[j]) if loop else pose_dist(poses[j - 1], poses[j])
+            cands.append(dict(t=ts[i], end=ts[j], seam=cost, energy=energy))
+    if not cands: return None
+    live = livelier_half(cands)
+    best = min(live, key=lambda c: c["seam"])
+    best["top"] = sorted(live, key=lambda c: c["seam"])[:5]
+    return best
+
+
+def best_loop(cap, mp, lm, t0, t1, length, aspect, hz=8):
+    """Slide a `length`-second window over [t0, t1]; return (start, end, info) minimising the pose
+    distance between window start and window end while keeping real motion inside the window."""
+    ts, poses = sample_poses(cap, mp, lm, t0, t1, aspect, hz)
+    pd = pose_dist
     n = round(length * hz)
     cands = []
     for i in range(len(poses) - n):
@@ -363,8 +470,7 @@ def best_loop(cap, mp, lm, t0, t1, length, aspect, hz=8):
         energy = sum(pd(win[j], win[j + 1]) for j in range(n)) / n
         cands.append(dict(t=ts[i], seam=seam, energy=energy))
     if not cands: sys.exit("search: no fully-tracked window; try a different range")
-    med = sorted(c["energy"] for c in cands)[len(cands) // 2]
-    live = [c for c in cands if c["energy"] >= med] or cands   # ponytail: 'best' = tightest seam among the livelier half
+    live = livelier_half(cands)
     best = min(live, key=lambda c: c["seam"])
     best["top"] = sorted(live, key=lambda c: c["seam"])[:5]
     return best["t"], best["t"] + length, best
@@ -380,24 +486,108 @@ def figure_svg(pts, box, body_scale, color, accent=None, label=""):
     L = []
     def z(k): return pts[k][2] if len(pts[k]) > 2 else 0.0   # schema 1 had no depth: flat is fine
     hm, sm = mid(pts["hipL"], pts["hipR"]), mid(pts["shL"], pts["shR"])
-    segs = [(pts[a], pts[b], 5, (z(a) + z(b)) / 2) for a, b in BONES]   # (a, b, stroke, depth)
-    segs.append((hm, sm, 6, (z("hipL") + z("hipR") + z("shL") + z("shR")) / 4))
-    for pa, pb, sw, _ in sorted(segs, key=lambda s: -s[3]):   # far bones first, near ones drawn over
+    # the pelvis and shoulder bars are what the dance turns on, so they are drawn as girdles —
+    # heavier and in the accent colour — not as two more bones lost in the mesh.
+    GIRDLE = (("hipL", "hipR"), ("shL", "shR"))
+    LIMB = {"L": "var(--limb-l)", "R": "var(--limb-r)"}
+    GIRDLE_INK = "var(--girdle)"   # its own ink on every frame, not the key/pilot accent: the hips
+    # turn just as hard on an in-between, and that is the half of the dance an artist keeps missing.
+    # each limb is inked by the side it belongs to, so character-left and character-right never
+    # have to be worked out from the pose. Only the spine, head and girdles stay neutral.
+    def side_ink(k): return LIMB["R"] if k.endswith("R") else LIMB["L"]
+    segs = [(pts[a], pts[b], 5, (z(a) + z(b)) / 2, side_ink(a))          # (a, b, stroke, depth, ink)
+            for a, b in BONES if (a, b) not in GIRDLE and b not in ("toeL", "toeR")]
+    segs += [(pts["an" + k], pts["heel" + k], 4, z("an" + k), LIMB[k]) for k in ("L", "R")]
+    segs.append((hm, sm, 6, (z("hipL") + z("hipR") + z("shL") + z("shR")) / 4, color))
+    for pa, pb, sw, _, ink in sorted(segs, key=lambda s: -s[3]):   # far bones first, near drawn over
         L.append(f'<line x1="{X(pa):.1f}" y1="{Y(pa):.1f}" x2="{X(pb):.1f}" y2="{Y(pb):.1f}" '
-                 f'stroke="{color}" stroke-width="{sw}" stroke-linecap="round"/>')
+                 f'stroke="{ink}" stroke-width="{sw}" stroke-linecap="round"/>')
+    # everything that needs to show a turn is a box, not a bar: a bar seen from an angle is just a
+    # shorter bar, so the turn reads as nothing. Image x,y already ARE the orthographic projection
+    # and z is in the same units, so a corner is drawn by dropping its z.
+    def P3(k): return [pts[k][0], pts[k][1], z(k)]
+
+    def box3(a, b, depth, thick, ink, back_w=2, face_w=3.5):
+        """A box with a->b as its long edge, `depth` across it horizontally and `thick` off it in
+        the remaining direction. The face turned toward the camera is drawn heavy, so which way the
+        box points is legible at strip size without reading a marker."""
+        u = [b[i] - a[i] for i in range(3)]
+        span = math.hypot(u[0], u[2])
+        d = [-u[2] / span, 0.0, u[0] / span] if span > 1e-6 else [1.0, 0.0, 0.0]
+        if d[2] > 0: d = [-d[0], 0.0, -d[2]]                  # point the depth axis at the camera
+        d = [x * depth for x in d]
+        n = [u[1] * d[2] - u[2] * d[1], u[2] * d[0] - u[0] * d[2], u[0] * d[1] - u[1] * d[0]]
+        ln = math.hypot(*n) or 1e-9
+        n = [x * thick / ln for x in n]
+        if n[1] < 0: n = [-x for x in n]                      # body of the box sits below its edge
+        def corner(t, sd, off):
+            return [a[i] + t * u[i] + sd * d[i] / 2 + off * n[i] for i in range(2)]
+        def quad(sd):
+            c4 = (corner(0, sd, 0), corner(1, sd, 0), corner(1, sd, 1), corner(0, sd, 1))
+            return "M" + "L".join(f"{X(q):.1f} {Y(q):.1f}" for q in c4) + "Z"
+        edges = "".join(f"M{X(corner(t, sd, 0)):.1f} {Y(corner(t, sd, 0)):.1f}"
+                        f"L{X(corner(t, sd, 1)):.1f} {Y(corner(t, sd, 1)):.1f}"
+                        for t in (0, 1) for sd in (-1, 1))
+        L.append(f'<path d="{quad(-1)}{edges}" fill="none" stroke="{ink}" stroke-width="{back_w}" '
+                 f'stroke-linejoin="round" opacity=".55"/>')
+        L.append(f'<path d="{quad(1)}" fill="none" stroke="{ink}" stroke-width="{face_w}" '
+                 f'stroke-linejoin="round"/>')
+
+    def girth(lk, rk):   # true width of a girdle: horizontal, so the turn cannot shrink it
+        return math.hypot(pts[rk][0] - pts[lk][0], z(rk) - z(lk)) or 1e-6
+    # the girdles are sized off the spine, not off their own width, so a turn that narrows one
+    # cannot also shrink its box and cancel the very thing it is drawn to show
+    spine = max(dist(hm, sm), 1e-6)
+    box3(P3("hipL"), P3("hipR"), 0.62 * girth("hipL", "hipR"), 0.34 * spine, GIRDLE_INK)
+    box3(P3("shL"), P3("shR"), 0.52 * girth("shL", "shR"), 0.62 * spine, GIRDLE_INK)
+
+    for sfx in ("L", "R"):
+        # foot in two parts hinged at the ball, because that hinge IS the footwork: on the ball the
+        # sole pitches up and the toes stay down, and one rigid foot box cannot show that.
+        heel, ball = P3("heel" + sfx), P3("toe" + sfx)
+        flen = max(dist(heel, ball), 1e-6)
+        box3(heel, ball, 0.55 * flen, 0.22 * flen, LIMB[sfx], 1.5, 2.5)          # sole, heel to ball
+        v = [ball[i] - heel[i] for i in range(3)]
+        # nothing is tracked past the ball, so the toes are inferred: they flatten toward the floor
+        # once the heel lifts, and otherwise carry on the line of the sole
+        if v[1] > 0: v = [v[0], v[1] * 0.25, v[2]]
+        box3(ball, [ball[i] + 0.45 * v[i] for i in range(3)],
+             0.55 * flen, 0.22 * flen, LIMB[sfx], 1.5, 2.5)                      # toes
+        # hand. The finger landmarks are the least reliable thing MediaPipe returns — on this clip
+        # the index-to-pinky span collapses to a few thousandths of body height — so they are used
+        # only when they resolve to a believable hand width, and otherwise the hand is guessed to
+        # carry on the line of the forearm, which is what an artist would assume anyway.
+        wr, el = P3("wr" + sfx), P3("el" + sfx)
+        fore = max(dist(wr, el), 1e-6)
+        seen = all(k in pts for k in ("index" + sfx, "pinky" + sfx)) and \
+            dist(pts["index" + sfx], pts["pinky" + sfx]) > 0.25 * fore
+        aim = mid(pts["index" + sfx], pts["pinky" + sfx]) if seen else None
+        v = ([aim[0] - wr[0], aim[1] - wr[1], (z("index" + sfx) + z("pinky" + sfx)) / 2 - wr[2]]
+             if seen else [wr[i] - el[i] for i in range(3)])
+        n = math.hypot(*v) or 1e-9
+        hand = 0.62 * fore
+        box3(wr, [wr[i] + v[i] / n * hand for i in range(3)],
+             0.46 * hand, 0.22 * hand, LIMB[sfx], 1.5, 2.5)
     hc = mid(pts["earL"], pts["earR"])
     r = 0.07 * body_scale * s
     L.append(f'<circle cx="{X(hc):.1f}" cy="{Y(hc):.1f}" r="{r:.1f}" fill="none" stroke="{color}" stroke-width="5"/>')
-    # face centre line: hangs from the head centre to the rim, leaning toward the nose side,
-    # so front = vertical, turned = tilted, profile = horizontal toward the face
-    ear_w = max(abs(X(pts["earR"]) - X(pts["earL"])), 1e-6)
-    dx = max(-r, min(r, (X(pts["nose"]) - X(hc)) / ear_w * 2 * r))
-    L.append(f'<line x1="{X(hc):.1f}" y1="{Y(hc):.1f}" x2="{X(hc) + dx:.1f}" y2="{Y(hc) + math.sqrt(r * r - dx * dx):.1f}" '
-             f'stroke="{accent or color}" stroke-width="3" stroke-linecap="round"/>')
-    # character-right limbs get a hollow marker so sides read at a glance
-    for k in ("wrR", "anR"):
-        L.append(f'<circle cx="{X(pts[k]):.1f}" cy="{Y(pts[k]):.1f}" r="4.5" fill="var(--paper)" '
-                 f'stroke="{accent or color}" stroke-width="2.5"/>')
+    # face: a brow across the eyes and a nose line off it, both built from the real landmarks and
+    # blown up to head size. Head roll tilts the brow, a turn foreshortens it, and the nose says
+    # which way the face points — no trigonometry, and it degrades to a stub in profile by itself.
+    em = mid(pts["eyeL"], pts["eyeR"])
+    def face_line(a, b, reach, width, both_ways=False):
+        """`a`->`b` scaled until it reaches `reach` of the head radius. Returns "" when the two
+        landmarks sit on top of each other, which is what a head turned fully away looks like."""
+        v = [b[0] - a[0], b[1] - a[1]]
+        n = math.hypot(*v)
+        if n < 1e-6: return ""
+        k = reach * r / (n * s)                       # r is in rendered units, v in image units
+        tip = [a[0] + v[0] * k, a[1] + v[1] * k]
+        tail = [a[0] - v[0] * k, a[1] - v[1] * k] if both_ways else a
+        return (f'<line x1="{X(tail):.1f}" y1="{Y(tail):.1f}" x2="{X(tip):.1f}" y2="{Y(tip):.1f}" '
+                f'stroke="{accent or color}" stroke-width="{width}" stroke-linecap="round"/>')
+    L.append(face_line(em, pts["eyeL"], 0.58, 3, both_ways=True))   # brow
+    L.append(face_line(em, pts["nose"], 0.95, 2.5))                 # nose
     vw = w * s + 20   # w is the clip box width, unpacked at the top
     return (f'<svg viewBox="0 0 {vw:.0f} 220" role="img" aria-label="{html.escape(label)}">'
             f'<line x1="0" y1="{Y([0, FLOOR]):.1f}" x2="{vw:.0f}" y2="{Y([0, FLOOR]):.1f}" '
@@ -418,7 +608,12 @@ def render(a):
         d["pingpong"] = True
     out = a.out or os.path.join(os.path.dirname(a.json), f"{d['name']}-motion.html")
     tdir = os.path.join(os.path.dirname(a.json), "thumbs")
-    FLOOR = d["floor_y"]
+    # The drawn floor is the deepest sole in the clip, not d["floor_y"]: that one is an 85th
+    # percentile of the lower ANKLE, which the heel and toe hang below, so drawing it put a line
+    # through every foot in the set. It stays the reference the pose logic is calibrated against —
+    # airborne and planted compare ankles to it — but it is not where the ground is.
+    soles = [v[1] for f in d["frames"] for k, v in f["pts"].items() if k[:4] in ("heel", "toe")]
+    FLOOR = max(soles) if soles else d["floor_y"]
     xs = [v[0] for f in d["frames"] for v in f["pts"].values()]
     ys = [v[1] for f in d["frames"] for v in f["pts"].values()] + [FLOOR]
     pad = 0.08 * d["body_h"]
@@ -504,6 +699,85 @@ def selftest():
     f, cue, depth = describe(P, W, floor_y=0.95, body_h=0.75)
     assert depth["limbs"] == dict(legL="near", legR="far", armL="level", armR="level"), depth
     assert "The character-right leg passes behind the character-left." in cue, cue
+    # a 2.0 s cycle asked for as 0.0-1.75 s: the clean cut is the pose repeat at 2.0, inside the
+    # margin, and the picker must move the end there rather than obey the second that was typed.
+    hz, period = 8, 2.0
+    ts = [i / hz for i in range(int(3 * hz) + 1)]
+    cyc = lambda t: {k: [math.sin(2 * math.pi * t / period + j), math.cos(2 * math.pi * t / period + j)]
+                     for j, k in enumerate(CORE)}
+    got = pick_span(ts, [cyc(t) for t in ts], 0.0, 1.75, 0.5, loop=True)
+    assert got["seam"] < 1e-9 and abs(got["end"] - got["t"] - period) < 1e-9, got   # a whole cycle
+    assert abs(got["t"]) <= 0.5 and abs(got["end"] - 1.75) <= 0.5, got              # inside the margin
+    # one-shot scores the stillest ending instead: motion stops dead at 1.5 s
+    still = [cyc(min(t, 1.5)) for t in ts]
+    assert pick_span(ts, still, 0.0, 1.75, 0.5, loop=False)["end"] >= 1.625
+    assert pick_span(ts, [None] * len(ts), 0.0, 1.75, 0.5, loop=True) is None
+    # pelvis wound against the shoulders: the one thing no knee or elbow angle can carry
+    P, W = pose(0.60, 0.95)
+    W["shL"][2] = 0.0                                   # shoulders square to camera
+    W["hipL"][2], W["hipR"][2] = 0.12, -0.12            # character-right hip forward
+    f, cue, _ = describe(P, W, floor_y=0.95, body_h=0.75)
+    assert "hips turned character-right against the shoulders" in cue, cue
+    assert f["twist_deg"] < -10, f["twist_deg"]
+    for k in ("hipL", "hipR", "shL", "shR"): W[k][2] = 0.0   # both girdles square: no twist word
+    assert describe(P, W, floor_y=0.95, body_h=0.75)[0]["twist"] == ""
+    # a head turned fully away collapses the eye and nose landmarks onto one another: the brow and
+    # nose lines must drop out rather than divide by zero
+    P, W = pose(0.60, 0.95)
+    box = (0, 0, 1, 1)
+    faced = figure_svg(P, box, 0.75, "var(--fig)")
+    blank = {k: list(v) for k, v in P.items()}
+    blank["eyeL"] = blank["eyeR"] = blank["nose"] = list(blank["earL"])
+    assert figure_svg(blank, box, 0.75, "var(--fig)").count("<line") == faced.count("<line") - 2
+    # a re-extract must not eat the hand-written arc when it lands on the same span, and must not
+    # silently keep it when the span moved, because the notes then point at different poses
+    import tempfile
+    def doc_at(start, end, n=2):
+        return dict(fps=4, frame_count=n, playback="loop", source=dict(start=start, end=end),
+                    arc="", frames=[dict(i=i, note="") for i in range(n)])
+    with tempfile.TemporaryDirectory() as td:
+        jp = os.path.join(td, "motion.json")
+        assert "new capture" in carry_over_writing(jp, doc_at(1.0, 2.0))
+        prior = doc_at(1.0, 2.0)
+        prior["arc"], prior["frames"][1]["note"] = "the hips lead", "hit pose"
+        json.dump(prior, open(jp, "w"))
+        same = doc_at(1.0, 2.0)
+        assert "carried over" in carry_over_writing(jp, same)
+        assert same["arc"] == "the hips lead" and same["frames"][1]["note"] == "hit pose", same
+        moved = doc_at(1.5, 2.5)
+        assert "DROPPED" in carry_over_writing(jp, moved)
+        assert moved["arc"] == "" and not any(f["note"] for f in moved["frames"]), moved
+        assert "DROPPED" in carry_over_writing(jp, doc_at(1.0, 2.0, n=3))   # frame count changed
+    # footwork: a planted foot with the heel above the ball is "on the ball", and a flat foot says
+    # nothing at all rather than padding every cue with a word the artist can ignore
+    P, W = pose(0.60, 0.95)
+    def sole(sfx, heel, toe):   # the cue reads the sole in world space, so move both
+        P["heel" + sfx], P["toe" + sfx] = list(heel), list(toe)
+        for k, v in (("heel" + sfx, heel), ("toe" + sfx, toe)):
+            W[k] = [v[0] - 0.5, v[1] - 0.55, 0.0]
+    sole("L", [0.55, 0.88], [0.59, 0.95])                       # heel well above the ball
+    f, cue, _ = describe(P, W, floor_y=0.95, body_h=0.75)
+    assert "on the ball of the character-left foot, heel lifted" in cue, cue
+    sole("L", [0.55, 0.95], [0.59, 0.955])                      # flat
+    assert "ball of the character-left" not in describe(P, W, floor_y=0.95, body_h=0.75)[1]
+    sole("L", [0.55, 0.95], [0.59, 0.88])                       # toe up, rocked back on the heel
+    assert "character-left heel down, toe up" in describe(P, W, floor_y=0.95, body_h=0.75)[1]
+    sole("L", [0.55, 0.88], [0.59, 0.95])                       # both on the ball: said once
+    sole("R", [0.43, 0.88], [0.47, 0.95])
+    assert describe(P, W, floor_y=0.95, body_h=0.75)[0]["feet"] == "on the balls of both feet, heels lifted"
+    # a sole pointed at the camera is foreshortened in image x to near-vertical; measured in 3D it
+    # is still the flat foot it actually is, and must not be called "on the ball"
+    sole("L", [0.55, 0.95], [0.551, 0.99])
+    W["toeL"] = [W["heelL"][0] + 0.004, W["heelL"][1] + 0.04, W["heelL"][2] + 0.22]
+    assert "ball of the character-left" not in describe(P, W, floor_y=0.95, body_h=0.75)[1]
+    # a lifted foot is not reported: the cue already says the foot is off the floor
+    f2, cue2, _ = describe(*pose(0.60, 0.80), floor_y=0.95, body_h=0.75)
+    assert "character-right" not in f2["feet"], f2["feet"]
+    # the hand box falls back to the forearm line when the finger landmarks collapse, and either
+    # way every extremity still draws: 2 boxes per foot + 1 per hand == 6 boxes, 12 paths
+    flat = {k: list(v) for k, v in P.items()}
+    for k in ("indexL", "pinkyL", "indexR", "pinkyR"): flat[k] = list(flat["wr" + k[-1]])
+    assert figure_svg(flat, (0, 0, 1, 1), 0.75, "var(--fig)").count("<path") == 16   # + 2 girdles
     assert bend_word(170) == "straight" and bend_word(80) == "bent ~90°"
     assert tstamp("1:23.5") == 83.5 and tstamp("7") == 7
     man = bundle_manifest(dict(name="t", title="T", fps=4, frame_count=2, playback="loop", view="front",
@@ -573,6 +847,7 @@ def main():
     e.add_argument("--exaggerate", type=float, default=1.25, help="motion amplification about the mean pose (1.0 = as filmed)")
     e.add_argument("--stabilize", action="store_true", help="centre hips horizontally each frame (moving camera / travelling performer)")
     e.add_argument("--window", type=tstamp, help="source seconds the search looks for (default frames/fps); the winner is stretched onto the frame count")
+    e.add_argument("--margin", type=tstamp, default=0.5, help="slack in seconds around --start and --end: probe both ends for the move's own cut (loop: matching poses; one-shot: the stillest ending) and stretch the winner onto the frame count. 0 uses the span exactly as given")
     e.add_argument("--search", action="store_true", help="slide a frames/fps-second window over --start..--end and pick the tightest loop")
     e.add_argument("--playback", choices=["loop", "one-shot", "final-hold"], default="loop")
     r = sub.add_parser("render"); r.add_argument("json"); r.add_argument("--out")

@@ -1,11 +1,10 @@
+<meta charset="utf-8">
 <title>{{TITLE}}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
 <style>
-:root{--paper:#EFEDF4;--surface:#FBFAFD;--sunk:#E5E2EE;--ink:#191A2B;--muted:#6E6B80;--line:#DAD6E6;--step:#C8236B;--step-wash:#F8DEE9;--tap:#4A44B8;--tap-wash:#E3E1F7;--fig:#3A3750;--focus:#4A44B8;--shadow:0 1px 2px rgba(25,26,43,.06),0 8px 24px -16px rgba(25,26,43,.35)}
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--paper:#14131C;--surface:#1D1B27;--sunk:#23212F;--ink:#EDEBF5;--muted:#9A96AC;--line:#302D3F;--step:#FF74A8;--step-wash:#3B1D2C;--tap:#A8A2FF;--tap-wash:#262347;--fig:#C9C5DA;--focus:#A8A2FF;--shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -16px rgba(0,0,0,.8)}}
-:root[data-theme="dark"]{--paper:#14131C;--surface:#1D1B27;--sunk:#23212F;--ink:#EDEBF5;--muted:#9A96AC;--line:#302D3F;--step:#FF74A8;--step-wash:#3B1D2C;--tap:#A8A2FF;--tap-wash:#262347;--fig:#C9C5DA;--focus:#A8A2FF;--shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -16px rgba(0,0,0,.8)}
+:root{--paper:#14131C;--surface:#1D1B27;--sunk:#23212F;--ink:#EDEBF5;--muted:#9A96AC;--line:#302D3F;--step:#FF74A8;--step-wash:#3B1D2C;--tap:#A8A2FF;--tap-wash:#262347;--fig:#C9C5DA;--girdle:#F0A05A;--limb-l:#4FD1C0;--limb-r:#C9A0E8;--focus:#A8A2FF;--shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -16px rgba(0,0,0,.8);color-scheme:dark}
 *{box-sizing:border-box}
 body{background:var(--paper);color:var(--ink);font-family:"IBM Plex Sans",system-ui,sans-serif;font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased}
 .wrap{max-width:1100px;margin:0 auto;padding:32px 22px 64px;display:flex;flex-direction:column;gap:28px}
@@ -100,7 +99,7 @@ footer a{color:inherit}
 
 <section><div class="strip-head"><h2>The sheet</h2><span>Click a frame to scrub · ←/→ · space</span></div>
 <div class="strip" id="strip"></div>
-<div class="legend"><span><b class="k">■</b> key (hold / extreme)</span><span><b class="p">■</b> pilot (fastest transition)</span><span>■ in-between</span><span>○ character-right wrist / ankle</span><span>dashed = floor</span></div>
+<div class="legend"><span><b class="k">■</b> key (hold / extreme)</span><span><b class="p">■</b> pilot (fastest transition)</span><span>■ in-between</span><span><b style="color:var(--limb-l)">■</b> character-left limbs · <b style="color:var(--limb-r)">■</b> character-right</span><span><b style="color:var(--girdle)">▭</b> pelvis / rib-cage box, heavy face = side toward camera</span><span>brow + nose = head facing</span><span>▭ hand · ▭▭ foot, hinged at the ball</span><span>dashed = floor</span></div>
 </section>
 
 <section class="arc"><h2>Performance arc</h2>{{ARC}}</section>
