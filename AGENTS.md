@@ -72,6 +72,25 @@ rescaled to the same units as x, negative toward the camera, hips at zero. Each 
 says which leg is behind whenever the legs overlap in the image. A consumer that sorts bones by
 mean z and draws the far ones first no longer has to guess.
 
+## Vocabulary
+
+**The term table lives in `motion-artist/SKILL.md`.** Read it before naming anything. It is there
+rather than here because the skill ships standalone — `motion-artist/` is symlinked into a skills
+directory without this file — and two copies of a glossary drift.
+
+The rules that bind work in this repo:
+
+- **Never write "sprite sheet", "spritesheet" or "skeleton"**, in code, filenames, manifest keys,
+  comments, commit messages or conversation. All three are retired. "Sheet" unqualified and "grid"
+  unqualified are banned too: between them they named eight different objects across this repo and
+  the character generator's, which produced three wrong conclusions in one session and cost a
+  feature that had been asked for twice.
+- The pose images this repo makes are a **pose grid** of **pose cards** built from **traced frames**.
+  The finished drawn character is the consumer's **frame sheet**, and we never produce one.
+- `motion sheet` is the only allowed bare "sheet", and it means the contents of `motion.json`.
+- **Agree a term before using it.** If something here has no name, name it in SKILL.md's table first,
+  and tell the consumer's side, rather than reaching for "sheet" again.
+
 ## Verifying a change
 
 - `python3 motion-artist/scripts/motion_artist.py selftest` — pose-description heuristics, timestamp
