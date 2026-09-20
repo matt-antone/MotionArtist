@@ -144,7 +144,16 @@ def describe(P, W, floor_y, body_h):
     plantedL, plantedR = soleL > floor_y - lift, soleR > floor_y - lift
     kneeL, kneeR = angle3(W["hipL"], W["knL"], W["anL"]), angle3(W["hipR"], W["knR"], W["anR"])
     f["knee_L"], f["knee_R"] = round(kneeL), round(kneeR)
-    f["airborne"] = not plantedL and not plantedR
+    # Airborne is a far stronger claim than "this heel is up", so it does not reuse `lift`, which is
+    # tuned for heel-lift and sits inside the frame-to-frame noise of a hip-normalised sole. cag
+    # agrees from the other side: it refuses to lift a grounded frame because soles "sit a few
+    # percent off floor_y by noise, and that would come out as jitter" (cag/mask.py placement) — and
+    # a false airborne there lifts the character clean off the contact row. Measured on the shuffle,
+    # the two classes are far apart: soles genuinely on the ground clear the floor by up to 0.075
+    # body heights, a genuinely lifted foot by 0.30-0.59. Nothing lands in between, so the cut sits
+    # in that empty band instead of hard against the noise.
+    off = 0.15 * body_h
+    f["airborne"] = soleL < floor_y - off and soleR < floor_y - off
     if f["airborne"]:
         f["weight"] = "airborne — both feet off the floor"
     elif plantedL and plantedR:
