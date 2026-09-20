@@ -92,7 +92,6 @@ def describe(P, W, floor_y, body_h):
                  limbs={k: nearness(v) for k, v in zl.items()})
 
     # arms
-    arms = {}
     for s, name in (("L", "character-left"), ("R", "character-right")):
         wr, sh = P["wr" + s], P["sh" + s]
         if wr[1] < P["nose"][1] - 0.02 * body_h: h = "overhead"
@@ -100,15 +99,32 @@ def describe(P, W, floor_y, body_h):
         elif wr[1] < hip_mid[1] - 0.03 * body_h: h = "at chest/waist height"
         else: h = "low by the hip"
         bend = angle3(W["sh" + s], W["el" + s], W["wr" + s])
-        # wrist crossing torso midline (image x), only meaningful when facing camera-ish
-        cross = ""
+        # Lateral reach. Height and elbow alone leave the wrist anywhere from across the chest to
+        # flung out sideways, and a generator draws only what the words name. Measure the wrist from
+        # its OWN shoulder along the outward direction, in shoulder widths, so it survives scale:
+        # negative is inward (toward and past the midline), positive is outward. Taking the outward
+        # direction from the shoulder itself, rather than from the view, keeps the sign right
+        # whichever way the body faces. Image x only, so it needs a camera-ish view like `cross` did.
+        out_dir = 1.0 if sh[0] >= sh_mid[0] else -1.0
+        reach = (wr[0] - sh[0]) * out_dir / sh_w
+        # Cuts are measured, not guessed: over both reference captures (128 arm-frames) the gap at
+        # -0.55 is the widest in the whole distribution and falls where the wrist passes the midline,
+        # and -0.35 sits in the next gap. +0.50 is the one outward cut that never changed the word
+        # while the wrist was standing still — cutting higher (0.91, 1.00) is stabler only because it
+        # collapses 97% of frames into one word, which is the failure this term exists to fix.
+        # Whether an arm is level with or in front of the torso is a z question and z is the weak
+        # axis, so it is named only where `cross` already trusted it: a wrist across the body.
+        lateral = ""
         if front_ish:
-            other = P["shR" if s == "L" else "shL"]
-            if (wr[0] - other[0]) * (sh[0] - other[0]) < 0 and dist(wr, sh_mid) < 1.2 * sh_w:
-                cross = ", crossing the body" + {"near": " in front of the torso",
+            if reach < -0.55:
+                lateral = ", across the body" + {"near": " in front of the torso",
                                                  "far": " behind the torso"}.get(nearness(zl["arm" + s]), "")
-        arms[s] = dict(height=h, elbow=round(bend))
-        f["arm_" + s] = f"{name} arm {h}, elbow {bend_word(bend)}{cross}"
+            elif reach < -0.35: lateral = ", inside the shoulder"
+            elif reach < 0.50: lateral = ", by the side"
+            else: lateral = ", out to the side"
+        # the number behind the word, for anyone A/B-ing the cue against the render
+        f["reach_" + s] = round(reach, 2)
+        f["arm_" + s] = f"{name} arm {h}, elbow {bend_word(bend)}{lateral}"
 
     # legs / weight / airborne
     anL, anR = P["anL"], P["anR"]
