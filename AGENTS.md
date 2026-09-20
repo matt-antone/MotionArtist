@@ -59,7 +59,13 @@ Hand off that zip as it is. Do not unpack it, and do not copy loose `motion.json
 consuming repo — the zip is the unit, and its `manifest.json` is what verifies it.
 
 Read the printed table, not `motion.json` — the JSON is large and mostly landmarks. Never hand-edit
-`cue`, `role`, `pts` or `t`; they are extractor output. Re-run `extract` instead.
+`cue`, `role`, `pts`, `depth` or `t`; they are extractor output. Re-run `extract` instead.
+
+Since `motion-artist/2`, `pts` values are `[x, y, z]`: z comes from the MediaPipe world landmarks,
+rescaled to the same units as x, negative toward the camera, hips at zero. Each frame also carries
+`depth` = `{near_side, limbs}` (`near`/`far`/`level` per `legL`/`legR`/`armL`/`armR`), and the cue
+says which leg is behind whenever the legs overlap in the image. A consumer that sorts bones by
+mean z and draws the far ones first no longer has to guess.
 
 ## Verifying a change
 

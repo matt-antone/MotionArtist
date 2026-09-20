@@ -19,7 +19,7 @@ MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
 MODEL_PATH = os.path.expanduser("~/.cache/motion-artist/pose_landmarker_lite.task")
 
 # Bump when a field changes meaning or disappears, so a consumer fails loudly instead of mis-parsing.
-SCHEMA = "motion-artist/1"
+SCHEMA = "motion-artist/2"
 
 # MediaPipe pose indices. "L"/"R" are the person's own sides == character-left / character-right.
 LM = dict(nose=0, eyeL=2, eyeR=5, earL=7, earR=8, shL=11, shR=12, elL=13, elR=14, wrL=15, wrR=16,
@@ -76,6 +76,20 @@ def describe(P, W, floor_y, body_h):
     sh_mid, hip_mid = mid(P["shL"], P["shR"]), mid(P["hipL"], P["hipR"])
     sh_w = max(dist(P["shL"], P["shR"]), 0.05 * body_h)
 
+    # depth. World z is metres, negative toward the camera, hips at the origin; it is noisy in
+    # absolute terms, so every verdict here is a comparison — against the hip plane, or against the
+    # paired limb — with a fraction of the world shoulder width as the "clearly nearer" threshold.
+    hip_z = (W["hipL"][2] + W["hipR"][2]) / 2
+    z_unit = 0.12 * max(math.dist(W["shL"], W["shR"]), 1e-6)
+    def limb_z(*ks): return sum(W[k][2] for k in ks) / len(ks) - hip_z
+    zl = dict(legL=limb_z("knL", "anL"), legR=limb_z("knR", "anR"),
+              armL=limb_z("elL", "wrL"), armR=limb_z("elR", "wrR"))
+    def nearness(dz): return "near" if dz < -z_unit else "far" if dz > z_unit else "level"
+    # near_side: the side of the body facing camera, in the performer's own terms. Square to the
+    # camera, neither side is nearer — say so rather than rounding noise into a side.
+    depth = dict(near_side=("L" if yaw > 8 else "R" if yaw < -8 else None),
+                 limbs={k: nearness(v) for k, v in zl.items()})
+
     # arms
     arms = {}
     for s, name in (("L", "character-left"), ("R", "character-right")):
@@ -90,7 +104,8 @@ def describe(P, W, floor_y, body_h):
         if front_ish:
             other = P["shR" if s == "L" else "shL"]
             if (wr[0] - other[0]) * (sh[0] - other[0]) < 0 and dist(wr, sh_mid) < 1.2 * sh_w:
-                cross = ", crossing the body"
+                cross = ", crossing the body" + {"near": " in front of the torso",
+                                                 "far": " behind the torso"}.get(nearness(zl["arm" + s]), "")
         arms[s] = dict(height=h, elbow=round(bend))
         f["arm_" + s] = f"{name} arm {h}, elbow {bend_word(bend)}{cross}"
 
@@ -118,6 +133,14 @@ def describe(P, W, floor_y, body_h):
         k = kneeL if s == "L" else kneeR
         if k < 150: legs.append(f"{name} knee {bend_word(k)}")
     f["legs"] = ", ".join(legs) if legs else "legs straight"
+    # legs overlapping in the image: a flat skeleton cannot show which is nearer, so say it in words
+    crossed = (anL[0] - anR[0]) * (P["hipL"][0] - P["hipR"][0]) < 0
+    dz = zl["legL"] - zl["legR"]
+    f["overlap"] = ""
+    # ponytail: "overlapping" == ankles closer than about a thigh width; widen if legs read as apart
+    if (crossed or abs(anL[0] - anR[0]) < 0.12 * body_h) and abs(dz) > z_unit:
+        back, front = ("character-left", "character-right") if dz > 0 else ("character-right", "character-left")
+        f["overlap"] = f"The {back} leg passes behind the {front}"
 
     # torso lean (image plane)
     dx, dy = sh_mid[0] - hip_mid[0], hip_mid[1] - sh_mid[1]
@@ -144,9 +167,9 @@ def describe(P, W, floor_y, body_h):
     else: f["head"] = "head forward"
 
     cue = ". ".join(x for x in [
-        f["weight"][0].upper() + f["weight"][1:], f["stance"], f["legs"],
+        f["weight"][0].upper() + f["weight"][1:], f["stance"], f["legs"], f["overlap"],
         f["arm_L"], f["arm_R"], f["torso"], f["hips"], f["shoulders"], f["head"]] if x) + "."
-    return f, cue
+    return f, cue, depth
 
 
 # ---------------------------------------------------------------- extract
@@ -261,7 +284,7 @@ def extract(a):
     for f in frames:
         # a moving camera has no fixed floor: with --stabilize the lower ankle counts as planted
         fl = max(f["P"]["anL"][1], f["P"]["anR"][1]) if a.stabilize else floor
-        f["features"], f["cue"] = describe(f["P"], f["W"], fl, body_h)
+        f["features"], f["cue"], f["depth"] = describe(f["P"], f["W"], fl, body_h)
 
     # motion energy -> keys (local minima: holds/extremes) and pilots (local maxima: fastest transitions)
     n = len(frames); loop = a.playback == "loop"
@@ -281,6 +304,11 @@ def extract(a):
     views = [f["features"]["view"] for f in frames]
     view = max(set(views), key=views.count)
 
+    # pts carry depth: world z (metres, hips the origin, negative toward camera) scaled by the clip's
+    # pixels-per-metre, so z reads in the same units as x and y and a 2D consumer can sort bones by it.
+    def zof(f, k):
+        return (f["W"][k][2] - (f["W"]["hipL"][2] + f["W"]["hipR"][2]) / 2) * ref
+
     doc = dict(
         schema=SCHEMA,
         title=name.replace("-", " ").title(), name=name,
@@ -292,8 +320,9 @@ def extract(a):
         seam=("clean" if seam < 1.5 else "needs blend") if loop else "n/a",
         missing_frames=missing, arc="",
         frames=[dict(i=f["i"], t=f["t"], role=f["role"], pace=f["pace"], energy=f["energy"],
-                     cue=f["cue"], note="", features=f["features"],
-                     pts={k: [round(v[0], 4), round(v[1], 4)] for k, v in f["P"].items()})
+                     cue=f["cue"], note="", features=f["features"], depth=f["depth"],
+                     pts={k: [round(v[0], 4), round(v[1], 4), round(zof(f, k), 4)]
+                          for k, v in f["P"].items()})
                 for f in frames],
         floor_y=round(floor, 4), body_h=round(body_h, 4))
     jp = os.path.join(out, "motion.json")
@@ -349,12 +378,13 @@ def figure_svg(pts, box, body_scale, color, accent=None, label=""):
     def X(p): return (p[0] - x0) * s + 10
     def Y(p): return (p[1] - y0) * s + 10
     L = []
-    for a, b in BONES:
-        L.append(f'<line x1="{X(pts[a]):.1f}" y1="{Y(pts[a]):.1f}" x2="{X(pts[b]):.1f}" y2="{Y(pts[b]):.1f}" '
-                 f'stroke="{color}" stroke-width="5" stroke-linecap="round"/>')
+    def z(k): return pts[k][2] if len(pts[k]) > 2 else 0.0   # schema 1 had no depth: flat is fine
     hm, sm = mid(pts["hipL"], pts["hipR"]), mid(pts["shL"], pts["shR"])
-    L.append(f'<line x1="{X(hm):.1f}" y1="{Y(hm):.1f}" x2="{X(sm):.1f}" y2="{Y(sm):.1f}" '
-             f'stroke="{color}" stroke-width="6" stroke-linecap="round"/>')
+    segs = [(pts[a], pts[b], 5, (z(a) + z(b)) / 2) for a, b in BONES]
+    segs.append((hm, sm, 6, (z("hipL") + z("hipR") + z("shL") + z("shR")) / 4))
+    for pa, pb, w, _ in sorted(segs, key=lambda s: -s[3]):   # far bones first, near ones drawn over
+        L.append(f'<line x1="{X(pa):.1f}" y1="{Y(pa):.1f}" x2="{X(pb):.1f}" y2="{Y(pb):.1f}" '
+                 f'stroke="{color}" stroke-width="{w}" stroke-linecap="round"/>')
     hc = mid(pts["earL"], pts["earR"])
     r = 0.07 * body_scale * s
     L.append(f'<circle cx="{X(hc):.1f}" cy="{Y(hc):.1f}" r="{r:.1f}" fill="none" stroke="{color}" stroke-width="5"/>')
@@ -552,6 +582,7 @@ footer a{color:inherit}
 <li>This is a <b>motion source</b>: it controls motion only. Character scale, proportions, identity, view and prop hand come from the manifest and approved authorities, never from this video.</li>
 <li>Every side is named <b>character-left</b> / <b>character-right</b> (the performer's own sides). Screen sides are never used for anatomy. The mirror button flips the drawing only; the text does not change.</li>
 <li>Playback is <b>{{PLAYBACK}}</b> at <b>{{FPS}} fps</b>, <b>{{N}}</b> frames. Loop seam: <b>{{SEAM}}</b> (frame {{N}} cuts back to frame 0).</li>
+<li>Depth is explicit: every landmark in <code>pts</code> is <code>[x, y, z]</code> with z negative toward the camera and the hips at zero, and each frame carries a <code>depth</code> block plus a cue sentence wherever the legs overlap. Sort bones by mean z and draw the far ones first; never guess which limb is in front.</li>
 <li>Grounded frames keep the supporting heel on the canonical baseline; frames marked airborne leave it only through a coherent takeoff, arc and landing.</li>
 <li>Draw keys first (pink), then pilots (blue), then in-betweens from locked neighbours. The frame notes below are the per-frame instruction set.</li>
 </ul></section>
@@ -617,12 +648,21 @@ def selftest():
         W = {k: [v[0] - 0.5, v[1] - 0.55, 0.0] for k, v in P.items()}
         W["shL"][2] = -0.05  # character-left shoulder slightly nearer camera => 3/4 view
         return P, W
-    f, cue = describe(*pose(0.10, 0.95), floor_y=0.95, body_h=0.75)
+    f, cue, depth = describe(*pose(0.10, 0.95), floor_y=0.95, body_h=0.75)
     assert "overhead" in f["arm_L"] and "low" in f["arm_R"], f
     assert "both feet down" in f["weight"] or "centred" in f["weight"], f
     assert f["view"] in ("front", "3/4"), f
-    f, _ = describe(*pose(0.60, 0.80), floor_y=0.95, body_h=0.75)
+    assert depth["near_side"] == "L" and depth["limbs"]["legL"] == "level", depth
+    f, _, _ = describe(*pose(0.60, 0.80), floor_y=0.95, body_h=0.75)
     assert "character-right foot lifted" in f["weight"], f
+    # crossed legs: the leg with the more negative world z is in front, and the cue must say so
+    P, W = pose(0.60, 0.95)
+    P["anL"], P["anR"] = [0.44, 0.95], [0.56, 0.95]          # ankles swapped == legs crossed
+    for k in ("knL", "anL"): W[k][2] = -0.20                 # character-left leg toward the camera
+    for k in ("knR", "anR"): W[k][2] = 0.20
+    f, cue, depth = describe(P, W, floor_y=0.95, body_h=0.75)
+    assert depth["limbs"] == dict(legL="near", legR="far", armL="level", armR="level"), depth
+    assert "The character-right leg passes behind the character-left." in cue, cue
     assert bend_word(170) == "straight" and bend_word(80) == "bent ~90°"
     assert tstamp("1:23.5") == 83.5 and tstamp("7") == 7
     man = bundle_manifest(dict(name="t", title="T", fps=4, frame_count=2, playback="loop", view="front",
