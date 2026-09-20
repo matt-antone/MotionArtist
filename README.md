@@ -16,6 +16,7 @@ Demo sheets:
 motion-artist/
   SKILL.md                 # the skill (what Claude does, step by step)
   scripts/motion_artist.py # extract (video → motion.json + thumbs), render (→ HTML), export (→ bundle)
+AGENTS.md                  # how to work in this repo: pipeline, conventions, verification
 ```
 
 ## Install
@@ -60,8 +61,9 @@ python3 motion-artist/scripts/motion_artist.py export work/dance/motion.json
 | `export --out`, `--sheet` | bundle path (default `work/<name>/<name>-motion-source.zip`) and the sheet HTML to include (default `<name>-motion.html` beside the json) |
 
 `extract` prints one line per frame (index, source time, key / pilot / in-between, pace, pose cue)
-and writes `motion.json` plus `thumbs/`. Between the two commands, fill `arc` and any per-frame
-`note` in `motion.json`; the sheet renders them. `selftest` checks the pose heuristics.
+and writes `motion.json` plus `thumbs/`. Between `extract` and `render`, fill `arc` and any
+per-frame `note` in `motion.json`; the sheet renders them. `selftest` checks the pose heuristics
+and the export manifest.
 
 The rendered sheet has the stick figure beside the source frame, play / scrub / rate / mirror
 controls, the frame strip (keys pink, pilots blue), a facing line on the head, the performance

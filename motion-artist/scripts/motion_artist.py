@@ -3,12 +3,14 @@
 
   motion_artist.py extract URL|FILE --fps N --frames N [--start S] [--end S] [--name SLUG]
                    [--playback loop|one-shot|final-hold] [--out DIR]
-  motion_artist.py render DIR/motion.json [--out FILE.html]
+  motion_artist.py render DIR/motion.json [--out FILE.html] [--repeat N] [--pingpong]
+  motion_artist.py export DIR/motion.json [--out FILE.zip] [--sheet FILE.html]
   motion_artist.py selftest
 
 `extract` writes DIR/motion.json (+ DIR/thumbs/*.jpg) and prints a compact frame table.
 `render` turns motion.json into a self-contained HTML motion sheet.
-Between the two, an agent may fill `arc`, `title` and per-frame `note` fields in motion.json.
+`export` bundles the json, sheet and thumbs with a SHA-256 manifest for hand-off.
+Between extract and render, an agent may fill `arc`, `title` and per-frame `note` in motion.json.
 """
 import argparse, base64, hashlib, html, json, math, os, re, subprocess, sys, urllib.request, zipfile
 
