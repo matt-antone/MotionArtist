@@ -502,6 +502,7 @@ h1{font-size:clamp(30px,5vw,44px);font-weight:800;letter-spacing:-.02em;line-hei
 .phase-name{font-family:"Bricolage Grotesque",sans-serif;font-weight:700;font-size:17px}
 .phase-of{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
 .cue{font-family:"Bricolage Grotesque",sans-serif;font-size:clamp(17px,2.2vw,21px);font-weight:500;line-height:1.3;letter-spacing:-.01em;min-height:3em}
+.understage{display:flex;flex-direction:column;gap:12px;margin-top:-10px}
 .note{color:var(--muted)}.note b{color:var(--ink)}
 .srcchip{align-self:flex-start;font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.06em;padding:4px 9px;border-radius:2px;background:var(--wash,var(--step-wash));color:var(--accent,var(--step));border:1px solid color-mix(in srgb,var(--accent,var(--step)) 28%,transparent)}
 .transport{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
@@ -553,14 +554,18 @@ footer a{color:inherit}
 <div class="countline"><div class="bigcount" id="bigCount">0</div>
 <div class="phase"><div class="phase-name" id="phaseName"></div><div class="phase-of" id="phaseOf"></div></div></div>
 <p class="cue" id="cue" aria-live="polite"></p>
-<p class="note" id="note"></p>
 <span class="srcchip" id="srcChip"></span>
+</div></section>
+
+<div class="understage">
 <div class="transport">
 <button class="play" id="playBtn" aria-label="Pause"><svg viewBox="0 0 12 12" aria-hidden="true"><rect x="1" y="1" width="3.5" height="10"/><rect x="7.5" y="1" width="3.5" height="10"/></svg><span id="playLabel">Pause</span></button>
 <button id="prevBtn" aria-label="Previous frame">&larr;</button><button id="nextBtn" aria-label="Next frame">&rarr;</button>
 <div class="rate" role="group" aria-label="Playback rate">{{RATES}}</div>
 <button id="mirrorBtn" aria-pressed="false">Mirror</button>
-</div></div></section>
+</div>
+<p class="note" id="note"></p>
+</div>
 
 <section><div class="strip-head"><h2>The sheet</h2><span>Click a frame to scrub · ←/→ · space</span></div>
 <div class="strip" id="strip"></div>
