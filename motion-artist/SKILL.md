@@ -19,12 +19,12 @@ roles: it controls motion only, never character scale, identity, view or prop ha
 | `--fps` | yes | playback rate of the target animation |
 | `--frames` | yes | total frame count of the target animation |
 | `--start` / `--end` | recommended | trim the span to inspect, seconds or `m:ss`. Without `--end`, the span is `frames / fps` seconds of real time from `--start`. With both, that span is time-stretched onto the frame count (the sheet reports the speed factor). Neither end is taken literally unless `--margin 0` — see below. |
-| `--playback` | default `loop` | `loop` (samples exclude `end`, so the last→first cut is one natural step), `one-shot`, `final-hold` |
+| `--playback` | default `loop` | `loop` (samples exclude `end`, so the last→first cut is one natural step), `one-shot`, `final-hold`. For `loop`, frame 0 and the last frame should both land on their feet — a loop seam an artist has to hold mid-air has no stable pose to draw. `extract` warns when either boundary frame comes back airborne; pick a different `--start`/`--search` window when it does. |
 | `--name` | optional | slug for the output dir and title |
 | `--margin` | default `0.5` s | slack around **both** `--start` and `--end`. The span you type is a guess; the move's own cut rarely lands on that exact second. Both ends are probed within the margin for the real one — matching poses for a `loop`, the stillest ending otherwise — and the winner is time-stretched onto the frame count, so the source span may come back a little shorter or longer than asked. `--margin 0` uses the span exactly as typed. Ignored with `--search`, which picks its own span. |
 | `--search` | optional | "find the best loop": slide a `frames / fps`-second window over `--start..--end` (whole video when `--end` is omitted), score each start by loop-closure distance vs motion energy, and use the tightest seam among the livelier half. Prints the top candidates. |
 | `--window` | optional | source seconds to take, when that differs from `frames / fps` — what `--search` looks for, and the span length when `--end` is omitted. Use it when a scene cut or lost tracking leaves less usable footage than the playback length, or to run a fast move slower. The winner is stretched onto the frame count. |
-| `--stabilize` | optional | centre the hips horizontally in every frame. Use when the camera pans, tilts or zooms, or the performer travels; otherwise the seam check and the strip show camera motion as body motion. With a moving camera there is no fixed floor, so airborne is never called: the lower ankle counts as planted. |
+| `--stabilize` | optional | centre the hips horizontally in every frame. Use when the camera pans, tilts or zooms, or the performer travels; otherwise the seam check and the strip show camera motion as body motion. With a moving camera there is no fixed floor, so airborne is never called: the lower sole counts as planted. |
 | `--exaggerate` | default `1.25` | amplify each landmark's deviation from the clip-mean pose; `1.0` = as filmed |
 
 If the user gives no trim and the video is longer than ~15 s, make a contact sheet first
@@ -129,11 +129,14 @@ captures there; the repo excludes motion captures by policy. The sheet's
   width, so a turn that narrows the girdle cannot also shrink the box and cancel what it is drawn to
   show. The cue names the same thing in words ("hips turned character-left against the shoulders")
   whenever the two girdles differ by 10° or more.
-- The dashed line under the figure is the floor, drawn at the deepest sole in the whole clip, so
-  nothing ever crosses it. It is **not** `floor_y` from the JSON: that one is an 85th percentile of
-  the lower *ankle*, which the heel and toe hang below — drawing it put a line through every foot in
-  the set. `floor_y` stays the reference the pose logic is calibrated against (`airborne` and
-  planted compare ankles to it); it is just not where the ground is. Do not point the line back at it.
+- The dashed line under the figure is the floor, drawn at the **max** sole depth in the whole clip
+  (`compute_box`), so nothing ever crosses it. It is **not** `floor_y` from the JSON: that one is an
+  85th *percentile* of the lower sole, so by construction about one frame in seven sits below it —
+  drawing the line there would cut through those feet. `floor_y` is a classification threshold, not
+  a ground plane: it is what `airborne` and planted compare the sole against (the sole, not the
+  ankle — an ankle rides well above the floor whenever the dancer is on the balls of her feet, which
+  is not airborne). Do not point the drawn line back at it, and if a downstream renderer draws its
+  own floor, it must use max-of-soles too or it will show feet below the line.
 - The sheet is dark only. It carries one `:root` and no `prefers-color-scheme` block, so it looks
   the same whatever the reader's OS is set to.
 - The template opens with `<meta charset="utf-8">`. Every cue carries en-dashes, degree signs and
