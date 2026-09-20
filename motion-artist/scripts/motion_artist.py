@@ -18,6 +18,9 @@ MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
              "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task")
 MODEL_PATH = os.path.expanduser("~/.cache/motion-artist/pose_landmarker_lite.task")
 
+# Bump when a field changes meaning or disappears, so a consumer fails loudly instead of mis-parsing.
+SCHEMA = "motion-artist/1"
+
 # MediaPipe pose indices. "L"/"R" are the person's own sides == character-left / character-right.
 LM = dict(nose=0, eyeL=2, eyeR=5, earL=7, earR=8, shL=11, shR=12, elL=13, elR=14, wrL=15, wrR=16,
           hipL=23, hipR=24, knL=25, knR=26, anL=27, anR=28, heelL=29, heelR=30, toeL=31, toeR=32)
@@ -273,6 +276,7 @@ def extract(a):
     view = max(set(views), key=views.count)
 
     doc = dict(
+        schema=SCHEMA,
         title=name.replace("-", " ").title(), name=name,
         source=dict(url=a.source, file=src, title=title, start=start, end=round(end, 3),
                     speed_factor=round(speed, 2), duration=round(dur, 2)),
@@ -627,7 +631,7 @@ def sha256(path):
 def bundle_manifest(d, files):
     """What the motion-director job input references: what the capture is, and a SHA-256 per file."""
     return dict(
-        bundle="motion-source", name=d["name"], title=d["title"],
+        bundle="motion-source", schema=d.get("schema", SCHEMA), name=d["name"], title=d["title"],
         fps=d["fps"], frame_count=d["frame_count"], playback=d["playback"], view=d["view"],
         seam=d["seam"], stabilized=d.get("stabilized", False), exaggerate=d.get("exaggerate"),
         missing_frames=d.get("missing_frames", []), source=d["source"],
