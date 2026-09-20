@@ -12,7 +12,7 @@
 `export` bundles the json, sheet and thumbs with a SHA-256 manifest for hand-off.
 Between extract and render, an agent may fill `arc`, `title` and per-frame `note` in motion.json.
 """
-import argparse, base64, hashlib, html, json, math, os, re, subprocess, sys, urllib.request, zipfile
+import argparse, base64, glob, hashlib, html, json, math, os, re, subprocess, sys, urllib.request, zipfile
 
 MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
              "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task")
@@ -816,9 +816,11 @@ def export(a):
                   if os.path.isfile(os.path.join(tdir, n))]
     # spritesheet is optional — only `spritesheet` produces it, and not every capture needs one —
     # so it rides along when found next to the json rather than requiring its own export flag.
-    for ext in (".svg", ".png"):
-        p = os.path.join(src, f"{d['name']}-spritesheet{ext}")
-        if os.path.exists(p): files.append((os.path.basename(p), p))
+    # glob, not an exact name: a motion longer than one sheet chunks into -00.png, -01.png … and an
+    # exact `<name>-spritesheet.png` matched none of them, so the sheets silently never reached the
+    # bundle while the manifest still described them.
+    for p in sorted(glob.glob(os.path.join(src, f"{d['name']}-spritesheet*.png"))):
+        files.append((os.path.basename(p), p))
     man = bundle_manifest(d, files)
     # the spritesheet's grid geometry (cols/rows/tile pitch/label band) rides in the manifest too,
     # not just as a sidecar file, so a consumer slices the PNG by declared numbers instead of

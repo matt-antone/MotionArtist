@@ -180,9 +180,9 @@ right thing positively is what held. That applies to any prompt text this skill 
    sprite sheets and their layout sidecar, and a
    generated `manifest.json` (fps, frame count, playback, view, `seam` and `seam_ratio`, source, and
    a SHA-256 per file), all under a `<name>/` folder. The sidecar's grid rides in the manifest as a
-   `spritesheet` block. Note CAG only reads a bundle's sprite sheet when `files` names exactly one
-   `*-spritesheet.png`, so a motion that chunked across several leaves that slot empty — which costs
-   nothing, because it prefers the thumbs and tiles its own grid from them anyway. Prints the bundle path and the zip's own
+   `spritesheet` block. CAG itself no longer reads either one — it takes the loose `thumbs/` and tiles
+   its own grid at render time — so the sheets ride along for anyone handing a generator the whole
+   pose set directly, and cost the consumer nothing. Prints the bundle path and the zip's own
    SHA-256 — that
    pair is what the motion-director job input references. It warns when `arc` is still empty or
    frames are missing a pose; fix those and re-export rather than handing off a warned bundle.
