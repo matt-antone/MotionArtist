@@ -231,6 +231,13 @@ def portable(p):
 
 def extract(a):
     import cv2
+    # CAG renders 12 figures per image on a 4-wide grid and chunks a longer motion across as many
+    # renders as it needs, so there is no ceiling here — only the grid. A count off a multiple of 4
+    # leaves the last row of the last chunk part-empty. That wastes cells; it breaks nothing.
+    if a.frames % 4:
+        print(f"note: {a.frames} frames is not a multiple of 4, so CAG's last render row is "
+              f"part-empty. Harmless, but {a.frames - a.frames % 4} or {a.frames + 4 - a.frames % 4} "
+              f"fills the grid.", file=sys.stderr)
     out = a.out or os.path.join("work", a.name or "motion")
     os.makedirs(os.path.join(out, "thumbs"), exist_ok=True)
     if re.match(r"https?://", a.source):
@@ -282,7 +289,10 @@ def extract(a):
         P = {k: [img[j].x * Wpx / Hpx, img[j].y] for k, j in LM.items()}   # aspect-corrected, y down
         W = {k: [wld[j].x, wld[j].y, wld[j].z] for k, j in LM.items()}
         th = cv2.resize(bgr, (200, int(200 * Hpx / Wpx)))
-        cv2.imwrite(os.path.join(out, "thumbs", f"f{i:02d}.jpg"), th, [cv2.IMWRITE_JPEG_QUALITY, 60])
+        # quality 60 put JPEG artefacts on the limb edges, which is the one thing CAG's generator
+        # reads off these: they are its pose reference, not a preview. 200px is the width every
+        # amplitude measurement was taken at, and CAG pastes them at native size, so it stays.
+        cv2.imwrite(os.path.join(out, "thumbs", f"f{i:02d}.jpg"), th, [cv2.IMWRITE_JPEG_QUALITY, 88])
         frames.append(dict(i=i, t=round(t, 3), P=P, W=W))
     if len(frames) < 2:
         sys.exit(f"pose not found in enough frames (missing {missing}); try --start/--end on a clearer span")
@@ -356,6 +366,7 @@ def extract(a):
         exaggerate=a.exaggerate, stabilized=a.stabilize,
         fps=a.fps, frame_count=a.frames, playback=a.playback, view=view,
         seam=("clean" if seam < 1.5 else "needs blend") if loop else "n/a",
+        seam_ratio=round(seam, 2) if loop else None,   # the number behind the verdict, for CAG's log
         missing_frames=missing, arc="",
         frames=[dict(i=f["i"], t=f["t"], role=f["role"], pace=f["pace"], energy=f["energy"],
                      cue=f["cue"], note="", features=f["features"], depth=f["depth"],
@@ -780,10 +791,16 @@ def selftest():
     assert figure_svg(flat, (0, 0, 1, 1), 0.75, "var(--fig)").count("<path") == 16   # + 2 girdles
     assert bend_word(170) == "straight" and bend_word(80) == "bent ~90°"
     assert tstamp("1:23.5") == 83.5 and tstamp("7") == 7
-    man = bundle_manifest(dict(name="t", title="T", fps=4, frame_count=2, playback="loop", view="front",
-                               seam="clean", source={}, arc="  "), [("motion.json", __file__)])
+    # the manifest carries the capture's own seam verdict and the number behind it: CAG reads the
+    # verdict before drawing, and an absent seam must read as no complaint rather than a bad one
+    cap = dict(name="t", title="T", fps=4, frame_count=2, playback="loop", view="front",
+               seam="needs blend", seam_ratio=2.4, source={}, arc="  ")
+    man = bundle_manifest(cap, [("motion.json", __file__)])
     assert man["files"]["motion.json"] == sha256(__file__) and len(man["files"]["motion.json"]) == 64
     assert man["arc_written"] is False and man["bundle"] == "motion-source"
+    assert man["seam"] == "needs blend" and man["seam_ratio"] == 2.4, man
+    cap.pop("seam_ratio")                                  # a schema/1 capture predates the number
+    assert bundle_manifest(cap, [("motion.json", __file__)])["seam_ratio"] is None
     assert portable(os.path.join(os.getcwd(), "work", "x.mp4")) == os.path.join("work", "x.mp4")
     assert portable("/somewhere/else/x.mp4") == "x.mp4"
     print("selftest ok")
@@ -798,11 +815,18 @@ def sha256(path):
 
 
 def bundle_manifest(d, files):
-    """What the motion-director job input references: what the capture is, and a SHA-256 per file."""
+    """What the motion-director job input references: what the capture is, and a SHA-256 per file.
+
+    One bundle is one animation of any length: CAG chunks it across as many 12-figure renders as it
+    needs and assembles one sheet, so a motion is never split across bundles — two bundles are two
+    unrelated animations there, each separately proofed and scaled. `seam` therefore means what it
+    always did: this capture's last frame against its own first.
+    """
     return dict(
         bundle="motion-source", schema=d.get("schema", SCHEMA), name=d["name"], title=d["title"],
         fps=d["fps"], frame_count=d["frame_count"], playback=d["playback"], view=d["view"],
-        seam=d["seam"], stabilized=d.get("stabilized", False), exaggerate=d.get("exaggerate"),
+        seam=d["seam"], seam_ratio=d.get("seam_ratio"),   # the verdict, and the number behind it
+        stabilized=d.get("stabilized", False), exaggerate=d.get("exaggerate"),
         missing_frames=d.get("missing_frames", []), source=d["source"],
         arc_written=bool(d.get("arc", "").strip()),
         files={rel: sha256(p) for rel, p in files})
@@ -810,12 +834,13 @@ def bundle_manifest(d, files):
 
 def export(a):
     """Zip motion.json + the sheet + thumbs with a SHA-256 manifest, ready for KP-Graphics."""
-    d = json.load(open(a.json))
-    src = os.path.dirname(os.path.abspath(a.json))
+    jp = a.json
+    d = json.load(open(jp))
+    src = os.path.dirname(os.path.abspath(jp))
     sheet = a.sheet or os.path.join(src, f"{d['name']}-motion.html")
     if not os.path.exists(sheet):
         sys.exit(f"export: no motion sheet at {sheet} — run `render` first, or pass --sheet")
-    files = [("motion.json", os.path.abspath(a.json)), (os.path.basename(sheet), sheet)]
+    files = [("motion.json", os.path.abspath(jp)), (os.path.basename(sheet), sheet)]
     tdir = os.path.join(src, "thumbs")
     if os.path.isdir(tdir):
         files += [(f"thumbs/{n}", os.path.join(tdir, n)) for n in sorted(os.listdir(tdir))
@@ -829,12 +854,21 @@ def export(a):
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         for rel, p in files: z.write(p, f"{d['name']}/{rel}")
         z.writestr(f"{d['name']}/manifest.json", json.dumps(man, indent=1))
-    print(f"{out}\nsha256 {sha256(out)} | {len(files) + 1} files | {d['frame_count']}f @ {d['fps']}fps | "
-          f"{d['playback']} | view {d['view']} | seam {d['seam']}")
+    ratio = man["seam_ratio"]
+    print(f"{out}\nsha256 {sha256(out)} | {len(files) + 1} files | {d['frame_count']}f @ "
+          f"{d['fps']}fps | {d['playback']} | view {d['view']} | seam {man['seam']}"
+          f"{f' ({ratio:.2f}x median step)' if ratio is not None else ''}")
     if not man["arc_written"]:
         print("warning: arc is empty — write the performance arc before hand-off")
     if man["missing_frames"]:
         print(f"warning: frames with no pose: {man['missing_frames']}")
+    # CAG builds its pose reference from the thumbs, one figure per thumb in name order, so a gap
+    # (a frame with no pose) or a leftover from an earlier, longer capture slides figure n off
+    # frame n and every per-frame note with it.
+    thumbs = [rel for rel, _ in files if rel.startswith("thumbs/")]
+    if len(thumbs) != d["frame_count"]:
+        print(f"warning: {len(thumbs)} thumbs for {d['frame_count']} frames — CAG reads them as the "
+              f"pose reference, one per frame. Clear {tdir} and re-extract.")
 
 
 def main():

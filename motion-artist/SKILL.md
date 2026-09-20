@@ -17,7 +17,7 @@ roles: it controls motion only, never character scale, identity, view or prop ha
 | --- | --- | --- |
 | video | yes | YouTube URL (incl. Shorts) or local file |
 | `--fps` | yes | playback rate of the target animation |
-| `--frames` | yes | total frame count of the target animation |
+| `--frames` | yes | total frame count of the target animation. No ceiling — one motion is one capture and one bundle, however long. Prefer a multiple of 4; see below. |
 | `--start` / `--end` | recommended | trim the span to inspect, seconds or `m:ss`. Without `--end`, the span is `frames / fps` seconds of real time from `--start`. With both, that span is time-stretched onto the frame count (the sheet reports the speed factor). Neither end is taken literally unless `--margin 0` — see below. |
 | `--playback` | default `loop` | `loop` (samples exclude `end`, so the last→first cut is one natural step), `one-shot`, `final-hold` |
 | `--name` | optional | slug for the output dir and title |
@@ -32,6 +32,68 @@ If the user gives no trim and the video is longer than ~15 s, make a contact she
 ask for "the best loop" inside a range, pass the range as `--start/--end` plus `--search`. When the
 search reports no fully-tracked window, the range holds a scene cut or a shot with no visible body:
 sample it to find the usable span, then search inside that span with `--window`.
+
+## Frame count: any length, but prefer a multiple of 12
+
+One motion is **one capture and one bundle**, whatever its length. Do not split a long motion into
+several — CAG has no concept of chaining bundles, so two bundles are two unrelated animations there,
+each with its own sprite sheet, its own proof and its own registration scale, and the loop relation
+between them is lost.
+
+The number 12 belongs to CAG's renderer, not to the bundle: it draws at most 12 figures per image
+on a grid four wide, and chunks a longer motion across as many renders as it needs before
+assembling one sheet. A 24-frame bundle renders as 12 + 12, a 32 as 12 + 12 + 8, a 14 as 12 + 2 —
+all one animation out the other side. That ceiling is not reachable from here: `sheet()` chunks by
+`SHEET_FRAMES` unconditionally and no spec field raises it, so nothing this skill ships can put more
+than 12 figures in one render whatever `frame_count` says. (A scratch script calling `draw()`
+directly can, and does tile one pose across the last row past 12 — but that path is below CAG.)
+
+**Each chunk is a separate generation call, and every boundary is a chance for the character to
+drift** — costume, face, proportions. The approved key art is attached to every render, which is
+real mitigation and is also exactly what failed to stop a dancer's trainers arriving on a lifted
+foot. Nothing measures identity across chunks and nothing warns. So prefer a count that divides by
+12: it costs the fewest calls. 24 is two; 26 is three, one of them drawing two figures.
+
+Failing that, prefer a multiple of 4, so the last row of the last chunk fills rather than sitting
+part-empty. That is wasted cells, not a failure, and `extract` says so as a note. Nothing breaks
+at 14.
+
+What does **not** need managing from here is drawn size. The generator draws figures bigger in a
+sparse render than a full one, so a 12 + 2 chunking draws its last two much larger — but
+registration measures each chunk separately and normalises it out, deliberately, because one factor
+across both put a size pop at the seam. Measured on 16 frames with the second chunk drawn at twice
+the height of the first: registered cells came out 389px and 393px, a 4px spread, about 1%, and that
+residual is rounding between two source sizes rather than drift.
+
+## `thumbs/` is a contract output
+
+`thumbs/fNN.jpg` — one per frame, in frame order, count matching `frame_count` — is **the pose
+reference CAG draws from**, not a preview convenience. Its strip is built straight from them.
+
+A/B'd on one clip at 8 frames, skeleton sprite cards against a strip of the raw video frames: pose
+fidelity was a wash (roll-to-roll spread wider than the gap between conditions), but amplitude — how
+big the drawn movement is against the trace — was not. Skeleton-conditioned runs landed at 0.43–0.70
+of the real movement and read as a timid sway; photo-conditioned runs sit at 0.9–1.2 and read as a
+real dance. A pose can rank perfectly and still read flat if it is drawn at half size.
+
+So the motion sheet is **one of two** pose routes, not the route, and the photographs are currently
+winning on how the motion reads. Keep shipping both. What this asks of a capture: a tight, consistent
+crop with the dancer fully in frame, every frame tracked — a frame with no pose writes no thumb, which
+slides the whole strip out of step with the frame indices. `export` warns when the thumb count and
+`frame_count` disagree.
+
+Thumbs are written 200px wide at JPEG quality **88**. Both numbers are deliberate. 200px is the
+width every amplitude measurement above was taken at, and CAG letterboxes each thumb onto a 384×512
+card at native size, so it is demonstrably enough; 384 wide would fill the card exactly, but it is
+not the measured condition, so it needs a measurement before it is worth taking. The quality came up
+from 60 because JPEG artefacts at 60 sit on the limb edges, which is precisely what the generator is
+reading off them. That one is reasoning about the failure mode, not a measured delta.
+
+Known failure mode of the photo route: photographs bleed the **dancer's costume** into the character
+(a brown boot came back as the dancer's white sneaker on a lifted foot, 2 figures in 16). It is fixed
+on the CAG side with a positive costume sentence — nothing to do here. Worth carrying the general
+lesson though: telling the model to *ignore* the clothing did not work. Negation is weak; naming the
+right thing positively is what held. That applies to any prompt text this skill generates.
 
 ## Steps
 
@@ -75,7 +137,11 @@ sample it to find the usable span, then search inside that span with `--window`.
    The sheet always holds exactly `--frames` cells, and the player loops them forever — a seam is
    reviewed by watching, never by drawing the cycle twice. Add `--pingpong` to walk those same cells
    out and back (0..N-1 then N-2..1): the return leg is the out leg reversed, so the seam is always
-   clean and the artist still draws only the frames asked for.
+   clean and the artist still draws only the frames asked for. It is a **playback flag on the sheet
+   only** — it adds no cells, leaves `frame_count` alone, and does not reach `manifest.json`. CAG
+   never learns of it, and reverses nothing on its own, so an out-and-back that exists only as this
+   flag appears in neither the sprite sheet nor the proof. If the delivered asset has to show it,
+   trace the return leg as real frames.
    The sheet is rendered from `motion-artist/templates/sheet.html` — markup, CSS and player in one
    file, with `{{PLACEHOLDER}}`s the script fills. Change how a sheet looks by editing that template;
    pass `--template FILE` to render into a different one.
@@ -93,11 +159,13 @@ sample it to find the usable span, then search inside that span with `--window`.
    ```bash
    python3 "$SKILL/scripts/motion_artist.py" export work/dance/motion.json
    ```
-   Writes `exports/dance-16f-4fps-motion-source.zip` — always `exports/` at the repo root, the
+   One motion is one bundle, however many frames it has.
+   Writes `exports/dance-24f-4fps-motion-source.zip` — always `exports/` at the repo root, the
    name carrying the frame count and fps, never inside
-   the capture dir: `motion.json`, the sheet HTML, `thumbs/` and a
-   generated `manifest.json` (fps, frame count, playback, view, seam, source, and a SHA-256 per
-   file), all under a `<name>/` folder. Prints the bundle path and the zip's own SHA-256 — that
+   the capture dir: `motion.json`, the sheet HTML, `thumbs/` (the pose reference — see above) and a
+   generated `manifest.json` (fps, frame count, playback, view, `seam` and `seam_ratio`, source, and
+   a SHA-256 per file), all under a `<name>/` folder. Prints the bundle path and the zip's own
+   SHA-256 — that
    pair is what the motion-director job input references. It warns when `arc` is still empty or
    frames are missing a pose; fix those and re-export rather than handing off a warned bundle.
 
@@ -105,7 +173,9 @@ sample it to find the usable span, then search inside that span with `--window`.
 
 Copy `exports/<name>-<frames>f-<fps>fps-motion-source.zip` into that repo's ignored
 `work/<character>/motion-source/` and reference it by path and by the SHA-256 the export printed,
-as the authorized motion source in the motion-director job input. The bundle's `manifest.json`
+as the authorized motion source in the motion-director job input. A spec names **one** bundle per
+animation (`spec.motions[set_name]` → one bundle directory); CAG chunks it across renders itself.
+The bundle's `manifest.json`
 carries a SHA-256 per file, so an unzipped copy can be verified file by file. Do not commit
 captures there; the repo excludes motion captures by policy. The sheet's
 "view" is the *filmed* view — the manifest's `view` still governs the rendered character.
@@ -114,11 +184,22 @@ captures there; the repo excludes motion captures by policy. The sheet's
 
 - Dependencies: `yt-dlp`, `python3` with `opencv-python` and `mediapipe<1` (the 1.x wheel crashes in
   the Metal helper on macOS). Model is cached at `~/.cache/motion-artist/`.
-- `selftest` runs the pose-description, span-picking, arc carry-over and figure-geometry checks:
+- `selftest` runs the pose-description, span-picking, arc carry-over, figure-geometry and manifest
+  checks:
   `python3 "$SKILL/scripts/motion_artist.py" selftest`. Run it after touching any of them.
 - Every frame is scaled about the hips so torso length matches the clip median: camera zoom or distance never changes skeleton size.
 - Cues are heuristic: elbow and knee angles, girdle twist and sole pitch from the world landmarks,
   wrist and hip heights from the image landmarks. They are guidance for the artist, not measurements.
+- `pts` stay load-bearing even though the pose reference is now the photographs. CAG's registration
+  reads the drawn figure against what a frame's own landmarks say the pose's extent is versus the
+  character's crown-to-heel, which is how it recovers the real character height whatever
+  magnification the generator picked, and so how it holds one scale across chunks. A set with no
+  landmarks falls back to a per-chunk height cluster. Keep them accurate; do not hand-edit them.
+- `seam` is read on the CAG side, not just by us: before drawing, it logs that the proof will jump
+  from the last frame back to the first unless the verdict is `clean` or empty (an unset seam reads
+  as no complaint), and `cag sheets` prints it per bundle. `seam_ratio` rides alongside it — the
+  same cut as a number rather than a word, so a log can say "loops on a 2.3-step cut". It is
+  additive and nothing reads it yet. `schema` does not move for an added key.
 - The bundle's `schema` stays `motion-artist/2`. That version means the landmarks carry a third
   float, `z`, which is still the layout; extra joints in `pts` and reworded `features` are content
   inside it, and CAG reads `pts` joint by joint, so a bundle keeps loading. Bump it only when the
@@ -128,7 +209,11 @@ captures there; the repo excludes motion captures by policy. The sheet's
   turn reads as nothing; a box turns visibly. Both are sized off the spine rather than off their own
   width, so a turn that narrows the girdle cannot also shrink the box and cancel what it is drawn to
   show. The cue names the same thing in words ("hips turned character-left against the shoulders")
-  whenever the two girdles differ by 10° or more.
+  whenever the two girdles differ by 10° or more. Note that **torso rotation does not survive into
+  the CAG render**: a frame traced at 28° of body yaw comes back drawn square-on every time, at 1, 4,
+  8 and 12 figures per render, from photographs or skeletons, across three prompt rewordings. The
+  boxes and the cue still earn their place for a human reading the sheet — but do not spend effort
+  encoding yaw more richly on this side expecting CAG to use it. It is not a bundle problem.
 - The dashed line under the figure is the floor, drawn at the deepest sole in the whole clip, so
   nothing ever crosses it. It is **not** `floor_y` from the JSON: that one is an 85th percentile of
   the lower *ankle*, which the heel and toe hang below — drawing it put a line through every foot in
