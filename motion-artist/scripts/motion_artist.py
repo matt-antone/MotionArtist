@@ -231,12 +231,13 @@ def portable(p):
 
 def extract(a):
     import cv2
-    # CAG draws a whole set in one generation call, laid out 4 figures wide. Past 12 it silently
-    # tiles one pose across the last row (measured: 6 repeated pairs at 16), and past 16 it refuses
-    # the count outright, which desynchronises figure n from frame n. Split long motions into sets.
-    if a.frames not in (4, 8, 12):
-        print(f"warning: {a.frames} frames — CAG sets are 4, 8 or 12; longer sets come back with "
-              f"repeated poses or the wrong count. Split this into sets of 12.", file=sys.stderr)
+    # CAG renders 12 figures per image on a 4-wide grid and chunks a longer motion across as many
+    # renders as it needs, so there is no ceiling here — only the grid. A count off a multiple of 4
+    # leaves the last row of the last chunk part-empty. That wastes cells; it breaks nothing.
+    if a.frames % 4:
+        print(f"note: {a.frames} frames is not a multiple of 4, so CAG's last render row is "
+              f"part-empty. Harmless, but {a.frames - a.frames % 4} or {a.frames + 4 - a.frames % 4} "
+              f"fills the grid.", file=sys.stderr)
     out = a.out or os.path.join("work", a.name or "motion")
     os.makedirs(os.path.join(out, "thumbs"), exist_ok=True)
     if re.match(r"https?://", a.source):
@@ -288,7 +289,10 @@ def extract(a):
         P = {k: [img[j].x * Wpx / Hpx, img[j].y] for k, j in LM.items()}   # aspect-corrected, y down
         W = {k: [wld[j].x, wld[j].y, wld[j].z] for k, j in LM.items()}
         th = cv2.resize(bgr, (200, int(200 * Hpx / Wpx)))
-        cv2.imwrite(os.path.join(out, "thumbs", f"f{i:02d}.jpg"), th, [cv2.IMWRITE_JPEG_QUALITY, 60])
+        # quality 60 put JPEG artefacts on the limb edges, which is the one thing CAG's generator
+        # reads off these: they are its pose reference, not a preview. 200px is the width every
+        # amplitude measurement was taken at, and CAG pastes them at native size, so it stays.
+        cv2.imwrite(os.path.join(out, "thumbs", f"f{i:02d}.jpg"), th, [cv2.IMWRITE_JPEG_QUALITY, 88])
         frames.append(dict(i=i, t=round(t, 3), P=P, W=W))
     if len(frames) < 2:
         sys.exit(f"pose not found in enough frames (missing {missing}); try --start/--end on a clearer span")
@@ -362,6 +366,7 @@ def extract(a):
         exaggerate=a.exaggerate, stabilized=a.stabilize,
         fps=a.fps, frame_count=a.frames, playback=a.playback, view=view,
         seam=("clean" if seam < 1.5 else "needs blend") if loop else "n/a",
+        seam_ratio=round(seam, 2) if loop else None,   # the number behind the verdict, for CAG's log
         missing_frames=missing, arc="",
         frames=[dict(i=f["i"], t=f["t"], role=f["role"], pace=f["pace"], energy=f["energy"],
                      cue=f["cue"], note="", features=f["features"], depth=f["depth"],
@@ -754,19 +759,6 @@ def selftest():
         assert "DROPPED" in carry_over_writing(jp, moved)
         assert moved["arc"] == "" and not any(f["note"] for f in moved["frames"]), moved
         assert "DROPPED" in carry_over_writing(jp, doc_at(1.0, 2.0, n=3))   # frame count changed
-    # a 24-frame cycle split into two sets of 12: the loop cut closes, because it is the same grid
-    # cut in two, while either half read on its own looks like a jump — which is exactly why a set's
-    # own seam verdict says nothing once a motion is split.
-    def half(lo, hi, n=24):
-        return dict(fps=4, frame_count=hi - lo, playback="loop", body_h=1.0, missing_frames=[],
-                    frames=[dict(i=i - lo, pts={k: [math.sin(2 * math.pi * i / n + j),
-                                                    math.cos(2 * math.pi * i / n + j), 0.0]
-                                                for j, k in enumerate(CORE)})
-                            for i in range(lo, hi)])
-    edges, _, total = loop_edges([half(0, 12), half(12, 24)])
-    assert total == 24 and len(edges) == 2, (total, edges)
-    assert edges[0][1] < 1.5 and edges[1][1] < 1.5, edges      # join and loop both one ordinary step
-    assert loop_edges([half(0, 12)])[0][-1][1] > 1.5, loop_edges([half(0, 12)])[0]   # half alone: jump
     # footwork: a planted foot with the heel above the ball is "on the ball", and a flat foot says
     # nothing at all rather than padding every cue with a word the artist can ignore
     P, W = pose(0.60, 0.95)
@@ -799,15 +791,16 @@ def selftest():
     assert figure_svg(flat, (0, 0, 1, 1), 0.75, "var(--fig)").count("<path") == 16   # + 2 girdles
     assert bend_word(170) == "straight" and bend_word(80) == "bent ~90°"
     assert tstamp("1:23.5") == 83.5 and tstamp("7") == 7
-    # the manifest's seam is the chain's, measured at export — never the stale per-set value the
-    # capture wrote into its own motion.json, which for a split motion is a mid-motion step
-    stale = dict(name="t", title="T", fps=4, frame_count=2, playback="loop", view="front",
-                 seam="clean", source={}, arc="  ")
-    man = bundle_manifest(stale, [("motion.json", __file__)], "needs blend", 2.4, 1, 2)
+    # the manifest carries the capture's own seam verdict and the number behind it: CAG reads the
+    # verdict before drawing, and an absent seam must read as no complaint rather than a bad one
+    cap = dict(name="t", title="T", fps=4, frame_count=2, playback="loop", view="front",
+               seam="needs blend", seam_ratio=2.4, source={}, arc="  ")
+    man = bundle_manifest(cap, [("motion.json", __file__)])
     assert man["files"]["motion.json"] == sha256(__file__) and len(man["files"]["motion.json"]) == 64
     assert man["arc_written"] is False and man["bundle"] == "motion-source"
     assert man["seam"] == "needs blend" and man["seam_ratio"] == 2.4, man
-    assert man["set"] == dict(index=1, of=2), man["set"]
+    cap.pop("seam_ratio")                                  # a schema/1 capture predates the number
+    assert bundle_manifest(cap, [("motion.json", __file__)])["seam_ratio"] is None
     assert portable(os.path.join(os.getcwd(), "work", "x.mp4")) == os.path.join("work", "x.mp4")
     assert portable("/somewhere/else/x.mp4") == "x.mp4"
     print("selftest ok")
@@ -821,18 +814,18 @@ def sha256(path):
     return h.hexdigest()
 
 
-def bundle_manifest(d, files, seam, ratio, ix, count):
+def bundle_manifest(d, files):
     """What the motion-director job input references: what the capture is, and a SHA-256 per file.
 
-    `seam` describes the whole animation, not this set, and is measured at export across every set
-    handed over together — so it overrides the `seam` in this set's own motion.json. A motion longer
-    than 12 frames ships as several sets, and a set's own last->first distance is then a step in the
-    middle of the move, not a loop cut. `set` says which piece this is.
+    One bundle is one animation of any length: CAG chunks it across as many 12-figure renders as it
+    needs and assembles one sheet, so a motion is never split across bundles — two bundles are two
+    unrelated animations there, each separately proofed and scaled. `seam` therefore means what it
+    always did: this capture's last frame against its own first.
     """
     return dict(
         bundle="motion-source", schema=d.get("schema", SCHEMA), name=d["name"], title=d["title"],
         fps=d["fps"], frame_count=d["frame_count"], playback=d["playback"], view=d["view"],
-        seam=seam, seam_ratio=ratio, set=dict(index=ix, of=count),
+        seam=d["seam"], seam_ratio=d.get("seam_ratio"),   # the verdict, and the number behind it
         stabilized=d.get("stabilized", False), exaggerate=d.get("exaggerate"),
         missing_frames=d.get("missing_frames", []), source=d["source"],
         arc_written=bool(d.get("arc", "").strip()),
@@ -840,32 +833,9 @@ def bundle_manifest(d, files, seam, ratio, ix, count):
 
 
 def export(a):
-    """Zip each set's motion.json + sheet + thumbs with a SHA-256 manifest, ready for KP-Graphics.
-
-    Pass every set of one animation in play order: the loop cut spans the whole chain, and a set
-    exported alone can only report its own, which for a split motion is a number about nothing.
-    """
-    docs = [json.load(open(p)) for p in a.json]
-    if len(docs) > 1 and (a.out or a.sheet):
-        sys.exit("export: --out and --sheet describe one set; drop them to export a chain")
-    fps = {d["fps"] for d in docs}
-    if len(fps) > 1:
-        sys.exit(f"export: the sets disagree on fps ({sorted(fps)}) — they are not one animation")
-    if sum(len(d["frames"]) for d in docs) < 3:
-        sys.exit("export: need at least 3 tracked frames across the sets")
-    # one loop verdict for the whole chain, stamped into every set's manifest
-    edges, _, _ = loop_edges(docs)
-    ratio = round(edges[-1][1], 2)
-    verdict = ("clean" if ratio < 1.5 else "needs blend") if docs[-1]["playback"] == "loop" else "n/a"
-    for label, r in edges[:-1]:
-        if r >= 1.5:
-            print(f"warning: {label.strip()} is {r:.2f}x the median step — the sets do not meet; "
-                  f"re-cut them from one span with --margin 0")
-    for ix, (jp, d) in enumerate(zip(a.json, docs)):
-        export_set(a, jp, d, verdict, ratio, ix, len(docs))
-
-
-def export_set(a, jp, d, verdict, ratio, ix, count):
+    """Zip motion.json + the sheet + thumbs with a SHA-256 manifest, ready for KP-Graphics."""
+    jp = a.json
+    d = json.load(open(jp))
     src = os.path.dirname(os.path.abspath(jp))
     sheet = a.sheet or os.path.join(src, f"{d['name']}-motion.html")
     if not os.path.exists(sheet):
@@ -875,7 +845,7 @@ def export_set(a, jp, d, verdict, ratio, ix, count):
     if os.path.isdir(tdir):
         files += [(f"thumbs/{n}", os.path.join(tdir, n)) for n in sorted(os.listdir(tdir))
                   if os.path.isfile(os.path.join(tdir, n))]
-    man = bundle_manifest(d, files, verdict, ratio, ix, count)
+    man = bundle_manifest(d, files)
     # Bundles land in exports/ beside work/, not in the capture dir: one place to hand off from. The
     # name carries frame count and fps — exports/ is flat, and two cuts of one move differ only there.
     exports = os.path.join(os.path.dirname(os.path.dirname(src)), "exports")
@@ -884,9 +854,10 @@ def export_set(a, jp, d, verdict, ratio, ix, count):
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         for rel, p in files: z.write(p, f"{d['name']}/{rel}")
         z.writestr(f"{d['name']}/manifest.json", json.dumps(man, indent=1))
-    print(f"{out}\nsha256 {sha256(out)} | {len(files) + 1} files | set {ix + 1}/{count} | "
-          f"{d['frame_count']}f @ {d['fps']}fps | {d['playback']} | view {d['view']} | "
-          f"seam {man['seam']} ({ratio:.2f}x median)")
+    ratio = man["seam_ratio"]
+    print(f"{out}\nsha256 {sha256(out)} | {len(files) + 1} files | {d['frame_count']}f @ "
+          f"{d['fps']}fps | {d['playback']} | view {d['view']} | seam {man['seam']}"
+          f"{f' ({ratio:.2f}x median step)' if ratio is not None else ''}")
     if not man["arc_written"]:
         print("warning: arc is empty — write the performance arc before hand-off")
     if man["missing_frames"]:
@@ -898,48 +869,6 @@ def export_set(a, jp, d, verdict, ratio, ix, count):
     if len(thumbs) != d["frame_count"]:
         print(f"warning: {len(thumbs)} thumbs for {d['frame_count']} frames — CAG reads them as the "
               f"pose reference, one per frame. Clear {tdir} and re-extract.")
-
-
-def loop_edges(docs):
-    """Every cut in a multi-set animation, measured in units of its own median inter-frame step:
-    each set-to-set join, then the loop cut from the last frame back to frame 0.
-
-    A single capture cannot see either. Once a motion is split into sets of 12, a set's own `seam`
-    compares its last frame to its own first — the middle of the motion, not a seam — so the number
-    it ships is about nothing. The real loop cut spans the whole chain, and nothing else measures it.
-    """
-    # every capture scales to its own clip median, so body_h differs by a hair between sets; one
-    # shared value keeps every step below on the same ruler.
-    body_h = sum(d["body_h"] for d in docs) / len(docs)
-    pts = [f["pts"] for d in docs for f in d["frames"]]
-    step = lambda p, q: sum(dist(p[k], q[k]) for k in CORE) / len(CORE) / body_h
-    steps = [step(pts[i], pts[i + 1]) for i in range(len(pts) - 1)]
-    med = sorted(steps)[len(steps) // 2] or 1e-9
-    edges, n = [], 0
-    for d in docs[:-1]:
-        n += len(d["frames"])            # not frame_count: a frame with no pose is not in the list
-        edges.append((f"join  {n - 1}->{n}", steps[n - 1] / med))
-    edges.append((f"loop  {len(pts) - 1}->0", step(pts[-1], pts[0]) / med))
-    return edges, med, len(pts)
-
-
-def seam(a):
-    """Check that the last frame of a split animation transitions into frame 0 of the first set."""
-    docs = [json.load(open(p)) for p in a.json]
-    fps = {d["fps"] for d in docs}
-    if len(fps) > 1:
-        sys.exit(f"seam: the sets disagree on fps ({sorted(fps)}) — they are not one animation")
-    if sum(len(d["frames"]) for d in docs) < 3:
-        sys.exit("seam: need at least 3 tracked frames across the sets")
-    edges, med, n = loop_edges(docs)
-    print(f"{len(docs)} sets | {n}f @ {docs[0]['fps']}fps | median step {med:.4f} of body height")
-    for label, r in edges:
-        print(f"  {label:<14} {r:5.2f}x median  {'clean' if r < 1.5 else 'NEEDS BLEND'}")
-    if docs[-1]["playback"] != "loop":
-        print(f"note: the last set is {docs[-1]['playback']}, so the loop cut above is informational")
-    missing = [p for p, d in zip(a.json, docs) if d.get("missing_frames")]
-    if missing:
-        print(f"warning: frames with no pose in {missing} — the joins above are off by that many")
 
 
 def main():
@@ -958,14 +887,11 @@ def main():
     r = sub.add_parser("render"); r.add_argument("json"); r.add_argument("--out")
     r.add_argument("--template", help=f"sheet template to render into (default {TEMPLATE_PATH})")
     r.add_argument("--pingpong", action="store_true", help="walk the frames out and back (0..N-1..1) so the seam is the motion reversed")
-    x = sub.add_parser("export"); x.add_argument("json", nargs="+", help="each set's motion.json, in play order")
-    x.add_argument("--out"); x.add_argument("--sheet", help="motion sheet HTML (default <name>-motion.html beside the json)")
-    s = sub.add_parser("seam", help="loop seam of a whole animation, across the sets it was split into")
-    s.add_argument("json", nargs="+", help="each set's motion.json, in play order")
+    x = sub.add_parser("export"); x.add_argument("json"); x.add_argument("--out")
+    x.add_argument("--sheet", help="motion sheet HTML (default <name>-motion.html beside the json)")
     sub.add_parser("selftest")
     a = ap.parse_args()
-    {"extract": extract, "render": render, "export": export, "seam": seam,
-     "selftest": lambda _: selftest()}[a.cmd](a)
+    {"extract": extract, "render": render, "export": export, "selftest": lambda _: selftest()}[a.cmd](a)
 
 
 if __name__ == "__main__":

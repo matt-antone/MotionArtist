@@ -1,6 +1,6 @@
 ---
 name: motion-artist
-description: Turn a YouTube (or local) video of a person moving into a frame-by-frame motion source for animation artists — an HTML motion sheet of skeletal stick-figure frames with per-frame pose instructions at a declared fps and frame count, written in KaraokeParty-Graphics motion-director vocabulary (character-left/right, keys, pilots, loop seam). A set is 4, 8 or 12 frames and never more, so a longer motion is captured as several sets (24 frames is two sets of 12) and hands over one bundle each. Use when the user says "motion artist", "turn this video into animation frames", "motion sheet", "reference this dance for the sprite", "pose sheet from video", or hands you a video link plus fps/frames.
+description: Turn a YouTube (or local) video of a person moving into a frame-by-frame motion source for animation artists — an HTML motion sheet of skeletal stick-figure frames with per-frame pose instructions at a declared fps and frame count, written in KaraokeParty-Graphics motion-director vocabulary (character-left/right, keys, pilots, loop seam). Use when the user says "motion artist", "turn this video into animation frames", "motion sheet", "reference this dance for the sprite", "pose sheet from video", or hands you a video link plus fps/frames.
 metadata:
   short-description: Video → skeletal motion sheet for animation agents
 ---
@@ -17,7 +17,7 @@ roles: it controls motion only, never character scale, identity, view or prop ha
 | --- | --- | --- |
 | video | yes | YouTube URL (incl. Shorts) or local file |
 | `--fps` | yes | playback rate of the target animation |
-| `--frames` | yes | frames in **this set** — `4`, `8` or `12`, and nothing else. A longer motion is split into several sets, not captured as one long one: 24 frames is two sets of 12, 32 is 12 + 12 + 8. See below for why. |
+| `--frames` | yes | total frame count of the target animation. No ceiling — one motion is one capture and one bundle, however long. Prefer a multiple of 4; see below. |
 | `--start` / `--end` | recommended | trim the span to inspect, seconds or `m:ss`. Without `--end`, the span is `frames / fps` seconds of real time from `--start`. With both, that span is time-stretched onto the frame count (the sheet reports the speed factor). Neither end is taken literally unless `--margin 0` — see below. |
 | `--playback` | default `loop` | `loop` (samples exclude `end`, so the last→first cut is one natural step), `one-shot`, `final-hold` |
 | `--name` | optional | slug for the output dir and title |
@@ -33,65 +33,21 @@ ask for "the best loop" inside a range, pass the range as `--start/--end` plus `
 search reports no fully-tracked window, the range holds a scene cut or a shot with no visible body:
 sample it to find the usable span, then search inside that span with `--window`.
 
-## Set length: 4, 8 or 12 frames
+## Frame count: any length, but prefer a multiple of 4
 
-CharacterAssetGenerator draws a whole set in **one** image-generation call, laid out as a grid four
-figures wide. The frame count is therefore the grid, and it stops working past 12 — measured on one
-clip, one prompt, one ladder:
+One motion is **one capture and one bundle**, whatever its length. Do not split a long motion into
+several — CAG has no concept of chaining bundles, so two bundles are two unrelated animations there,
+each with its own sprite sheet, its own proof and its own registration scale, and the loop relation
+between them is lost.
 
-| asked | drew | repeated poses | figure height |
-| --- | --- | --- | --- |
-| 8 | 8 | 0 | 476px |
-| 12 | 12 | 0 | 344px |
-| 16 | 16 | 6 pairs | 259px |
-| 24 | 20 | 2 | 204px |
-| 32 | 28 | 5 | 147px |
+The number 12 belongs to CAG's renderer, not to the bundle: it draws at most 12 figures per image
+on a grid four wide, and chunks a longer motion across as many renders as it needs before
+assembling one sheet. A 24-frame bundle renders as 12 + 12, a 32 as 12 + 12 + 8, a 14 as 12 + 2 —
+all one animation out the other side.
 
-Two failures, and the first is silent. At 16 the count is still right, but the generator stops
-reading distinct poses and tiles one pose across the last row — four figures at silhouette IoU
-0.88–0.95, nothing raised, nothing logged; it is only caught by comparing silhouettes. At 24 and 32
-it refuses the count outright, and once the count is wrong figure n is no longer frame n, so every
-per-frame note and measurement points at the wrong drawing.
-
-So a set is **4, 8 or 12 frames, never more**, and multiples of 4 fill the last row exactly and
-waste no grid cells. Split a longer motion into consecutive sets — 24 = 12 + 12, 32 = 12 + 12 + 8 —
-capturing each with its own span and exporting its own bundle. CAG chunks at 12 on its side too, but
-sets that arrive clean are the ones that stay easy to reason about. `extract` warns when `--frames`
-is anything else.
-
-### Splitting a loop keeps the seam, but hides it
-
-Search the **whole** loop first (`--search --window <loop length>`), then cut the winning span into
-12s with `--margin 0` on each. The samples are the same grid cut in two, so the loop still closes —
-`--playback loop` gives `step = span / frames`, which is identical for the whole span and for each
-half of it. Let the margin snap each half independently and it stops being one grid.
-
-What a single capture cannot see is the *check*. Its `seam` compares its last frame to its own
-first, so a half's verdict is about the middle of the motion. The real cut — last set's last frame
-back to the first set's frame 0 — is measured across the chain:
-
-```bash
-python3 "$SKILL/scripts/motion_artist.py" seam work/dance-a/motion.json work/dance-b/motion.json
-```
-
-Sets in play order. It prints every set-to-set join and the loop cut, each as a multiple of the
-whole animation's median inter-frame step: `1.00x clean` is one ordinary step and invisible, past
-`1.5x` is called `NEEDS BLEND`. A join over ~2x means the slice is wrong — usually a margin left on,
-or halves captured from spans that don't meet.
-
-**Export the whole chain in one call**, and the same measurement goes into the bundles:
-
-```bash
-python3 "$SKILL/scripts/motion_artist.py" export work/dance-a/motion.json work/dance-b/motion.json
-```
-
-One bundle per set, each manifest carrying the chain's `seam` and `seam_ratio` plus
-`set: {index, of}`. The manifest's `seam` is measured at export across every set handed over
-together and **overrides** the one in that set's own `motion.json`, which is the stale per-capture
-value — so read the seam from `manifest.json`, never from `motion.json`. Export also warns when a
-join doesn't meet, before it writes anything you would hand off. Exporting a split set on its own
-gives it a `seam` measured against itself and `set: {index: 0, of: 1}`, which says the motion stands
-alone when it doesn't; pass them together.
+What the grid does ask for is a count divisible by 4, so the last row of the last chunk fills rather
+than sitting part-empty. That is a waste of cells, not a failure, and `extract` says so as a note
+rather than a warning. Nothing breaks at 14.
 
 ## `thumbs/` is a contract output
 
@@ -110,6 +66,13 @@ crop with the dancer fully in frame, every frame tracked — a frame with no pos
 slides the whole strip out of step with the frame indices. `export` warns when the thumb count and
 `frame_count` disagree.
 
+Thumbs are written 200px wide at JPEG quality **88**. Both numbers are deliberate. 200px is the
+width every amplitude measurement above was taken at, and CAG letterboxes each thumb onto a 384×512
+card at native size, so it is demonstrably enough; 384 wide would fill the card exactly, but it is
+not the measured condition, so it needs a measurement before it is worth taking. The quality came up
+from 60 because JPEG artefacts at 60 sit on the limb edges, which is precisely what the generator is
+reading off them. That one is reasoning about the failure mode, not a measured delta.
+
 Known failure mode of the photo route: photographs bleed the **dancer's costume** into the character
 (a brown boot came back as the dancer's white sneaker on a lifted foot, 2 figures in 16). It is fixed
 on the CAG side with a positive costume sentence — nothing to do here. Worth carrying the general
@@ -122,16 +85,14 @@ right thing positively is what held. That applies to any prompt text this skill 
 
 1. Run the extractor (first run downloads the video ≤720p and the MediaPipe model):
    ```bash
-   python3 "$SKILL/scripts/motion_artist.py" extract URL --fps 4 --frames 12 --start 0:16 --end 0:19 --name dance
+   python3 "$SKILL/scripts/motion_artist.py" extract URL --fps 4 --frames 16 --start 0:16 --end 0:20 --name dance
    ```
    It prints a `snap:` line first — the span it moved to inside `--margin`, its seam and energy
    score, and the runners-up — then writes `work/<name>/motion.json`, `work/<name>/thumbs/`, and
    one line per frame:
    index, source time, role (`key` = hold/extreme, `pilot` = fastest transition, `inbetween`),
    pace, and the generated pose cue. Frame 0 is always a key. Check `missing` is empty and the
-   `seam` verdict — which describes this capture alone, so it means nothing for one set of a split
-   motion; that seam is the `seam` subcommand's. If a pose is missing or the view is wrong, re-run
-   with a cleaner span. Watch the
+   `seam` verdict; if a pose is missing or the view is wrong, re-run with a cleaner span. Watch the
    reported source speed too: snapping to a shorter or longer cut stretches it onto the same frame
    count, so a big margin on a short span can hand the artist noticeable slow motion. Widen the
    margin when the seam stays poor, drop it to `0` when the span is already exact (a beat grid, a
@@ -161,9 +122,10 @@ right thing positively is what held. That applies to any prompt text this skill 
    reviewed by watching, never by drawing the cycle twice. Add `--pingpong` to walk those same cells
    out and back (0..N-1 then N-2..1): the return leg is the out leg reversed, so the seam is always
    clean and the artist still draws only the frames asked for. It is a **playback flag on the sheet
-   only** — it adds no cells, leaves `frame_count` alone, and does not reach `manifest.json`, so CAG
-   never learns of it. It closes a seam for your review, not in the hand-off; a motion that genuinely
-   needs the out-and-back is 12 traced frames plus a note to whoever wires the sprite.
+   only** — it adds no cells, leaves `frame_count` alone, and does not reach `manifest.json`. CAG
+   never learns of it, and reverses nothing on its own, so an out-and-back that exists only as this
+   flag appears in neither the sprite sheet nor the proof. If the delivered asset has to show it,
+   trace the return leg as real frames.
    The sheet is rendered from `motion-artist/templates/sheet.html` — markup, CSS and player in one
    file, with `{{PLACEHOLDER}}`s the script fills. Change how a sheet looks by editing that template;
    pass `--template FILE` to render into a different one.
@@ -181,14 +143,13 @@ right thing positively is what held. That applies to any prompt text this skill 
    ```bash
    python3 "$SKILL/scripts/motion_artist.py" export work/dance/motion.json
    ```
-   A motion split across sets passes **all of them, in play order, in one call** — see "Splitting a
-   loop" above. That is what measures the real loop cut; a set exported alone reports its own.
-   Writes `exports/dance-12f-4fps-motion-source.zip` — always `exports/` at the repo root, the
+   One motion is one bundle, however many frames it has.
+   Writes `exports/dance-24f-4fps-motion-source.zip` — always `exports/` at the repo root, the
    name carrying the frame count and fps, never inside
    the capture dir: `motion.json`, the sheet HTML, `thumbs/` (the pose reference — see above) and a
-   generated `manifest.json` (fps, frame count, playback, view, `seam` and `seam_ratio`,
-   `set: {index, of}`, source, and a SHA-256 per file), all under a `<name>/` folder. One zip per
-   set. Prints each bundle path and its zip's own SHA-256 — that
+   generated `manifest.json` (fps, frame count, playback, view, `seam` and `seam_ratio`, source, and
+   a SHA-256 per file), all under a `<name>/` folder. Prints the bundle path and the zip's own
+   SHA-256 — that
    pair is what the motion-director job input references. It warns when `arc` is still empty or
    frames are missing a pose; fix those and re-export rather than handing off a warned bundle.
 
@@ -196,9 +157,9 @@ right thing positively is what held. That applies to any prompt text this skill 
 
 Copy `exports/<name>-<frames>f-<fps>fps-motion-source.zip` into that repo's ignored
 `work/<character>/motion-source/` and reference it by path and by the SHA-256 the export printed,
-as the authorized motion source in the motion-director job input. A split motion hands over **every**
-set's zip, each by its own path and hash, in play order — `set: {index, of}` in each manifest says
-where it belongs, and CAG renders one generation call per set. The bundle's `manifest.json`
+as the authorized motion source in the motion-director job input. A spec names **one** bundle per
+animation (`spec.motions[set_name]` → one bundle directory); CAG chunks it across renders itself.
+The bundle's `manifest.json`
 carries a SHA-256 per file, so an unzipped copy can be verified file by file. Do not commit
 captures there; the repo excludes motion captures by policy. The sheet's
 "view" is the *filmed* view — the manifest's `view` still governs the rendered character.
@@ -207,17 +168,17 @@ captures there; the repo excludes motion captures by policy. The sheet's
 
 - Dependencies: `yt-dlp`, `python3` with `opencv-python` and `mediapipe<1` (the 1.x wheel crashes in
   the Metal helper on macOS). Model is cached at `~/.cache/motion-artist/`.
-- `selftest` runs the pose-description, span-picking, arc carry-over, figure-geometry, cross-set
-  seam and manifest checks:
+- `selftest` runs the pose-description, span-picking, arc carry-over, figure-geometry and manifest
+  checks:
   `python3 "$SKILL/scripts/motion_artist.py" selftest`. Run it after touching any of them.
 - Every frame is scaled about the hips so torso length matches the clip median: camera zoom or distance never changes skeleton size.
 - Cues are heuristic: elbow and knee angles, girdle twist and sole pitch from the world landmarks,
   wrist and hip heights from the image landmarks. They are guidance for the artist, not measurements.
-- The manifest gained `seam_ratio` (the seam as a multiple of the median step) and
-  `set` (`{index, of}`), and its `seam` is now the whole animation's rather than one set's. All
-  three are additive — a reader that ignores them is unaffected, and `seam` keeps its old spelling
-  and values — so `schema` does not move for this. Tell the CAG side anyway: a consumer that was
-  reading `seam` per set was reading a number about nothing, and now is not.
+- `seam` is read on the CAG side, not just by us: before drawing, it logs that the proof will jump
+  from the last frame back to the first unless the verdict is `clean` or empty (an unset seam reads
+  as no complaint), and `cag sheets` prints it per bundle. `seam_ratio` rides alongside it — the
+  same cut as a number rather than a word, so a log can say "loops on a 2.3-step cut". It is
+  additive and nothing reads it yet. `schema` does not move for an added key.
 - The bundle's `schema` stays `motion-artist/2`. That version means the landmarks carry a third
   float, `z`, which is still the layout; extra joints in `pts` and reworded `features` are content
   inside it, and CAG reads `pts` joint by joint, so a bundle keeps loading. Bump it only when the
