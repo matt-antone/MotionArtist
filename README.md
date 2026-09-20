@@ -54,7 +54,7 @@ python3 motion-artist/scripts/motion_artist.py export work/dance/motion.json
 | `--search` | find the best loop: slide a `frames / fps`-second window over `--start..--end` (whole video if `--end` is omitted), score each start by loop-closure pose distance against motion energy, pick the tightest seam among the livelier half |
 | `--window` | source seconds the search looks for, when that differs from `frames / fps` (a scene cut leaves a short usable span, or a fast move should play slower); the winner is stretched onto the frame count |
 | `--stabilize` | centre the hips horizontally in every frame; use for a moving camera or a travelling performer (airborne is then never called, since there is no fixed floor). Body scale is always normalised per frame from pixels-per-metre, so camera zoom never changes the traced pose's size |
-| `--playback` | `loop` (default), `one-shot`, `final-hold` |
+| `--playback` | `loop` (default), `one-shot`, `final-hold`. Only `loop` carries meaning downstream; the others differ only in how the span's end is chosen here |
 | `--exaggerate` | amplify each landmark's deviation from the clip-mean pose; default `1.25`, `1.0` = as filmed |
 | `--name`, `--out` | output slug and directory (default `work/<name>/`) |
 | `render --template FILE` | render into a different sheet template (default `motion-artist/templates/sheet.html`) |
