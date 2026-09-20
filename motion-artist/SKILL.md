@@ -193,6 +193,10 @@ Copy `exports/<name>-<video id>-<start>s-<frames>f-<fps>fps-motion-source.zip` i
 `work/<character>/motion-source/` and reference it by path and by the SHA-256 the export printed,
 as the authorized motion source in the motion-director job input. A spec names **one** bundle per
 animation (`spec.motions[set_name]` → one bundle directory); CAG chunks it across renders itself.
+**Delete the bundle the copy supersedes in the same step.** A bundle is named by its trace, so a
+re-cut of the same move lands beside the old one rather than over it, and the stale zip stays
+referenceable — a spec pointed at it renders last week's motion with this week's SHA-256 in the job
+input. Copy new, remove deprecated, one action.
 The bundle's `manifest.json`
 carries a SHA-256 per file, so an unzipped copy can be verified file by file. Do not commit
 captures there; the repo excludes motion captures by policy. The sheet's
