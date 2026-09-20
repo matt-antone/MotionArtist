@@ -381,6 +381,9 @@ def render(a):
     global FLOOR
     d = json.load(open(a.json))
     for f in d["frames"]: f.setdefault("src", f["i"])   # which source frame each cell draws from
+    # The spec below is the target animation's, fixed at extract. --repeat and --pingpong add cells
+    # to the strip for reviewing the seam; they must not restate how long the animation is.
+    cycle = len(d["frames"])
     if a.pingpong and len(d["frames"]) > 2:  # out and back: the return leg is the same poses reversed
         base = d["frames"]
         d["frames"] = base + [dict(f, i=len(base) + k, leg="back")
@@ -410,9 +413,9 @@ def render(a):
     src = d["source"]
     arc = "".join(f"<p>{html.escape(p)}</p>" for p in d["arc"].split("\n\n") if p.strip()) or \
           "<p class=muted>No performance arc written yet — fill <code>arc</code> in motion.json and re-render.</p>"
-    n = len(d["frames"]); lap = n / d["fps"]
-    keys = [f["i"] for f in d["frames"] if f["role"] == "key"]
-    pilots = [f["i"] for f in d["frames"] if f["role"] == "pilot"]
+    n = cycle; lap = n / d["fps"]; cells = len(d["frames"])
+    keys = [f["i"] for f in d["frames"][:cycle] if f["role"] == "key"]
+    pilots = [f["i"] for f in d["frames"][:cycle] if f["role"] == "pilot"]
 
     rows = "".join(
         f'<div class="maprow" style="--rowc:{ {"key": "var(--step)", "pilot": "var(--tap)"}.get(f["role"], "var(--muted)") }">'
@@ -428,7 +431,9 @@ def render(a):
              f'(source speed ×{src["speed_factor"]}, motion exaggerated ×{d.get("exaggerate", 1)}). Plays at <b>{d["fps"]} fps</b>; '
              f'{n} frames, {lap:.2f} s per {"lap" if d["playback"] == "loop" else "run"}'
              + (f', {d["repeat"]} cycles' if d.get("repeat") else '')
-             + (' — out and back, the return leg reversing the out leg.' if d.get("pingpong") else '.')),
+             + (' — out and back, the return leg reversing the out leg' if d.get("pingpong") else '')
+             + (f'. The strip below holds {cells} cells for review; the animation is {n} frames.'
+                if cells != n else '.')),
         N=str(n), FPS=str(d["fps"]), LAP=f"{lap:.2f} s", PLAYBACK=d["playback"], VIEW=html.escape(d["view"]),
         SEAM=("clean — the return leg reverses the out leg" if d.get("pingpong") else d["seam"]), KEYS=", ".join(map(str, keys)) or "—", PILOTS=", ".join(map(str, pilots)) or "—",
         URL=html.escape(src["url"]), ARC=arc, ROWS=rows,
