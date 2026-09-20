@@ -7,7 +7,8 @@ Everything else is docs and ignored scratch.
 ```
 motion-artist/SKILL.md                 the skill an agent loads
 motion-artist/scripts/motion_artist.py extract | render | export | selftest  (single file, ~680 lines)
-.claude/skills/motion-artist           symlink to motion-artist/, so the skill loads in this repo
+.claude/skills/motion-artist           symlink to motion-artist/, so the skill loads in this repo —
+                                       git-ignored, so a fresh clone has to create it (see Setup)
 work/                                  captures and downloaded video — git-ignored, never commit
 README.md                              the human-facing version of SKILL.md
 ```
@@ -17,6 +18,28 @@ README.md                              the human-facing version of SKILL.md
 `python3` with `opencv-python` and `mediapipe<1`, plus `yt-dlp` on PATH. Pin mediapipe below 1.x:
 the 1.x wheel crashes in the Metal helper on macOS. The pose model is cached at
 `~/.cache/motion-artist/` on first run.
+
+### Installing the skill
+
+`.claude/` is git-ignored, so a fresh clone loads no skill and `/motion-artist` does nothing until
+one of these runs. Both are symlinks — the skill stays a single source of truth and edits to
+`motion-artist/` take effect with no reinstall.
+
+To work on the skill in this repo:
+
+```bash
+mkdir -p .claude/skills && ln -s ../../motion-artist .claude/skills/motion-artist
+```
+
+To use it from any directory, link it into the user-level skills dir instead (absolute path — a
+relative link breaks once it is outside this tree):
+
+```bash
+mkdir -p ~/.claude/skills && ln -s "$PWD/motion-artist" ~/.claude/skills/motion-artist
+```
+
+Either way the skill is named by `motion-artist/SKILL.md`, not by the link. Restart the session
+after linking; skills are read at startup.
 
 ## The pipeline
 
