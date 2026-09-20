@@ -94,9 +94,17 @@ def describe(P, W, floor_y, body_h):
     # arms
     for s, name in (("L", "character-left"), ("R", "character-right")):
         wr, sh = P["wr" + s], P["sh" + s]
+        # "chest/waist" alone spanned the whole torso — 56 of 128 arm-frames across the two
+        # reference captures, 22 of them a hand level with the shoulder being called waist-high.
+        # Subdivide it by where the wrist sits between shoulder (0) and hip (1); the cuts are the
+        # two real gaps in that distribution, and splitting here adds no word-change that happens
+        # while the wrist is standing still. The outer bounds are left exactly as they were.
+        drop = (wr[1] - sh[1]) / max(hip_mid[1] - sh[1], 1e-6)
         if wr[1] < P["nose"][1] - 0.02 * body_h: h = "overhead"
         elif wr[1] < sh[1] - 0.03 * body_h: h = "raised above shoulder"
-        elif wr[1] < hip_mid[1] - 0.03 * body_h: h = "at chest/waist height"
+        elif wr[1] < hip_mid[1] - 0.03 * body_h:
+            h = ("at shoulder height" if drop < 0.16 else
+                 "at chest height" if drop < 0.44 else "at waist height")
         else: h = "low by the hip"
         bend = angle3(W["sh" + s], W["el" + s], W["wr" + s])
         # Lateral reach. Height and elbow alone leave the wrist anywhere from across the chest to
