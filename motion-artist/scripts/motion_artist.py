@@ -3,7 +3,7 @@
 
   motion_artist.py extract URL|FILE --fps N --frames N [--start S] [--end S] [--name SLUG]
                    [--playback loop|one-shot|final-hold] [--out DIR]
-  motion_artist.py render DIR/motion.json [--out FILE.html] [--repeat N] [--pingpong]
+  motion_artist.py render DIR/motion.json [--out FILE.html] [--pingpong]
   motion_artist.py export DIR/motion.json [--out FILE.zip] [--sheet FILE.html]
   motion_artist.py selftest
 
@@ -411,18 +411,11 @@ def render(a):
     global FLOOR
     d = json.load(open(a.json))
     for f in d["frames"]: f.setdefault("src", f["i"])   # which source frame each cell draws from
-    # The spec below is the target animation's, fixed at extract. --repeat and --pingpong add cells
-    # to the strip for reviewing the seam; they must not restate how long the animation is, and a
-    # replayed cell keeps its own frame's number — no cell ever counts past the requested frames.
-    cycle = len(d["frames"])
-    if a.pingpong and len(d["frames"]) > 2:  # out and back: the return leg is the same poses reversed
-        base = d["frames"]
-        d["frames"] = base + [dict(f, leg="back") for f in reversed(base[1:-1])]
+    # The sheet holds exactly the frames the animation was specified with — one cell each, no more.
+    # Reviewing a seam is a playback question, not a drawing count: the player already loops forever,
+    # and --pingpong only changes the order it walks the same cells in.
+    if a.pingpong and len(d["frames"]) > 2:
         d["pingpong"] = True
-    if a.repeat > 1:  # play the cycle N times back to back; each cycle re-runs frames 0..N-1
-        base = d["frames"]
-        d["frames"] = [dict(f, cycle=c + 1) for c in range(a.repeat) for f in base]
-        d["repeat"] = a.repeat
     out = a.out or os.path.join(os.path.dirname(a.json), f"{d['name']}-motion.html")
     tdir = os.path.join(os.path.dirname(a.json), "thumbs")
     FLOOR = d["floor_y"]
@@ -443,16 +436,16 @@ def render(a):
     src = d["source"]
     arc = "".join(f"<p>{html.escape(p)}</p>" for p in d["arc"].split("\n\n") if p.strip()) or \
           "<p class=muted>No performance arc written yet — fill <code>arc</code> in motion.json and re-render.</p>"
-    n = cycle; lap = n / d["fps"]; cells = len(d["frames"])
-    keys = [f["i"] for f in d["frames"][:cycle] if f["role"] == "key"]
-    pilots = [f["i"] for f in d["frames"][:cycle] if f["role"] == "pilot"]
+    n = len(d["frames"]); lap = n / d["fps"]
+    keys = [f["i"] for f in d["frames"] if f["role"] == "key"]
+    pilots = [f["i"] for f in d["frames"] if f["role"] == "pilot"]
 
     rows = "".join(
         f'<div class="maprow" style="--rowc:{ {"key": "var(--step)", "pilot": "var(--tap)"}.get(f["role"], "var(--muted)") }">'
         f'<span class="mv">{f["i"]}</span><span class="ct">{f["t"]:.2f}s · {f["role"]} · {f["pace"]}</span>'
         f'<span class="txt">{html.escape(f["cue"])}'
         f'{("<br><b>Note:</b> " + html.escape(f["note"])) if f["note"] else ""}</span></div>'
-        for f in d["frames"][:cycle])
+        for f in d["frames"])
 
     page = TEMPLATE
     for k, v in dict(
@@ -460,11 +453,9 @@ def render(a):
         DEK=(f'Motion source from <b>{html.escape(src["title"])}</b>, {src["start"]:.1f}–{src["end"]:.1f}s '
              f'(source speed ×{src["speed_factor"]}, motion exaggerated ×{d.get("exaggerate", 1)}). Plays at <b>{d["fps"]} fps</b>; '
              f'{n} frames, {lap:.2f} s per {"lap" if d["playback"] == "loop" else "run"}'
-             + (f', {d["repeat"]} cycles' if d.get("repeat") else '')
-             + (' — out and back, the return leg reversing the out leg' if d.get("pingpong") else '')
-             + (". The strip replays those frames for review; the numbering stays the animation's."
-                if cells != n else '.')),
-        N=str(n), FPS=str(d["fps"]), LAP=f"{lap:.2f} s", PLAYBACK=d["playback"], VIEW=html.escape(d["view"]),
+             + (' — played out and back, the return leg reversing the out leg.'
+                if d.get("pingpong") else '.')),
+        N=str(n), FPS=str(d["fps"]), LAP=f"{lap:.2f} s", PLAYBACK=d["playback"] + (" · out and back" if d.get("pingpong") else ""), VIEW=html.escape(d["view"]),
         SEAM=("clean — the return leg reverses the out leg" if d.get("pingpong") else d["seam"]), KEYS=", ".join(map(str, keys)) or "—", PILOTS=", ".join(map(str, pilots)) or "—",
         URL=html.escape(src["url"]), ARC=arc, ROWS=rows,
         RATES="".join(f'<button data-fps="{r}" aria-pressed="{str(r == d["fps"]).lower()}">{r} fps</button>' for r in rates),
@@ -596,26 +587,28 @@ footer a{color:inherit}
 (function(){"use strict";
 var D=JSON.parse(document.getElementById("motion").textContent),F=D.frames,FIGS={{FIGS}},THUMBS={{THUMBS}};
 var COL={key:"var(--step)",pilot:"var(--tap)",inbetween:"var(--muted)"},WASH={key:"var(--step-wash)",pilot:"var(--tap-wash)",inbetween:"var(--sunk)"};
+var ORDER=F.map(function(f,i){return i});
+if(D.pingpong&&F.length>2)for(var q=F.length-2;q>0;q--)ORDER.push(q);   // out and back over the same cells
 var strip=document.getElementById("strip"),cells=[];
 F.forEach(function(f,i){var b=document.createElement("button");b.className="cell";b.type="button";b.dataset.role=f.role;
 b.style.setProperty("--cellc",COL[f.role]);b.style.setProperty("--cellw",WASH[f.role]);
-b.innerHTML='<span class="num">'+f.i+'</span>'+FIGS[i];b.addEventListener("click",function(){stop();go(i)});strip.appendChild(b);cells.push(b)});
+b.innerHTML='<span class="num">'+f.i+'</span>'+FIGS[i];b.addEventListener("click",function(){stop();go(ORDER.indexOf(i))});strip.appendChild(b);cells.push(b)});
 var idx=0,fps=D.fps,timer=null,mirrored=false,stage=document.querySelector(".stage");
-function render(){var f=F[idx];stage.style.setProperty("--accent",COL[f.role]);stage.style.setProperty("--wash",WASH[f.role]);
+function render(){var at=ORDER[idx],f=F[at];stage.style.setProperty("--accent",COL[f.role]);stage.style.setProperty("--wash",WASH[f.role]);
 document.getElementById("bigCount").textContent=f.i;
 document.getElementById("phaseName").textContent=f.role.charAt(0).toUpperCase()+f.role.slice(1)+" · "+f.pace;
-document.getElementById("phaseOf").textContent="frame "+(f.i+1)+" of "+D.frame_count+(f.leg==="back"?" · return leg":"")+(f.cycle?" · cycle "+f.cycle:"")+" · view "+f.features.view;
+document.getElementById("phaseOf").textContent="frame "+(f.i+1)+" of "+F.length+(idx>=F.length?" · return leg":"")+" · view "+f.features.view;
 document.getElementById("cue").textContent=f.cue;
 document.getElementById("note").innerHTML=f.note?"<b>Note:</b> "+f.note.replace(/</g,"&lt;"):"";
 document.getElementById("srcChip").textContent="source "+f.t.toFixed(2)+" s";
-document.getElementById("bigFigure").innerHTML=FIGS[idx];
-var im=document.getElementById("thumb");if(THUMBS[idx]){im.src=THUMBS[idx];im.hidden=false}else{im.hidden=true}
-cells.forEach(function(c,i){c.setAttribute("aria-current",i===idx?"true":"false")})}
-function go(i){idx=(i+F.length)%F.length;render()}
+document.getElementById("bigFigure").innerHTML=FIGS[at];
+var im=document.getElementById("thumb");if(THUMBS[at]){im.src=THUMBS[at];im.hidden=false}else{im.hidden=true}
+cells.forEach(function(c,i){c.setAttribute("aria-current",i===at?"true":"false")})}
+function go(i){idx=(i+ORDER.length)%ORDER.length;render()}
 var playBtn=document.getElementById("playBtn"),playLabel=document.getElementById("playLabel");
-function start(){if(timer)return;timer=setInterval(function(){if(D.playback!=="loop"&&idx===F.length-1){stop();return}go(idx+1)},1000/fps);playBtn.setAttribute("aria-label","Pause");playLabel.textContent="Pause";playBtn.querySelector("svg").innerHTML='<rect x="1" y="1" width="3.5" height="10"/><rect x="7.5" y="1" width="3.5" height="10"/>'}
+function start(){if(timer)return;timer=setInterval(function(){if(D.playback!=="loop"&&idx===ORDER.length-1){stop();return}go(idx+1)},1000/fps);playBtn.setAttribute("aria-label","Pause");playLabel.textContent="Pause";playBtn.querySelector("svg").innerHTML='<rect x="1" y="1" width="3.5" height="10"/><rect x="7.5" y="1" width="3.5" height="10"/>'}
 function stop(){clearInterval(timer);timer=null;playBtn.setAttribute("aria-label","Play");playLabel.textContent="Play";playBtn.querySelector("svg").innerHTML='<path d="M1.5 1 L11 6 L1.5 11 Z"/>'}
-playBtn.addEventListener("click",function(){if(timer)stop();else{if(D.playback!=="loop"&&idx===F.length-1)idx=-1;start()}});
+playBtn.addEventListener("click",function(){if(timer)stop();else{if(D.playback!=="loop"&&idx===ORDER.length-1)idx=-1;start()}});
 document.getElementById("prevBtn").addEventListener("click",function(){stop();go(idx-1)});
 document.getElementById("nextBtn").addEventListener("click",function(){stop();go(idx+1)});
 document.querySelectorAll(".rate button").forEach(function(b){b.addEventListener("click",function(){fps=Number(b.dataset.fps);
@@ -735,8 +728,7 @@ def main():
     e.add_argument("--search", action="store_true", help="slide a frames/fps-second window over --start..--end and pick the tightest loop")
     e.add_argument("--playback", choices=["loop", "one-shot", "final-hold"], default="loop")
     r = sub.add_parser("render"); r.add_argument("json"); r.add_argument("--out")
-    r.add_argument("--pingpong", action="store_true", help="play the cycle out and back (0..N..1) so the seam is the motion reversed")
-    r.add_argument("--repeat", type=int, default=1, help="play the cycle N times back to back in the sheet")
+    r.add_argument("--pingpong", action="store_true", help="walk the frames out and back (0..N-1..1) so the seam is the motion reversed")
     x = sub.add_parser("export"); x.add_argument("json"); x.add_argument("--out")
     x.add_argument("--sheet", help="motion sheet HTML (default <name>-motion.html beside the json)")
     sub.add_parser("selftest")

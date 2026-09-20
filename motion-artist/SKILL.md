@@ -57,11 +57,10 @@ sample it to find the usable span, then search inside that span with `--window`.
    ```bash
    python3 "$SKILL/scripts/motion_artist.py" render work/dance/motion.json
    ```
-   Add `--repeat 2` to play the cycle twice back to back in the sheet, which
-   is how a loop seam should be reviewed. Replayed cells keep their own frame numbers, so the sheet
-   never names a frame past the requested count. Add `--pingpong` to play it out and back (0..N then N-1..1):
-   the return leg is the same poses reversed, so the seam is always clean and the artist draws only
-   the out leg.
+   The sheet always holds exactly `--frames` cells, and the player loops them forever — a seam is
+   reviewed by watching, never by drawing the cycle twice. Add `--pingpong` to walk those same cells
+   out and back (0..N-1 then N-2..1): the return leg is the out leg reversed, so the seam is always
+   clean and the artist still draws only the frames asked for.
    Output `work/dance/dance-motion.html`: masthead (frames, fps, lap, playback, view, key and pilot
    indices), a stage with the big stick figure, the source frame and the cue, a transport
    (play/scrub, rate, mirror), the frame strip, the arc, a fixed "for the artist agent" brief, and
