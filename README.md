@@ -58,7 +58,7 @@ python3 motion-artist/scripts/motion_artist.py export work/dance/motion.json
 | `--name`, `--out` | output slug and directory (default `work/<name>/`) |
 | `render --repeat N` | play the cycle N times back to back in the sheet |
 | `render --pingpong` | play the cycle out and back; the return leg reverses the out leg, so the seam is clean and only the out leg needs drawing |
-| `export --out`, `--sheet` | bundle path (default `work/<name>/<name>-motion-source.zip`) and the sheet HTML to include (default `<name>-motion.html` beside the json) |
+| `export --out`, `--sheet` | bundle path (default `exports/<name>-<frames>f-<fps>fps-motion-source.zip`) and the sheet HTML to include (default `<name>-motion.html` beside the json) |
 
 `extract` prints one line per frame (index, source time, key / pilot / in-between, pace, pose cue)
 and writes `motion.json` plus `thumbs/`. Between `extract` and `render`, fill `arc` and any

@@ -174,6 +174,12 @@ def landmarker():
     return mp, vision.PoseLandmarker.create_from_options(opts)
 
 
+def portable(p):
+    """A bundle is handed to other machines: never bake an absolute home path into it."""
+    ap = os.path.abspath(p)
+    return os.path.relpath(ap) if ap.startswith(os.getcwd() + os.sep) else os.path.basename(p)
+
+
 def extract(a):
     import cv2
     out = a.out or os.path.join("work", a.name or "motion")
@@ -278,7 +284,8 @@ def extract(a):
     doc = dict(
         schema=SCHEMA,
         title=name.replace("-", " ").title(), name=name,
-        source=dict(url=a.source, file=src, title=title, start=start, end=round(end, 3),
+        source=dict(url=a.source if re.match(r"https?://", a.source) else portable(a.source),
+                    file=portable(src), title=title, start=start, end=round(end, 3),
                     speed_factor=round(speed, 2), duration=round(dur, 2)),
         exaggerate=a.exaggerate, stabilized=a.stabilize,
         fps=a.fps, frame_count=a.frames, playback=a.playback, view=view,
@@ -617,6 +624,8 @@ def selftest():
                                seam="clean", source={}, arc="  "), [("motion.json", __file__)])
     assert man["files"]["motion.json"] == sha256(__file__) and len(man["files"]["motion.json"]) == 64
     assert man["arc_written"] is False and man["bundle"] == "motion-source"
+    assert portable(os.path.join(os.getcwd(), "work", "x.mp4")) == os.path.join("work", "x.mp4")
+    assert portable("/somewhere/else/x.mp4") == "x.mp4"
     print("selftest ok")
 
 
@@ -652,7 +661,11 @@ def export(a):
         files += [(f"thumbs/{n}", os.path.join(tdir, n)) for n in sorted(os.listdir(tdir))
                   if os.path.isfile(os.path.join(tdir, n))]
     man = bundle_manifest(d, files)
-    out = a.out or os.path.join(src, f"{d['name']}-motion-source.zip")
+    # Bundles land in exports/ beside work/, not in the capture dir: one place to hand off from. The
+    # name carries frame count and fps — exports/ is flat, and two cuts of one move differ only there.
+    exports = os.path.join(os.path.dirname(os.path.dirname(src)), "exports")
+    out = a.out or os.path.join(exports, f"{d['name']}-{d['frame_count']}f-{d['fps']}fps-motion-source.zip")
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         for rel, p in files: z.write(p, f"{d['name']}/{rel}")
         z.writestr(f"{d['name']}/manifest.json", json.dumps(man, indent=1))

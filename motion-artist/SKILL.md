@@ -68,7 +68,9 @@ sample it to find the usable span, then search inside that span with `--window`.
    ```bash
    python3 "$SKILL/scripts/motion_artist.py" export work/dance/motion.json
    ```
-   Writes `work/dance/dance-motion-source.zip`: `motion.json`, the sheet HTML, `thumbs/` and a
+   Writes `exports/dance-16f-4fps-motion-source.zip` — always `exports/` at the repo root, the
+   name carrying the frame count and fps, never inside
+   the capture dir: `motion.json`, the sheet HTML, `thumbs/` and a
    generated `manifest.json` (fps, frame count, playback, view, seam, source, and a SHA-256 per
    file), all under a `<name>/` folder. Prints the bundle path and the zip's own SHA-256 — that
    pair is what the motion-director job input references. It warns when `arc` is still empty or
@@ -76,7 +78,7 @@ sample it to find the usable span, then search inside that span with `--window`.
 
 ## Hand-off to KaraokeParty-Graphics
 
-Copy the exported `<name>-motion-source.zip` into that repo's ignored
+Copy `exports/<name>-<frames>f-<fps>fps-motion-source.zip` into that repo's ignored
 `work/<character>/motion-source/` and reference it by path and by the SHA-256 the export printed,
 as the authorized motion source in the motion-director job input. The bundle's `manifest.json`
 carries a SHA-256 per file, so an unzipped copy can be verified file by file. Do not commit

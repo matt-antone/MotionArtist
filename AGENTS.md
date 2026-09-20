@@ -10,6 +10,7 @@ motion-artist/scripts/motion_artist.py extract | render | export | selftest  (si
 .claude/skills/motion-artist           symlink to motion-artist/, so the skill loads in this repo —
                                        git-ignored, so a fresh clone has to create it (see Setup)
 work/                                  captures and downloaded video — git-ignored, never commit
+exports/                               finished bundles, one zip per capture — git-ignored
 README.md                              the human-facing version of SKILL.md
 ```
 
@@ -50,6 +51,12 @@ Four steps, in order. A capture is not finished until step 4.
 3. `render` — `motion.json` → the self-contained HTML motion sheet.
 4. `export` — zip the json, sheet, thumbs and a generated `manifest.json` with a SHA-256 per file.
    The printed bundle path and zip digest are what a KaraokeParty-Graphics job input references.
+
+Every bundle lands in `exports/` at the repo root, one flat directory of
+`<name>-<frames>f-<fps>fps-motion-source.zip` — the name states the playback the capture was cut
+for, so two captures of the same move at different rates never collide.
+Hand off that zip as it is. Do not unpack it, and do not copy loose `motion.json`/`thumbs/` into a
+consuming repo — the zip is the unit, and its `manifest.json` is what verifies it.
 
 Read the printed table, not `motion.json` — the JSON is large and mostly landmarks. Never hand-edit
 `cue`, `role`, `pts` or `t`; they are extractor output. Re-run `extract` instead.
