@@ -49,7 +49,10 @@ sample it to find the usable span, then search inside that span with `--window`.
    vocabulary: anticipation, action, weight change, follow-through, recovery, holds, and the loop
    seam or terminal hold. Add a per-frame `note` only where the generated cue misses intent
    (e.g. "fists pump on the beat", "this is the hit pose"). Use `character-left` / `character-right`
-   only; never screen sides for anatomy. Do not edit `cue`, `role` or `pts`.
+   only; never screen sides for anatomy. Do not edit `cue`, `role`, `depth` or `pts`.
+   Depth is extractor output too: `pts` is `[x, y, z]` (z negative toward the camera, hips at
+   zero, same units as x), each frame carries `depth` (`near_side` plus a `near`/`far`/`level`
+   verdict per limb), and the cue names which leg is behind whenever the legs overlap.
 3. Render:
    ```bash
    python3 "$SKILL/scripts/motion_artist.py" render work/dance/motion.json
