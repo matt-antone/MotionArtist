@@ -6,7 +6,9 @@ Everything else is docs and ignored scratch.
 
 ```
 motion-artist/SKILL.md                 the skill an agent loads
-motion-artist/scripts/motion_artist.py extract | render | export | selftest  (single file, ~680 lines)
+motion-artist/scripts/motion_artist.py extract | render | export | selftest  (single file, ~590 lines)
+motion-artist/templates/sheet.html     the motion sheet: markup, CSS and player, with {{PLACEHOLDER}}s
+                                       render() fills. Edit the sheet's design here, not in the script
 .claude/skills/motion-artist           symlink to motion-artist/, so the skill loads in this repo —
                                        git-ignored, so a fresh clone has to create it (see Setup)
 work/                                  captures and downloaded video — git-ignored, never commit

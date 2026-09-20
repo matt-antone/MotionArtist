@@ -61,6 +61,9 @@ sample it to find the usable span, then search inside that span with `--window`.
    reviewed by watching, never by drawing the cycle twice. Add `--pingpong` to walk those same cells
    out and back (0..N-1 then N-2..1): the return leg is the out leg reversed, so the seam is always
    clean and the artist still draws only the frames asked for.
+   The sheet is rendered from `motion-artist/templates/sheet.html` — markup, CSS and player in one
+   file, with `{{PLACEHOLDER}}`s the script fills. Change how a sheet looks by editing that template;
+   pass `--template FILE` to render into a different one.
    Output `work/dance/dance-motion.html`: masthead (frames, fps, lap, playback, view, key and pilot
    indices), a stage with the big stick figure, the source frame and the cue, a transport
    (play/scrub, rate, mirror), the frame strip, the arc, a fixed "for the artist agent" brief, and
