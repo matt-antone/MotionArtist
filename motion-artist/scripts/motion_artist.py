@@ -881,7 +881,6 @@ def bundle_manifest(d, files):
         files={rel: sha256(p) for rel, p in files})
 
 
-SPRITE_SCALE = 3   # PNG px per SVG unit at rsvg-convert time — consumers slicing the PNG need this
 
 
 def spritesheet(a):
@@ -891,60 +890,62 @@ def spritesheet(a):
     sidecar declaring the exact grid geometry, so a consumer slices by stated numbers instead of
     reverse-engineering the pixels (thresholding, finding bands, measuring gaps)."""
     d = json.load(open(a.json))
-    box = compute_box(d)
+    import cv2, numpy as np
     n = len(d["frames"])
-    s = 200 / box[3]
-    cell_w, cell_h, gap = box[2] * s + 20, 220, 16
-    label_h = 0 if a.no_labels else 20
+    tdir = os.path.join(os.path.dirname(a.json), "thumbs")
+    thumbs = [os.path.join(tdir, f"f{f['i']:02d}.jpg") for f in d["frames"]]
+    missing = [p for p in thumbs if not os.path.exists(p)]
+    if missing:
+        sys.exit(f"spritesheet needs one thumb per frame; missing {len(missing)} "
+                 f"(first: {os.path.basename(missing[0])}). Re-run extract.")
+    imgs = [cv2.imread(p) for p in thumbs]
+    cell_w, cell_h = max(i.shape[1] for i in imgs), max(i.shape[0] for i in imgs)
+    gap = 8
+    label_h = 0 if a.no_labels else 22
     tile_w, tile_h = cell_w + gap, cell_h + label_h + gap
-    # bias columns by the cell's own aspect so the sheet comes out roughly square regardless of
-    # whether the figure reads tall (arms in) or wide (a lunge, limbs flung out)
-    cols = a.cols or max(1, round(math.sqrt(n * tile_h / tile_w)))
-    rows = math.ceil(n / cols)
-    role_ink = {"key": "#FF74A8", "pilot": "#A8A2FF"}
-    # figure_svg inks limbs/girdle with CSS custom properties (var(--limb-l) etc.) that only resolve
-    # inside the HTML sheet's own stylesheet. This SVG stands alone, so those strokes paint nothing
-    # unless resolved to literal hex here — same values as templates/sheet.html's :root.
-    themevars = {"var(--limb-l)": "#4FD1C0", "var(--limb-r)": "#C9A0E8", "var(--girdle)": "#F0A05A"}
-    cells = []
-    for f in d["frames"]:
-        r, c = divmod(f["i"], cols)
-        ink = role_ink.get(f["role"], "#9A96AC")
-        fig = figure_svg(f["pts"], box, d["body_h"], "#C9C5DA", ink, f"Frame {f['i']}: {f['cue']}")
-        inner = fig.split(">", 1)[1].rsplit("</svg>", 1)[0]   # strip figure_svg's own <svg> wrapper
-        for var, hexval in themevars.items(): inner = inner.replace(var, hexval)
-        label = ('' if a.no_labels else
-                 f'<text x="2" y="14" font-family="monospace" font-size="13" fill="{ink}">{f["i"]:02d}</text>')
-        cells.append(
-            f'<g transform="translate({c * tile_w},{r * tile_h})">{label}'
-            f'<g transform="translate(0,{label_h})">{inner}</g></g>')
-    # every tile gets its full width/height; only the trailing gap past the last column/row is
-    # trimmed off the canvas, so no figure is ever cut — the grid just has no margin on its far edge.
-    tw, th = cols * tile_w - gap, rows * tile_h - gap
-    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {tw:.0f} {th:.0f}">'
-           f'<rect width="100%" height="100%" fill="#14131C"/>{"".join(cells)}</svg>')
-    out = a.out or os.path.join(os.path.dirname(a.json), f"{d['name']}-spritesheet.svg")
-    open(out, "w").write(svg)
-    png = os.path.splitext(out)[0] + ".png"
-    try:
-        subprocess.run(["rsvg-convert", "-w", str(round(tw * SPRITE_SCALE)), "-o", png, out], check=True)
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        png = None   # ponytail: no rsvg-convert on PATH -> SVG only, install it for a PNG
+    # Four across and twelve to a sheet is cag's own render grid (FIGURES_PER_ROW, SHEET_FRAMES), so
+    # a sheet here is exactly one of its generation calls. A longer motion chunks across several
+    # sheets rather than growing one, because that is how it will be drawn either way.
+    cols = a.cols or 4
+    per_sheet = 12
+    # BGR, matching templates/sheet.html's :root — key #FF74A8, pilot #A8A2FF, otherwise --muted.
+    role_ink = {"key": (168, 116, 255), "pilot": (255, 162, 168)}
+    out = a.out or os.path.join(os.path.dirname(a.json), f"{d['name']}-spritesheet.png")
+    stem = out[:-4] if out.endswith(".png") else out
+    chunks = [range(s, min(s + per_sheet, n)) for s in range(0, n, per_sheet)]
+    written = []
+    for c_i, chunk in enumerate(chunks):
+        rows = math.ceil(len(chunk) / cols)
+        sheet = np.full((rows * tile_h - gap, cols * tile_w - gap, 3), (28, 19, 20), np.uint8)
+        for slot, fi in enumerate(chunk):
+            f, im = d["frames"][fi], imgs[fi]
+            r, c = divmod(slot, cols)
+            x, y = c * tile_w, r * tile_h
+            if not a.no_labels:
+                cv2.putText(sheet, f"{f['i']:02d}", (x + 3, y + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                            role_ink.get(f["role"], (172, 150, 154)), 1, cv2.LINE_AA)
+            sheet[y + label_h:y + label_h + im.shape[0], x:x + im.shape[1]] = im
+        # one chunk keeps the plain name, so a single-sheet set still matches the one
+        # `*-spritesheet.png` a bundle manifest may name; several get numbered.
+        path = f"{stem}.png" if len(chunks) == 1 else f"{stem}-{c_i:02d}.png"
+        cv2.imwrite(path, sheet)
+        written.append(path)
     layout = dict(
-        cols=cols, rows=rows, frame_count=n, scale=SPRITE_SCALE,
-        # SVG units — multiply by `scale` for PNG pixels. Frame i sits at row i//cols, col i%cols,
-        # tile origin (col*tile_w, row*tile_h) from the sheet's top-left (no outer margin). The
-        # figure itself is drawn at (0, label_h)-(cell_w, label_h+cell_h) within that tile; the
-        # frame-number label (absent when built with --no-labels) occupies (0,0)-(*, label_h).
-        tile_w=round(tile_w, 2), tile_h=round(tile_h, 2),
-        cell_w=round(cell_w, 2), cell_h=round(cell_h, 2),
-        label_h=label_h, gap=round(gap, 2),
-        sheet_w=round(tw, 2), sheet_h=round(th, 2), labeled=not a.no_labels)
-    sidecar = os.path.splitext(out)[0] + ".json"
+        cols=cols, rows=math.ceil(min(per_sheet, n) / cols), frame_count=n, scale=1,
+        # PNG pixels already. Frame i sits on sheet i//12, at slot i%12: row slot//cols, col
+        # slot%cols, tile origin (col*tile_w, row*tile_h) from the top-left, no outer margin. The
+        # photograph occupies (0, label_h)-(cell_w, label_h+cell_h) inside that tile; the
+        # frame-number band (absent with --no-labels) occupies (0,0)-(*, label_h).
+        tile_w=tile_w, tile_h=tile_h, cell_w=cell_w, cell_h=cell_h,
+        label_h=label_h, gap=gap, per_sheet=per_sheet, sheets=len(chunks),
+        sheet_w=cols * tile_w - gap, sheet_h=math.ceil(min(per_sheet, n) / cols) * tile_h - gap,
+        labeled=not a.no_labels, source="thumbs")
+    sidecar = f"{stem}.json"
     json.dump(layout, open(sidecar, "w"), indent=1)
-    print(f"{out}\n{png or '(rsvg-convert not found — install it for a PNG)'}\n{sidecar}")
-    print(f"{cols}x{rows} grid, {n} frames, {cell_w:.0f}x{cell_h:.0f}px cells (x{SPRITE_SCALE} in the PNG)")
-    return out
+    print("\n".join(written) + f"\n{sidecar}")
+    print(f"{cols} across, {per_sheet} per sheet, {len(chunks)} sheet(s), {n} frames, "
+          f"{cell_w}x{cell_h}px cells")
+    return written[0]
 
 
 def export(a):
