@@ -1,6 +1,6 @@
 ---
 name: motion-artist
-description: Turn a YouTube (or local) video of a person moving into a frame-by-frame motion source for animation artists — an HTML motion sheet with per-frame pose instructions at a declared fps and frame count, and a sprite sheet of the traced footage for conditioning a generator, written in KaraokeParty-Graphics motion-director vocabulary (character-left/right, keys, pilots, loop seam). Use when the user says "motion artist", "turn this video into animation frames", "motion sheet", "reference this dance for the sprite", "pose sheet from video", or hands you a video link plus fps/frames.
+description: Turn a YouTube (or local) video of a person moving into a frame-by-frame motion source for animation artists — an HTML motion sheet with per-frame pose instructions at a declared fps and frame count, and a pose grid of the traced frames for conditioning a generator, written in KaraokeParty-Graphics motion-director vocabulary (character-left/right, keys, pilots, loop seam). Use when the user says "motion artist", "turn this video into animation frames", "motion sheet", "reference this dance for the sprite", "pose sheet from video", or hands you a video link plus fps/frames.
 metadata:
   short-description: Video → motion sheet and pose grid for animation agents
 ---
@@ -37,7 +37,7 @@ sample it to find the usable span, then search inside that span with `--window`.
 
 One motion is **one capture and one bundle**, whatever its length. Do not split a long motion into
 several — CAG has no concept of chaining bundles, so two bundles are two unrelated animations there,
-each with its own sprite sheet, its own proof and its own registration scale, and the loop relation
+each with its own frame sheet, its own proof and its own registration scale, and the loop relation
 between them is lost.
 
 The number 12 belongs to CAG's renderer, not to the bundle: it draws at most 12 figures per image
@@ -70,21 +70,21 @@ residual is rounding between two source sizes rather than drift.
 `thumbs/fNN.jpg` — one per frame, in frame order, count matching `frame_count` — is **the pose
 reference CAG draws from**, not a preview convenience. Its strip is built straight from them.
 
-A/B'd on one clip at 8 frames, skeleton sprite cards against a strip of the raw video frames: pose
+A/B'd on one clip at 8 frames, drawn pose cards against the raw traced frames: pose
 fidelity was a wash (roll-to-roll spread wider than the gap between conditions), but amplitude — how
 big the drawn movement is against the trace — was not. Skeleton-conditioned runs landed at 0.43–0.70
 of the real movement and read as a timid sway; photo-conditioned runs sit at 0.9–1.2 and read as a
 real dance. A pose can rank perfectly and still read flat if it is drawn at half size.
 
 So **the photographs are the pose route, and the only one.** Skeletons are out. Nothing this skill
-ships draws a figure at all: `spritesheet` tiles `thumbs/`, and the sheet's stage and frame strip
+ships draws a figure at all: `pose-grid` tiles `thumbs/`, and the motion sheet's stage and frame strip
 show the traced frames. The drawing code is deleted, not bypassed. CAG agrees from its side — it
 takes the photographs when a bundle carries a complete set, and its own pose renderer is gone too.
 Do not reintroduce a drawn pose route without a measurement that beats 0.9–1.2 on amplitude.
 
 What this asks of a capture: a tight, consistent crop with the dancer fully in frame, every frame
 tracked — a frame with no pose writes no thumb, which slides the whole strip out of step with the
-frame indices, and `spritesheet` refuses to build on an incomplete set. `export` warns when the thumb
+frame indices, and `pose-grid` refuses to build on an incomplete set. `export` warns when the thumb
 count and `frame_count` disagree.
 
 Thumbs are written 200px wide at JPEG quality **88**. Both numbers are deliberate. 200px is the
@@ -145,25 +145,25 @@ right thing positively is what held. That applies to any prompt text this skill 
    clean and the artist still draws only the frames asked for. It is a **playback flag on the sheet
    only** — it adds no cells, leaves `frame_count` alone, and does not reach `manifest.json`. CAG
    never learns of it, and reverses nothing on its own, so an out-and-back that exists only as this
-   flag appears in neither the sprite sheet nor the proof. If the delivered asset has to show it,
+   flag appears in neither the frame sheet nor the proof. If the delivered asset has to show it,
    trace the return leg as real frames.
    The sheet is rendered from `motion-artist/templates/sheet.html` — markup, CSS and player in one
    file, with `{{PLACEHOLDER}}`s the script fills. Change how a sheet looks by editing that template;
    pass `--template FILE` to render into a different one.
    Output `work/dance/dance-motion.html`: masthead (frames, fps, lap, playback, view, key and pilot
    indices), a stage holding the traced frame and its cue, a transport (play/scrub, rate, mirror),
-   the frame strip, the sprite-sheet grid, the arc, a fixed "for the artist agent" brief, and
+   the frame strip, the pose grid, the arc, a fixed "for the artist agent" brief, and
    the full frame-note table. A `<script type="application/json" id="motion">` block carries the
    data for machine readers.
-4. Build the sprite sheet — the pose grid you hand a generator in one call:
+4. Build the pose grid — the one image you hand a generator the whole set in:
    ```bash
-   python3 "$SKILL/scripts/motion_artist.py" spritesheet work/dance/motion.json
+   python3 "$SKILL/scripts/motion_artist.py" pose-grid work/dance/motion.json
    ```
    Tiles `thumbs/` — the footage, never drawn figures; see above for why — **four across and twelve
    to a sheet**, which is CAG's own render grid, so one sheet is exactly one of its generation calls
    and a longer motion chunks across several rather than growing one. Writes
-   `dance-spritesheet.png` for a single sheet, or `dance-spritesheet-00.png`, `-01.png` … when it
-   chunks, plus a `dance-spritesheet.json` sidecar declaring the grid in PNG pixels (`cols`, `rows`,
+   `dance-pose-grid.png` for a single image, or `dance-pose-grid-00.png`, `-01.png` … when it
+   chunks, plus a `dance-pose-grid.json` sidecar declaring the geometry in PNG pixels (`cols`, `rows`,
    `tile_w/h`, `cell_w/h`, `label_h`, `per_sheet`, `sheets`) so a consumer slices by stated numbers
    instead of measuring the picture back out of it. `--no-labels` drops the frame-number band and
    says so in the sidecar; `--cols` overrides the four. It needs a complete `thumbs/` set and stops
@@ -177,10 +177,10 @@ right thing positively is what held. That applies to any prompt text this skill 
    Writes `exports/dance-24f-4fps-motion-source.zip` — always `exports/` at the repo root, the
    name carrying the frame count and fps, never inside
    the capture dir: `motion.json`, the sheet HTML, `thumbs/` (the pose reference — see above), any
-   sprite sheets and their layout sidecar, and a
+   pose grid images and their sidecar, and a
    generated `manifest.json` (fps, frame count, playback, view, `seam` and `seam_ratio`, source, and
    a SHA-256 per file), all under a `<name>/` folder. The sidecar's grid rides in the manifest as a
-   `spritesheet` block. CAG itself no longer reads either one — it takes the loose `thumbs/` and tiles
+   `pose_grid` block. CAG itself no longer reads either one — it takes the loose `thumbs/` and tiles
    its own grid at render time — so the sheets ride along for anyone handing a generator the whole
    pose set directly, and cost the consumer nothing. Prints the bundle path and the zip's own
    SHA-256 — that
@@ -197,6 +197,29 @@ The bundle's `manifest.json`
 carries a SHA-256 per file, so an unzipped copy can be verified file by file. Do not commit
 captures there; the repo excludes motion captures by policy. The sheet's
 "view" is the *filmed* view — the manifest's `view` still governs the rendered character.
+
+## Vocabulary (agreed with the character generator's repo)
+
+"Sheet" named five objects across the two repos and "grid" three, which produced three wrong
+conclusions in one session. **Use these and nothing else; if a term is missing, agree it before
+using it.** Never say "sprite sheet" or "skeleton" — both are retired.
+
+| term | is |
+| --- | --- |
+| motion bundle | the exported directory, identified by its manifest |
+| manifest | `manifest.json` |
+| motion sheet | the contents of `motion.json` — the only allowed use of "sheet" unqualified |
+| traced frame | one photograph of the performer, `thumbs/fNN.jpg` |
+| cue / arc | one frame's prose pose / the set's prose shape |
+| pose card | one traced frame letterboxed onto a 384×512 card |
+| pose grid | pose cards tiled four across, twelve per image |
+| pose reference | umbrella: whatever images show the generator the pose |
+| frame sheet | **the deliverable** — the finished drawn character, one set per image |
+| key art / bible | the approved character render / the identity text in every prompt |
+| set | one animation: dance, sing, flinch, guard, entrance, victory, ko |
+
+A motion sheet is a **traced sheet** when it came from a bundle, a **written sheet** when the
+consumer generated it from prose — a written sheet has no traced frames and so no pose reference.
 
 ## Notes
 

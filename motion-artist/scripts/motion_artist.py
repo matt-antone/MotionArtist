@@ -165,13 +165,13 @@ def describe(P, W, floor_y, body_h):
         up = "character-right" if plantedL else "character-left"
         f["weight"] = f"weight on the {'character-left' if plantedL else 'character-right'} foot, {up} foot lifted"
     # no stance word: ankle spread in image x cannot tell a wide stance from a fore-aft step seen
-    # at an angle, and the skeleton already draws foot spacing. Words that disagree with it strobe.
+    # at an angle, and the traced frame already shows foot spacing. Words that disagree with it strobe.
     legs = []
     for s, name in (("L", "character-left"), ("R", "character-right")):
         k = kneeL if s == "L" else kneeR
         if k < 150: legs.append(f"{name} knee {bend_word(k)}")
     f["legs"] = ", ".join(legs) if legs else "legs straight"
-    # legs overlapping in the image: a flat skeleton cannot show which is nearer, so say it in words
+    # legs overlapping in the image: a flat photograph cannot show which is nearer, so say it in words
     crossed = (anL[0] - anR[0]) * (P["hipL"][0] - P["hipR"][0]) < 0
     dz = zl["legL"] - zl["legR"]
     f["overlap"] = ""
@@ -736,11 +736,11 @@ def bundle_manifest(d, files):
 
 
 
-def spritesheet(a):
+def pose_grid(a):
     """Grid of every frame's stick figure at identical scale, in one image — a single pose-reference
     to hand an image generator so it draws the whole sprite across every frame in one call, instead
-    of frame by frame (which is where style and proportions drift). Writes a `<name>-spritesheet.json`
-    sidecar declaring the exact grid geometry, so a consumer slices by stated numbers instead of
+    of frame by frame (which is where style and proportions drift). Writes a `<name>-pose-grid.json`
+    sidecar declaring the exact geometry, so a consumer slices by stated numbers instead of
     reverse-engineering the pixels (thresholding, finding bands, measuring gaps)."""
     d = json.load(open(a.json))
     import cv2, numpy as np
@@ -749,7 +749,7 @@ def spritesheet(a):
     thumbs = [os.path.join(tdir, f"f{f['i']:02d}.jpg") for f in d["frames"]]
     missing = [p for p in thumbs if not os.path.exists(p)]
     if missing:
-        sys.exit(f"spritesheet needs one thumb per frame; missing {len(missing)} "
+        sys.exit(f"pose-grid needs one traced frame per motion frame; missing {len(missing)} "
                  f"(first: {os.path.basename(missing[0])}). Re-run extract.")
     imgs = [cv2.imread(p) for p in thumbs]
     cell_w, cell_h = max(i.shape[1] for i in imgs), max(i.shape[0] for i in imgs)
@@ -763,7 +763,7 @@ def spritesheet(a):
     per_sheet = 12
     # BGR, matching templates/sheet.html's :root — key #FF74A8, pilot #A8A2FF, otherwise --muted.
     role_ink = {"key": (168, 116, 255), "pilot": (255, 162, 168)}
-    out = a.out or os.path.join(os.path.dirname(a.json), f"{d['name']}-spritesheet.png")
+    out = a.out or os.path.join(os.path.dirname(a.json), f"{d['name']}-pose-grid.png")
     stem = out[:-4] if out.endswith(".png") else out
     chunks = [range(s, min(s + per_sheet, n)) for s in range(0, n, per_sheet)]
     written = []
@@ -778,8 +778,7 @@ def spritesheet(a):
                 cv2.putText(sheet, f"{f['i']:02d}", (x + 3, y + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                             role_ink.get(f["role"], (172, 150, 154)), 1, cv2.LINE_AA)
             sheet[y + label_h:y + label_h + im.shape[0], x:x + im.shape[1]] = im
-        # one chunk keeps the plain name, so a single-sheet set still matches the one
-        # `*-spritesheet.png` a bundle manifest may name; several get numbered.
+        # one chunk keeps the plain name; several get numbered.
         path = f"{stem}.png" if len(chunks) == 1 else f"{stem}-{c_i:02d}.png"
         cv2.imwrite(path, sheet)
         written.append(path)
@@ -796,7 +795,7 @@ def spritesheet(a):
     sidecar = f"{stem}.json"
     json.dump(layout, open(sidecar, "w"), indent=1)
     print("\n".join(written) + f"\n{sidecar}")
-    print(f"{cols} across, {per_sheet} per sheet, {len(chunks)} sheet(s), {n} frames, "
+    print(f"{cols} across, {per_sheet} per image, {len(chunks)} image(s), {n} frames, "
           f"{cell_w}x{cell_h}px cells")
     return written[0]
 
@@ -814,19 +813,19 @@ def export(a):
     if os.path.isdir(tdir):
         files += [(f"thumbs/{n}", os.path.join(tdir, n)) for n in sorted(os.listdir(tdir))
                   if os.path.isfile(os.path.join(tdir, n))]
-    # spritesheet is optional — only `spritesheet` produces it, and not every capture needs one —
+    # the pose grid is optional — only `pose-grid` produces it, and not every capture needs one —
     # so it rides along when found next to the json rather than requiring its own export flag.
-    # glob, not an exact name: a motion longer than one sheet chunks into -00.png, -01.png … and an
-    # exact `<name>-spritesheet.png` matched none of them, so the sheets silently never reached the
+    # glob, not an exact name: a motion longer than one image chunks into -00.png, -01.png … and an
+    # exact `<name>-pose-grid.png` matched none of them, so the images silently never reached the
     # bundle while the manifest still described them.
-    for p in sorted(glob.glob(os.path.join(src, f"{d['name']}-spritesheet*.png"))):
+    for p in sorted(glob.glob(os.path.join(src, f"{d['name']}-pose-grid*.png"))):
         files.append((os.path.basename(p), p))
     man = bundle_manifest(d, files)
-    # the spritesheet's grid geometry (cols/rows/tile pitch/label band) rides in the manifest too,
-    # not just as a sidecar file, so a consumer slices the PNG by declared numbers instead of
-    # measuring pixels back out of it.
-    layout_p = os.path.join(src, f"{d['name']}-spritesheet.json")
-    if os.path.exists(layout_p): man["spritesheet"] = json.load(open(layout_p))
+    # the pose grid's geometry (cols/rows/tile pitch/label band) rides in the manifest too, not
+    # just as a sidecar file, so a consumer slices the PNG by declared numbers instead of measuring
+    # pixels back out of it.
+    layout_p = os.path.join(src, f"{d['name']}-pose-grid.json")
+    if os.path.exists(layout_p): man["pose_grid"] = json.load(open(layout_p))
     # Bundles land in exports/ beside work/, not in the capture dir: one place to hand off from. The
     # name carries frame count and fps — exports/ is flat, and two cuts of one move differ only there.
     exports = os.path.join(os.path.dirname(os.path.dirname(src)), "exports")
@@ -868,14 +867,14 @@ def main():
     r = sub.add_parser("render"); r.add_argument("json"); r.add_argument("--out")
     r.add_argument("--template", help=f"sheet template to render into (default {TEMPLATE_PATH})")
     r.add_argument("--pingpong", action="store_true", help="walk the frames out and back (0..N-1..1) so the seam is the motion reversed")
-    sp = sub.add_parser("spritesheet"); sp.add_argument("json"); sp.add_argument("--out")
+    sp = sub.add_parser("pose-grid"); sp.add_argument("json"); sp.add_argument("--out")
     sp.add_argument("--cols", type=int, help="grid columns (default: near-square given the figure's own aspect)")
     sp.add_argument("--no-labels", action="store_true", help="omit the per-cell frame-number text (nothing for an image generator to copy into the art)")
     x = sub.add_parser("export"); x.add_argument("json"); x.add_argument("--out")
     x.add_argument("--sheet", help="motion sheet HTML (default <name>-motion.html beside the json)")
     sub.add_parser("selftest")
     a = ap.parse_args()
-    {"extract": extract, "render": render, "spritesheet": spritesheet, "export": export,
+    {"extract": extract, "render": render, "pose-grid": pose_grid, "export": export,
      "selftest": lambda _: selftest()}[a.cmd](a)
 
 

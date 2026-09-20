@@ -6,7 +6,7 @@ Everything else is docs and ignored scratch.
 
 ```
 motion-artist/SKILL.md                 the skill an agent loads
-motion-artist/scripts/motion_artist.py extract | render | spritesheet | export | selftest  (single file, ~1030 lines)
+motion-artist/scripts/motion_artist.py extract | render | pose-grid | export | selftest  (single file, ~1030 lines)
 motion-artist/templates/sheet.html     the motion sheet: markup, CSS and player, with {{PLACEHOLDER}}s
                                        render() fills. Edit the sheet's design here, not in the script
 .claude/skills/motion-artist           symlink to motion-artist/, so the skill loads in this repo —
@@ -51,10 +51,10 @@ Five steps, in order. A capture is not finished until step 5.
 1. `extract` — video → `work/<name>/motion.json` + `thumbs/`, and a printed frame table.
 2. Author the arc — fill `arc`, and per-frame `note` only where the generated cue misses intent.
 3. `render` — `motion.json` → the self-contained HTML motion sheet.
-4. `spritesheet` — `thumbs/` → the pose grid, four across and twelve to a sheet. The footage is the
-   only pose reference; nothing in this repo draws a figure.
-5. `export` — zip the json, sheet, thumbs, sprite sheets and a generated `manifest.json` with a
-   SHA-256 per file.
+4. `pose-grid` — `thumbs/` → the pose grid: traced frames as pose cards, four across, twelve per
+   image. Traced frames are the only pose reference; nothing in this repo draws a figure.
+5. `export` — zip the motion sheet, the HTML, the traced frames, any pose grid images and a
+   generated `manifest.json` with a SHA-256 per file.
    The printed bundle path and zip digest are what a KaraokeParty-Graphics job input references.
 
 Every bundle lands in `exports/` at the repo root, one flat directory of

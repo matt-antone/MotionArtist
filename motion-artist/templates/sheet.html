@@ -54,13 +54,13 @@ button[aria-pressed="true"]{background:var(--ink);color:var(--paper);border-colo
 .cell[data-role="key"] .num{color:var(--step)}.cell[data-role="pilot"] .num{color:var(--tap)}
 .legend{display:flex;gap:16px;font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-top:8px}
 .legend b{font-weight:600}.legend .k{color:var(--step)}.legend .p{color:var(--tap)}
-.sprite-wrap{background:var(--paper);border:1px solid var(--line);border-radius:3px;padding:14px}
-.sprite{display:grid;grid-template-columns:repeat(var(--cols,4),minmax(0,1fr));gap:10px}
-.stile{display:flex;flex-direction:column;min-width:0}
-.stile .snum{font-family:"IBM Plex Mono",monospace;font-size:11px;font-weight:600;line-height:1.35;color:var(--muted);font-variant-numeric:tabular-nums}
-.stile[data-role="key"] .snum{color:var(--step)}.stile[data-role="pilot"] .snum{color:var(--tap)}
-.stile img{width:100%;height:auto;display:block;border-radius:2px}
-.map h2,.arc h2,.brief h2,.sprite-head h2{font-size:15px;font-weight:700;margin-bottom:10px}
+.pgrid-wrap{background:var(--paper);border:1px solid var(--line);border-radius:3px;padding:14px}
+.pgrid{display:grid;grid-template-columns:repeat(var(--cols,4),minmax(0,1fr));gap:10px}
+.pcard{display:flex;flex-direction:column;min-width:0}
+.pcard .snum{font-family:"IBM Plex Mono",monospace;font-size:11px;font-weight:600;line-height:1.35;color:var(--muted);font-variant-numeric:tabular-nums}
+.pcard[data-role="key"] .snum{color:var(--step)}.pcard[data-role="pilot"] .snum{color:var(--tap)}
+.pcard img{width:100%;height:auto;display:block;border-radius:2px}
+.map h2,.arc h2,.brief h2,.pgrid-head h2{font-size:15px;font-weight:700;margin-bottom:10px}
 .arc{display:flex;flex-direction:column;gap:8px}
 .brief ul{margin:0;padding-left:20px}.brief li{margin:2px 0}
 .maprows{display:flex;flex-direction:column;border-top:1px solid var(--line)}
@@ -100,14 +100,14 @@ footer a{color:inherit}
 <p class="note" id="note"></p>
 </div>
 
-<section><div class="strip-head"><h2>The sheet</h2><span>Click a frame to scrub · ←/→ · space</span></div>
+<section><div class="strip-head"><h2>Traced frames</h2><span>Click a frame to scrub · ←/→ · space</span></div>
 <div class="strip" id="strip"></div>
 <div class="legend"><span><b class="k">■</b> key (hold / extreme)</span><span><b class="p">■</b> pilot (fastest transition)</span><span>■ in-between</span><span>every side named in the cue is the performer's own: character-left / character-right, never screen sides</span></div>
 </section>
 
-<section><div class="strip-head sprite-head"><h2>Sprite sheet</h2><span id="spriteDims"></span></div>
-<div class="sprite-wrap"><div class="sprite" id="sprite"></div></div>
-<p class="note" style="margin-top:9px">The pose grid the <code>spritesheet</code> command emits, tiled straight out of the footage &mdash; four across and twelve to a sheet, which is the generator's own render grid, so one sheet is one call and a longer motion chunks across several. Photographs, not drawn figures: both reference the poses about equally, but the drawn cards come back at 0.43&ndash;0.70 of the traced movement where photographs come back at 0.9&ndash;1.2. A consumer slices by the numbers declared in the manifest, never by measuring the picture.</p>
+<section><div class="strip-head pgrid-head"><h2>Pose grid</h2><span id="pgridDims"></span></div>
+<div class="pgrid-wrap"><div class="pgrid" id="pgrid"></div></div>
+<p class="note" style="margin-top:9px">The pose grid the <code>pose-grid</code> command emits: traced frames as pose cards, four across and twelve per image, so a longer motion chunks across several. Photographs, not drawn figures &mdash; both rank the poses about equally, but drawn cards come back at 0.43&ndash;0.70 of the traced movement where photographs come back at 0.9&ndash;1.2. A consumer slices by the numbers declared in the manifest, never by measuring the picture. The character generator builds its own pose grid from the loose traced frames and does not read this one.</p>
 </section>
 
 <section class="arc"><h2>Performance arc</h2>{{ARC}}</section>
@@ -136,16 +136,16 @@ var strip=document.getElementById("strip"),cells=[];
 F.forEach(function(f,i){var b=document.createElement("button");b.className="cell";b.type="button";b.dataset.role=f.role;
 b.style.setProperty("--cellc",COL[f.role]);b.style.setProperty("--cellw",WASH[f.role]);
 b.innerHTML='<span class="num">'+f.i+'</span>'+(THUMBS[i]?'<img src="'+THUMBS[i]+'" alt="Frame '+f.i+'">':'');b.addEventListener("click",function(){stop();go(ORDER.indexOf(i))});strip.appendChild(b);cells.push(b)});
-// The sprite grid, laid out as `spritesheet` writes it: the traced frames, four across and twelve
-// to a sheet, which is the generator's own render grid, so one sheet is one call.
+// The pose grid, laid out as `pose-grid` writes it: traced frames as pose cards, four across,
+// twelve per image.
 var COLS=4,PER=12,SHEETS=Math.ceil(F.length/PER);
-var sp=document.getElementById("sprite");sp.style.setProperty("--cols",COLS);
-F.forEach(function(f,i){var t=document.createElement("div");t.className="stile";t.dataset.role=f.role;
+var sp=document.getElementById("pgrid");sp.style.setProperty("--cols",COLS);
+F.forEach(function(f,i){var t=document.createElement("div");t.className="pcard";t.dataset.role=f.role;
 t.innerHTML='<span class="snum">'+(f.i<10?"0":"")+f.i+'</span>'+
   (THUMBS[i]?'<img src="'+THUMBS[i]+'" alt="Frame '+f.i+'">':'');
 sp.appendChild(t)});
-document.getElementById("spriteDims").textContent=
-  SHEETS+" sheet"+(SHEETS>1?"s":"")+" · "+COLS+" across · "+PER+" per sheet";
+document.getElementById("pgridDims").textContent=
+  SHEETS+" image"+(SHEETS>1?"s":"")+" · "+COLS+" across · "+PER+" per image";
 var idx=0,fps=D.fps,timer=null,mirrored=false,stage=document.querySelector(".stage");
 function render(){var at=ORDER[idx],f=F[at];stage.style.setProperty("--accent",COL[f.role]);stage.style.setProperty("--wash",WASH[f.role]);
 document.getElementById("bigCount").textContent=f.i;

@@ -1,7 +1,7 @@
 # MotionArtist
 
 A Claude Code skill that turns a video of a person moving into a **motion sheet** for animation
-agents: a sprite sheet of the traced footage to condition a generator on, and a pose instruction
+agents: the traced video frames as the pose reference a generator is conditioned on, and a pose instruction
 per frame at a declared fps and frame count, written in the vocabulary used by
 [KaraokeParty-Graphics](https://github.com/matt-antone/KaraokeParty-Graphics) motion and
 keyframe roles (character-left / character-right, keys, pilots, loop seam). The sheet is a
@@ -15,7 +15,7 @@ Demo sheets:
 ```
 motion-artist/
   SKILL.md                 # the skill (what Claude does, step by step)
-  scripts/motion_artist.py # extract (video → motion.json + thumbs), render (→ HTML), spritesheet (→ pose grid), export (→ bundle)
+  scripts/motion_artist.py # extract (video → motion.json + thumbs), render (→ HTML), pose-grid (→ pose grid), export (→ bundle)
 AGENTS.md                  # how to work in this repo: pipeline, conventions, verification
 ```
 
@@ -43,7 +43,7 @@ Or by hand:
 python3 motion-artist/scripts/motion_artist.py extract "https://www.youtube.com/shorts/…" \
   --fps 4 --frames 16 --start 0:16 --end 0:20 --name dance
 python3 motion-artist/scripts/motion_artist.py render work/dance/motion.json
-python3 motion-artist/scripts/motion_artist.py spritesheet work/dance/motion.json
+python3 motion-artist/scripts/motion_artist.py pose-grid work/dance/motion.json
 python3 motion-artist/scripts/motion_artist.py export work/dance/motion.json
 ```
 
@@ -59,8 +59,8 @@ python3 motion-artist/scripts/motion_artist.py export work/dance/motion.json
 | `--name`, `--out` | output slug and directory (default `work/<name>/`) |
 | `render --template FILE` | render into a different sheet template (default `motion-artist/templates/sheet.html`) |
 | `render --pingpong` | walk the same cells out and back; the return leg reverses the out leg, so the seam is clean and the sheet still holds only the requested frames |
-| `spritesheet --cols` | tiles per row; default `4`, matching the consumer's render grid |
-| `spritesheet --no-labels` | drop the frame-number band, and say so in the sidecar |
+| `pose-grid --cols` | pose cards per row; default `4` |
+| `pose-grid --no-labels` | drop the frame-number band, and say so in the sidecar |
 | `export --out`, `--sheet` | bundle path (default `exports/<name>-<frames>f-<fps>fps-motion-source.zip`) and the sheet HTML to include (default `<name>-motion.html` beside the json) |
 
 `extract` prints one line per frame (index, source time, key / pilot / in-between, pace, pose cue)
@@ -71,18 +71,20 @@ per-frame `note` in `motion.json`; the sheet renders them. `selftest` checks the
 and the export manifest.
 
 The rendered sheet has the traced frame and its cue, play / scrub / rate / mirror controls, the
-frame strip (keys pink, pilots blue), the sprite-sheet grid, the performance arc, a brief for the
+frame strip (keys pink, pilots blue), the pose grid, the performance arc, a brief for the
 artist agent, the frame-note table, and the data as embedded JSON.
 
-`spritesheet` builds the pose grid you hand a generator in one call. It tiles `thumbs/` — the
-traced footage — four across and twelve to a sheet, matching the consumer's
-own render grid, so one sheet is one generation call and a longer motion chunks across several.
-Photographs are the pose route because they carry the movement at the size it was really danced:
-measured against the trace, drawn cards come back at 0.43–0.70 of it and photographs at 0.9–1.2.
-It writes a `<name>-spritesheet.json` sidecar declaring the grid in PNG pixels so a consumer slices
-by stated numbers rather than measuring the image, and needs a complete thumb set.
+`pose-grid` builds the pose grid you hand a generator in one call: the traced frames as pose cards,
+four across and twelve per image, so a longer motion chunks across several. Photographs rather than
+drawings because they carry the movement at the size it was really danced — measured against the
+trace, drawn cards come back at 0.43–0.70 of it and photographs at 0.9–1.2. It writes a
+`<name>-pose-grid.json` sidecar declaring the geometry in PNG pixels so a consumer slices by stated
+numbers rather than measuring the image, and needs one traced frame per motion frame.
 
-`export` is the last step: it zips `motion.json`, the sheet, `thumbs/` and any sprite sheets with a
+The character generator does **not** read this: it builds its own pose grid from the loose traced
+frames, against its own batch size. The grid here is for handing a generator the whole set directly.
+
+`export` is the last step: it zips the motion sheet, the HTML, `thumbs/` and any pose grid images with a
 generated
 `manifest.json` (fps, frame count, playback, view, seam, source, and a SHA-256 per file), and
 prints the bundle path and the zip's SHA-256 — the pair a KaraokeParty-Graphics motion-director
