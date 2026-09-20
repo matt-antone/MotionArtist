@@ -12,7 +12,7 @@
 `export` bundles the json, sheet and thumbs with a SHA-256 manifest for hand-off.
 Between extract and render, an agent may fill `arc`, `title` and per-frame `note` in motion.json.
 """
-import argparse, base64, glob, hashlib, html, json, math, os, re, subprocess, sys, urllib.request, zipfile
+import argparse, base64, glob, hashlib, html, json, math, os, re, subprocess, sys, tempfile, urllib.request, zipfile
 
 MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
              "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task")
@@ -716,6 +716,23 @@ def sha256(path):
     return h.hexdigest()
 
 
+def trace_id(d):
+    """The bundle's name: the capture's label, the video it came from, and the second it starts at.
+
+    A label alone is not an identifier. "shuffle" is a genre, and two different dances — different
+    video, different cut, different choreography — landed on it within an hour of two people agreeing
+    a glossary to stop exactly that. Copying the directory overwrote one with the other silently, and
+    every measurement taken against the first then referred to a dance nobody had rendered.
+
+    Source id and start second are unique by construction, need no registry, and read as provenance.
+    # ponytail: two traces of the SAME cut still collide — add the trace date if that ever happens.
+    """
+    s = d["source"]
+    m = re.search(r"(?:/shorts/|v=|youtu\.be/)([\w-]{11})", s.get("url") or "")
+    vid = m.group(1) if m else os.path.splitext(os.path.basename(s.get("file") or "local"))[0]
+    return f"{d['name']}-{vid}-{s['start']:.1f}s"
+
+
 def bundle_manifest(d, files):
     """What the motion-director job input references: what the capture is, and a SHA-256 per file.
 
@@ -808,7 +825,15 @@ def export(a):
     sheet = a.sheet or os.path.join(src, f"{d['name']}-motion.html")
     if not os.path.exists(sheet):
         sys.exit(f"export: no motion sheet at {sheet} — run `render` first, or pass --sheet")
-    files = [("motion.json", os.path.abspath(jp)), (os.path.basename(sheet), sheet)]
+    # The shipped motion.json carries the bundle name too. Renaming only the directory and the
+    # manifest is how a bundle ends up advertising one name and saying another inside — which is
+    # precisely how a swapped dance stayed invisible. Written to a temp file so the manifest digest
+    # is taken over the bytes that actually ship.
+    bundle = trace_id(d)
+    tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+    json.dump({**d, "name": bundle}, tmp, ensure_ascii=False, indent=1)
+    tmp.close()
+    files = [("motion.json", tmp.name), (os.path.basename(sheet), sheet)]
     tdir = os.path.join(src, "thumbs")
     if os.path.isdir(tdir):
         files += [(f"thumbs/{n}", os.path.join(tdir, n)) for n in sorted(os.listdir(tdir))
@@ -820,7 +845,7 @@ def export(a):
     # bundle while the manifest still described them.
     for p in sorted(glob.glob(os.path.join(src, f"{d['name']}-pose-grid*.png"))):
         files.append((os.path.basename(p), p))
-    man = bundle_manifest(d, files)
+    man = bundle_manifest({**d, "name": bundle}, files)
     # the pose grid's geometry (cols/rows/tile pitch/label band) rides in the manifest too, not
     # just as a sidecar file, so a consumer slices the PNG by declared numbers instead of measuring
     # pixels back out of it.
@@ -829,11 +854,12 @@ def export(a):
     # Bundles land in exports/ beside work/, not in the capture dir: one place to hand off from. The
     # name carries frame count and fps — exports/ is flat, and two cuts of one move differ only there.
     exports = os.path.join(os.path.dirname(os.path.dirname(src)), "exports")
-    out = a.out or os.path.join(exports, f"{d['name']}-{d['frame_count']}f-{d['fps']}fps-motion-source.zip")
+    out = a.out or os.path.join(exports, f"{bundle}-{d['frame_count']}f-{d['fps']}fps-motion-source.zip")
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-        for rel, p in files: z.write(p, f"{d['name']}/{rel}")
-        z.writestr(f"{d['name']}/manifest.json", json.dumps(man, indent=1))
+        for rel, p in files: z.write(p, f"{bundle}/{rel}")
+        z.writestr(f"{bundle}/manifest.json", json.dumps(man, indent=1))
+    os.unlink(tmp.name)
     ratio = man["seam_ratio"]
     print(f"{out}\nsha256 {sha256(out)} | {len(files) + 1} files | {d['frame_count']}f @ "
           f"{d['fps']}fps | {d['playback']} | view {d['view']} | seam {man['seam']}"

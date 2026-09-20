@@ -174,8 +174,8 @@ right thing positively is what held. That applies to any prompt text this skill 
    python3 "$SKILL/scripts/motion_artist.py" export work/dance/motion.json
    ```
    One motion is one bundle, however many frames it has.
-   Writes `exports/dance-24f-4fps-motion-source.zip` — always `exports/` at the repo root, the
-   name carrying the frame count and fps, never inside
+   Writes `exports/dance-b0ARQ5kM85Y-16.0s-24f-4fps-motion-source.zip` — always `exports/` at the
+   repo root, never inside
    the capture dir: `motion.json`, the sheet HTML, `thumbs/` (the pose reference — see above), any
    pose grid images and their sidecar, and a
    generated `manifest.json` (fps, frame count, playback, view, `seam` and `seam_ratio`, source, and
@@ -189,7 +189,7 @@ right thing positively is what held. That applies to any prompt text this skill 
 
 ## Hand-off to KaraokeParty-Graphics
 
-Copy `exports/<name>-<frames>f-<fps>fps-motion-source.zip` into that repo's ignored
+Copy `exports/<name>-<video id>-<start>s-<frames>f-<fps>fps-motion-source.zip` into that repo's ignored
 `work/<character>/motion-source/` and reference it by path and by the SHA-256 the export printed,
 as the authorized motion source in the motion-director job input. A spec names **one** bundle per
 animation (`spec.motions[set_name]` → one bundle directory); CAG chunks it across renders itself.
