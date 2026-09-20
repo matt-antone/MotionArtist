@@ -33,7 +33,7 @@ ask for "the best loop" inside a range, pass the range as `--start/--end` plus `
 search reports no fully-tracked window, the range holds a scene cut or a shot with no visible body:
 sample it to find the usable span, then search inside that span with `--window`.
 
-## Frame count: any length, but prefer a multiple of 4
+## Frame count: any length, but prefer a multiple of 12
 
 One motion is **one capture and one bundle**, whatever its length. Do not split a long motion into
 several — CAG has no concept of chaining bundles, so two bundles are two unrelated animations there,
@@ -43,11 +43,27 @@ between them is lost.
 The number 12 belongs to CAG's renderer, not to the bundle: it draws at most 12 figures per image
 on a grid four wide, and chunks a longer motion across as many renders as it needs before
 assembling one sheet. A 24-frame bundle renders as 12 + 12, a 32 as 12 + 12 + 8, a 14 as 12 + 2 —
-all one animation out the other side.
+all one animation out the other side. That ceiling is not reachable from here: `sheet()` chunks by
+`SHEET_FRAMES` unconditionally and no spec field raises it, so nothing this skill ships can put more
+than 12 figures in one render whatever `frame_count` says. (A scratch script calling `draw()`
+directly can, and does tile one pose across the last row past 12 — but that path is below CAG.)
 
-What the grid does ask for is a count divisible by 4, so the last row of the last chunk fills rather
-than sitting part-empty. That is a waste of cells, not a failure, and `extract` says so as a note
-rather than a warning. Nothing breaks at 14.
+**Each chunk is a separate generation call, and every boundary is a chance for the character to
+drift** — costume, face, proportions. The approved key art is attached to every render, which is
+real mitigation and is also exactly what failed to stop a dancer's trainers arriving on a lifted
+foot. Nothing measures identity across chunks and nothing warns. So prefer a count that divides by
+12: it costs the fewest calls. 24 is two; 26 is three, one of them drawing two figures.
+
+Failing that, prefer a multiple of 4, so the last row of the last chunk fills rather than sitting
+part-empty. That is wasted cells, not a failure, and `extract` says so as a note. Nothing breaks
+at 14.
+
+What does **not** need managing from here is drawn size. The generator draws figures bigger in a
+sparse render than a full one, so a 12 + 2 chunking draws its last two much larger — but
+registration measures each chunk separately and normalises it out, deliberately, because one factor
+across both put a size pop at the seam. Measured on 16 frames with the second chunk drawn at twice
+the height of the first: registered cells came out 389px and 393px, a 4px spread, about 1%, and that
+residual is rounding between two source sizes rather than drift.
 
 ## `thumbs/` is a contract output
 
@@ -174,6 +190,11 @@ captures there; the repo excludes motion captures by policy. The sheet's
 - Every frame is scaled about the hips so torso length matches the clip median: camera zoom or distance never changes skeleton size.
 - Cues are heuristic: elbow and knee angles, girdle twist and sole pitch from the world landmarks,
   wrist and hip heights from the image landmarks. They are guidance for the artist, not measurements.
+- `pts` stay load-bearing even though the pose reference is now the photographs. CAG's registration
+  reads the drawn figure against what a frame's own landmarks say the pose's extent is versus the
+  character's crown-to-heel, which is how it recovers the real character height whatever
+  magnification the generator picked, and so how it holds one scale across chunks. A set with no
+  landmarks falls back to a per-chunk height cluster. Keep them accurate; do not hand-edit them.
 - `seam` is read on the CAG side, not just by us: before drawing, it logs that the proof will jump
   from the last frame back to the first unless the verdict is `clean` or empty (an unset seam reads
   as no complaint), and `cag sheets` prints it per bundle. `seam_ratio` rides alongside it — the
