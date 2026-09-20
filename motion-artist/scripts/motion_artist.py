@@ -412,16 +412,16 @@ def render(a):
     d = json.load(open(a.json))
     for f in d["frames"]: f.setdefault("src", f["i"])   # which source frame each cell draws from
     # The spec below is the target animation's, fixed at extract. --repeat and --pingpong add cells
-    # to the strip for reviewing the seam; they must not restate how long the animation is.
+    # to the strip for reviewing the seam; they must not restate how long the animation is, and a
+    # replayed cell keeps its own frame's number — no cell ever counts past the requested frames.
     cycle = len(d["frames"])
     if a.pingpong and len(d["frames"]) > 2:  # out and back: the return leg is the same poses reversed
         base = d["frames"]
-        d["frames"] = base + [dict(f, i=len(base) + k, leg="back")
-                              for k, f in enumerate(reversed(base[1:-1]))]
+        d["frames"] = base + [dict(f, leg="back") for f in reversed(base[1:-1])]
         d["pingpong"] = True
-    if a.repeat > 1:  # play the cycle N times back to back; frame numbers run on, cues repeat
+    if a.repeat > 1:  # play the cycle N times back to back; each cycle re-runs frames 0..N-1
         base = d["frames"]
-        d["frames"] = [dict(f, i=c * len(base) + f["i"], cycle=c + 1) for c in range(a.repeat) for f in base]
+        d["frames"] = [dict(f, cycle=c + 1) for c in range(a.repeat) for f in base]
         d["repeat"] = a.repeat
     out = a.out or os.path.join(os.path.dirname(a.json), f"{d['name']}-motion.html")
     tdir = os.path.join(os.path.dirname(a.json), "thumbs")
@@ -452,7 +452,7 @@ def render(a):
         f'<span class="mv">{f["i"]}</span><span class="ct">{f["t"]:.2f}s · {f["role"]} · {f["pace"]}</span>'
         f'<span class="txt">{html.escape(f["cue"])}'
         f'{("<br><b>Note:</b> " + html.escape(f["note"])) if f["note"] else ""}</span></div>'
-        for f in d["frames"])
+        for f in d["frames"][:cycle])
 
     page = TEMPLATE
     for k, v in dict(
@@ -462,7 +462,7 @@ def render(a):
              f'{n} frames, {lap:.2f} s per {"lap" if d["playback"] == "loop" else "run"}'
              + (f', {d["repeat"]} cycles' if d.get("repeat") else '')
              + (' — out and back, the return leg reversing the out leg' if d.get("pingpong") else '')
-             + (f'. The strip below holds {cells} cells for review; the animation is {n} frames.'
+             + (". The strip replays those frames for review; the numbering stays the animation's."
                 if cells != n else '.')),
         N=str(n), FPS=str(d["fps"]), LAP=f"{lap:.2f} s", PLAYBACK=d["playback"], VIEW=html.escape(d["view"]),
         SEAM=("clean — the return leg reverses the out leg" if d.get("pingpong") else d["seam"]), KEYS=", ".join(map(str, keys)) or "—", PILOTS=", ".join(map(str, pilots)) or "—",
@@ -604,7 +604,7 @@ var idx=0,fps=D.fps,timer=null,mirrored=false,stage=document.querySelector(".sta
 function render(){var f=F[idx];stage.style.setProperty("--accent",COL[f.role]);stage.style.setProperty("--wash",WASH[f.role]);
 document.getElementById("bigCount").textContent=f.i;
 document.getElementById("phaseName").textContent=f.role.charAt(0).toUpperCase()+f.role.slice(1)+" · "+f.pace;
-document.getElementById("phaseOf").textContent="frame "+(idx+1)+" of "+F.length+(f.leg==="back"?" · return leg":"")+(f.cycle?" · cycle "+f.cycle:"")+" · view "+f.features.view;
+document.getElementById("phaseOf").textContent="frame "+(f.i+1)+" of "+D.frame_count+(f.leg==="back"?" · return leg":"")+(f.cycle?" · cycle "+f.cycle:"")+" · view "+f.features.view;
 document.getElementById("cue").textContent=f.cue;
 document.getElementById("note").innerHTML=f.note?"<b>Note:</b> "+f.note.replace(/</g,"&lt;"):"";
 document.getElementById("srcChip").textContent="source "+f.t.toFixed(2)+" s";
