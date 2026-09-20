@@ -534,137 +534,6 @@ def best_loop(cap, mp, lm, t0, t1, length, aspect, hz=8):
 
 
 # ---------------------------------------------------------------- render
-def figure_svg(pts, box, body_scale, color, accent=None, label=""):
-    """Stick figure from image-space points. box = (x0, y0, w, h) of the clip's figure bounds."""
-    x0, y0, w, h = box
-    s = 200 / h
-    def X(p): return (p[0] - x0) * s + 10
-    def Y(p): return (p[1] - y0) * s + 10
-    L = []
-    def z(k): return pts[k][2] if len(pts[k]) > 2 else 0.0   # schema 1 had no depth: flat is fine
-    hm, sm = mid(pts["hipL"], pts["hipR"]), mid(pts["shL"], pts["shR"])
-    # the pelvis and shoulder bars are what the dance turns on, so they are drawn as girdles —
-    # heavier and in the accent colour — not as two more bones lost in the mesh.
-    GIRDLE = (("hipL", "hipR"), ("shL", "shR"))
-    LIMB = {"L": "var(--limb-l)", "R": "var(--limb-r)"}
-    GIRDLE_INK = "var(--girdle)"   # its own ink on every frame, not the key/pilot accent: the hips
-    # turn just as hard on an in-between, and that is the half of the dance an artist keeps missing.
-    # each limb is inked by the side it belongs to, so character-left and character-right never
-    # have to be worked out from the pose. Only the spine, head and girdles stay neutral.
-    def side_ink(k): return LIMB["R"] if k.endswith("R") else LIMB["L"]
-    segs = [(pts[a], pts[b], 5, (z(a) + z(b)) / 2, side_ink(a))          # (a, b, stroke, depth, ink)
-            for a, b in BONES if (a, b) not in GIRDLE and b not in ("toeL", "toeR")]
-    segs += [(pts["an" + k], pts["heel" + k], 4, z("an" + k), LIMB[k]) for k in ("L", "R")]
-    segs.append((hm, sm, 6, (z("hipL") + z("hipR") + z("shL") + z("shR")) / 4, color))
-    for pa, pb, sw, _, ink in sorted(segs, key=lambda s: -s[3]):   # far bones first, near drawn over
-        L.append(f'<line x1="{X(pa):.1f}" y1="{Y(pa):.1f}" x2="{X(pb):.1f}" y2="{Y(pb):.1f}" '
-                 f'stroke="{ink}" stroke-width="{sw}" stroke-linecap="round"/>')
-    # everything that needs to show a turn is a box, not a bar: a bar seen from an angle is just a
-    # shorter bar, so the turn reads as nothing. Image x,y already ARE the orthographic projection
-    # and z is in the same units, so a corner is drawn by dropping its z.
-    def P3(k): return [pts[k][0], pts[k][1], z(k)]
-
-    def box3(a, b, depth, thick, ink, back_w=2, face_w=3.5):
-        """A box with a->b as its long edge, `depth` across it horizontally and `thick` off it in
-        the remaining direction. The face turned toward the camera is drawn heavy, so which way the
-        box points is legible at strip size without reading a marker."""
-        u = [b[i] - a[i] for i in range(3)]
-        span = math.hypot(u[0], u[2])
-        d = [-u[2] / span, 0.0, u[0] / span] if span > 1e-6 else [1.0, 0.0, 0.0]
-        if d[2] > 0: d = [-d[0], 0.0, -d[2]]                  # point the depth axis at the camera
-        d = [x * depth for x in d]
-        n = [u[1] * d[2] - u[2] * d[1], u[2] * d[0] - u[0] * d[2], u[0] * d[1] - u[1] * d[0]]
-        ln = math.hypot(*n) or 1e-9
-        n = [x * thick / ln for x in n]
-        if n[1] < 0: n = [-x for x in n]                      # body of the box sits below its edge
-        def corner(t, sd, off):
-            return [a[i] + t * u[i] + sd * d[i] / 2 + off * n[i] for i in range(2)]
-        def quad(sd):
-            c4 = (corner(0, sd, 0), corner(1, sd, 0), corner(1, sd, 1), corner(0, sd, 1))
-            return "M" + "L".join(f"{X(q):.1f} {Y(q):.1f}" for q in c4) + "Z"
-        edges = "".join(f"M{X(corner(t, sd, 0)):.1f} {Y(corner(t, sd, 0)):.1f}"
-                        f"L{X(corner(t, sd, 1)):.1f} {Y(corner(t, sd, 1)):.1f}"
-                        for t in (0, 1) for sd in (-1, 1))
-        L.append(f'<path d="{quad(-1)}{edges}" fill="none" stroke="{ink}" stroke-width="{back_w}" '
-                 f'stroke-linejoin="round" opacity=".55"/>')
-        L.append(f'<path d="{quad(1)}" fill="none" stroke="{ink}" stroke-width="{face_w}" '
-                 f'stroke-linejoin="round"/>')
-
-    def girth(lk, rk):   # true width of a girdle: horizontal, so the turn cannot shrink it
-        return math.hypot(pts[rk][0] - pts[lk][0], z(rk) - z(lk)) or 1e-6
-    # the girdles are sized off the spine, not off their own width, so a turn that narrows one
-    # cannot also shrink its box and cancel the very thing it is drawn to show
-    spine = max(dist(hm, sm), 1e-6)
-    box3(P3("hipL"), P3("hipR"), 0.62 * girth("hipL", "hipR"), 0.34 * spine, GIRDLE_INK)
-    box3(P3("shL"), P3("shR"), 0.52 * girth("shL", "shR"), 0.62 * spine, GIRDLE_INK)
-
-    for sfx in ("L", "R"):
-        # foot in two parts hinged at the ball, because that hinge IS the footwork: on the ball the
-        # sole pitches up and the toes stay down, and one rigid foot box cannot show that.
-        heel, ball = P3("heel" + sfx), P3("toe" + sfx)
-        flen = max(dist(heel, ball), 1e-6)
-        box3(heel, ball, 0.55 * flen, 0.22 * flen, LIMB[sfx], 1.5, 2.5)          # sole, heel to ball
-        v = [ball[i] - heel[i] for i in range(3)]
-        # nothing is tracked past the ball, so the toes are inferred: they flatten toward the floor
-        # once the heel lifts, and otherwise carry on the line of the sole
-        if v[1] > 0: v = [v[0], v[1] * 0.25, v[2]]
-        box3(ball, [ball[i] + 0.45 * v[i] for i in range(3)],
-             0.55 * flen, 0.22 * flen, LIMB[sfx], 1.5, 2.5)                      # toes
-        # hand. The finger landmarks are the least reliable thing MediaPipe returns — on this clip
-        # the index-to-pinky span collapses to a few thousandths of body height — so they are used
-        # only when they resolve to a believable hand width, and otherwise the hand is guessed to
-        # carry on the line of the forearm, which is what an artist would assume anyway.
-        wr, el = P3("wr" + sfx), P3("el" + sfx)
-        fore = max(dist(wr, el), 1e-6)
-        seen = all(k in pts for k in ("index" + sfx, "pinky" + sfx)) and \
-            dist(pts["index" + sfx], pts["pinky" + sfx]) > 0.25 * fore
-        aim = mid(pts["index" + sfx], pts["pinky" + sfx]) if seen else None
-        v = ([aim[0] - wr[0], aim[1] - wr[1], (z("index" + sfx) + z("pinky" + sfx)) / 2 - wr[2]]
-             if seen else [wr[i] - el[i] for i in range(3)])
-        n = math.hypot(*v) or 1e-9
-        hand = 0.62 * fore
-        box3(wr, [wr[i] + v[i] / n * hand for i in range(3)],
-             0.46 * hand, 0.22 * hand, LIMB[sfx], 1.5, 2.5)
-    hc = mid(pts["earL"], pts["earR"])
-    r = 0.07 * body_scale * s
-    L.append(f'<circle cx="{X(hc):.1f}" cy="{Y(hc):.1f}" r="{r:.1f}" fill="none" stroke="{color}" stroke-width="5"/>')
-    # face: a brow across the eyes and a nose line off it, both built from the real landmarks and
-    # blown up to head size. Head roll tilts the brow, a turn foreshortens it, and the nose says
-    # which way the face points — no trigonometry, and it degrades to a stub in profile by itself.
-    em = mid(pts["eyeL"], pts["eyeR"])
-    def face_line(a, b, reach, width, both_ways=False):
-        """`a`->`b` scaled until it reaches `reach` of the head radius. Returns "" when the two
-        landmarks sit on top of each other, which is what a head turned fully away looks like."""
-        v = [b[0] - a[0], b[1] - a[1]]
-        n = math.hypot(*v)
-        if n < 1e-6: return ""
-        k = reach * r / (n * s)                       # r is in rendered units, v in image units
-        tip = [a[0] + v[0] * k, a[1] + v[1] * k]
-        tail = [a[0] - v[0] * k, a[1] - v[1] * k] if both_ways else a
-        return (f'<line x1="{X(tail):.1f}" y1="{Y(tail):.1f}" x2="{X(tip):.1f}" y2="{Y(tip):.1f}" '
-                f'stroke="{accent or color}" stroke-width="{width}" stroke-linecap="round"/>')
-    L.append(face_line(em, pts["eyeL"], 0.58, 3, both_ways=True))   # brow
-    L.append(face_line(em, pts["nose"], 0.95, 2.5))                 # nose
-    vw = w * s + 20   # w is the clip box width, unpacked at the top
-    return (f'<svg viewBox="0 0 {vw:.0f} 220" role="img" aria-label="{html.escape(label)}">'
-            f'<line x1="0" y1="{Y([0, FLOOR]):.1f}" x2="{vw:.0f}" y2="{Y([0, FLOOR]):.1f}" '
-            f'stroke="{color}" stroke-width="1" opacity=".35" stroke-dasharray="3 4"/>{"".join(L)}</svg>')
-
-
-FLOOR = 0.0  # set by compute_box() before figure_svg is called
-
-
-def compute_box(d):
-    """Bounding box (x0, y0, w, h) covering every landmark across every frame, padded — the shared
-    figure frame so all cells in a sheet sit at identical scale. Also sets the module-level FLOOR
-    (see figure_svg): the deepest sole in the clip, not d["floor_y"] (see render())."""
-    global FLOOR
-    soles = [v[1] for f in d["frames"] for k, v in f["pts"].items() if k[:4] in ("heel", "toe")]
-    FLOOR = max(soles) if soles else d["floor_y"]
-    xs = [v[0] for f in d["frames"] for v in f["pts"].values()]
-    ys = [v[1] for f in d["frames"] for v in f["pts"].values()] + [FLOOR]
-    pad = 0.08 * d["body_h"]
-    return (min(xs) - pad, min(ys) - pad, max(xs) - min(xs) + 2 * pad, max(ys) - min(ys) + 2 * pad)
 
 
 def render(a):
@@ -677,13 +546,10 @@ def render(a):
         d["pingpong"] = True
     out = a.out or os.path.join(os.path.dirname(a.json), f"{d['name']}-motion.html")
     tdir = os.path.join(os.path.dirname(a.json), "thumbs")
-    box = compute_box(d)
     rates = sorted({1, 4, d["fps"]})
 
-    figs, thumbs = [], []
+    thumbs = []
     for f in d["frames"]:
-        col = {"key": "var(--step)", "pilot": "var(--tap)"}.get(f["role"], "var(--fig)")
-        figs.append(figure_svg(f["pts"], box, d["body_h"], "var(--fig)", col, f"Frame {f['i']}: {f['cue']}"))
         tp = os.path.join(tdir, f"f{f['src']:02d}.jpg")
         thumbs.append("data:image/jpeg;base64," + base64.b64encode(open(tp, "rb").read()).decode()
                       if os.path.exists(tp) else "")
@@ -714,7 +580,7 @@ def render(a):
         SEAM=("clean — the return leg reverses the out leg" if d.get("pingpong") else d["seam"]), KEYS=", ".join(map(str, keys)) or "—", PILOTS=", ".join(map(str, pilots)) or "—",
         URL=html.escape(src["url"]), ARC=arc, ROWS=rows,
         RATES="".join(f'<button data-fps="{r}" aria-pressed="{str(r == d["fps"]).lower()}">{r} fps</button>' for r in rates),
-        FIGS=json.dumps(figs), THUMBS=json.dumps(thumbs), DATA=json.dumps(payload).replace("</", "<\\/"),
+        THUMBS=json.dumps(thumbs), DATA=json.dumps(payload).replace("</", "<\\/"),
     ).items():
         page = page.replace("{{" + k + "}}", v)
     open(out, "w").write(page)
@@ -781,14 +647,6 @@ def selftest():
     assert f["twist_deg"] < -10, f["twist_deg"]
     for k in ("hipL", "hipR", "shL", "shR"): W[k][2] = 0.0   # both girdles square: no twist word
     assert describe(P, W, floor_y=0.95, body_h=0.75)[0]["twist"] == ""
-    # a head turned fully away collapses the eye and nose landmarks onto one another: the brow and
-    # nose lines must drop out rather than divide by zero
-    P, W = pose(0.60, 0.95)
-    box = (0, 0, 1, 1)
-    faced = figure_svg(P, box, 0.75, "var(--fig)")
-    blank = {k: list(v) for k, v in P.items()}
-    blank["eyeL"] = blank["eyeR"] = blank["nose"] = list(blank["earL"])
-    assert figure_svg(blank, box, 0.75, "var(--fig)").count("<line") == faced.count("<line") - 2
     # a re-extract must not eat the hand-written arc when it lands on the same span, and must not
     # silently keep it when the span moved, because the notes then point at different poses
     import tempfile
@@ -833,11 +691,6 @@ def selftest():
     # a lifted foot is not reported: the cue already says the foot is off the floor
     f2, cue2, _ = describe(*pose(0.60, 0.80), floor_y=0.95, body_h=0.75)
     assert "character-right" not in f2["feet"], f2["feet"]
-    # the hand box falls back to the forearm line when the finger landmarks collapse, and either
-    # way every extremity still draws: 2 boxes per foot + 1 per hand == 6 boxes, 12 paths
-    flat = {k: list(v) for k, v in P.items()}
-    for k in ("indexL", "pinkyL", "indexR", "pinkyR"): flat[k] = list(flat["wr" + k[-1]])
-    assert figure_svg(flat, (0, 0, 1, 1), 0.75, "var(--fig)").count("<path") == 16   # + 2 girdles
     assert bend_word(170) == "straight" and bend_word(80) == "bent ~90°"
     assert tstamp("1:23.5") == 83.5 and tstamp("7") == 7
     # the manifest carries the capture's own seam verdict and the number behind it: CAG reads the

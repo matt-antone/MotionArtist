@@ -1,8 +1,8 @@
 # MotionArtist
 
 A Claude Code skill that turns a video of a person moving into a **motion sheet** for animation
-agents: skeletal stick-figure frames at a declared fps and frame count, each with a pose
-instruction written in the vocabulary used by
+agents: a sprite sheet of the traced footage to condition a generator on, and a pose instruction
+per frame at a declared fps and frame count, written in the vocabulary used by
 [KaraokeParty-Graphics](https://github.com/matt-antone/KaraokeParty-Graphics) motion and
 keyframe roles (character-left / character-right, keys, pilots, loop seam). The sheet is a
 motion source: it describes motion only, never character scale, identity, view or prop hand.
@@ -15,7 +15,7 @@ Demo sheets:
 ```
 motion-artist/
   SKILL.md                 # the skill (what Claude does, step by step)
-  scripts/motion_artist.py # extract (video → motion.json + thumbs), render (→ HTML), export (→ bundle)
+  scripts/motion_artist.py # extract (video → motion.json + thumbs), render (→ HTML), spritesheet (→ pose grid), export (→ bundle)
 AGENTS.md                  # how to work in this repo: pipeline, conventions, verification
 ```
 
@@ -43,6 +43,7 @@ Or by hand:
 python3 motion-artist/scripts/motion_artist.py extract "https://www.youtube.com/shorts/…" \
   --fps 4 --frames 16 --start 0:16 --end 0:20 --name dance
 python3 motion-artist/scripts/motion_artist.py render work/dance/motion.json
+python3 motion-artist/scripts/motion_artist.py spritesheet work/dance/motion.json
 python3 motion-artist/scripts/motion_artist.py export work/dance/motion.json
 ```
 
@@ -52,12 +53,14 @@ python3 motion-artist/scripts/motion_artist.py export work/dance/motion.json
 | `--start`, `--end` | trim the span to inspect, seconds or `m:ss`. Without `--end`, the span is `frames / fps` seconds of real time. With both, the span is time-stretched onto the frame count. |
 | `--search` | find the best loop: slide a `frames / fps`-second window over `--start..--end` (whole video if `--end` is omitted), score each start by loop-closure pose distance against motion energy, pick the tightest seam among the livelier half |
 | `--window` | source seconds the search looks for, when that differs from `frames / fps` (a scene cut leaves a short usable span, or a fast move should play slower); the winner is stretched onto the frame count |
-| `--stabilize` | centre the hips horizontally in every frame; use for a moving camera or a travelling performer (airborne is then never called, since there is no fixed floor). Body scale is always normalised per frame from pixels-per-metre, so camera zoom never changes the skeleton's size |
+| `--stabilize` | centre the hips horizontally in every frame; use for a moving camera or a travelling performer (airborne is then never called, since there is no fixed floor). Body scale is always normalised per frame from pixels-per-metre, so camera zoom never changes the traced pose's size |
 | `--playback` | `loop` (default), `one-shot`, `final-hold` |
 | `--exaggerate` | amplify each landmark's deviation from the clip-mean pose; default `1.25`, `1.0` = as filmed |
 | `--name`, `--out` | output slug and directory (default `work/<name>/`) |
 | `render --template FILE` | render into a different sheet template (default `motion-artist/templates/sheet.html`) |
 | `render --pingpong` | walk the same cells out and back; the return leg reverses the out leg, so the seam is clean and the sheet still holds only the requested frames |
+| `spritesheet --cols` | tiles per row; default `4`, matching the consumer's render grid |
+| `spritesheet --no-labels` | drop the frame-number band, and say so in the sidecar |
 | `export --out`, `--sheet` | bundle path (default `exports/<name>-<frames>f-<fps>fps-motion-source.zip`) and the sheet HTML to include (default `<name>-motion.html` beside the json) |
 
 `extract` prints one line per frame (index, source time, key / pilot / in-between, pace, pose cue)
@@ -67,11 +70,20 @@ side and each limb's `near` / `far` / `level`, so a 2D consumer can sort bones i
 per-frame `note` in `motion.json`; the sheet renders them. `selftest` checks the pose heuristics
 and the export manifest.
 
-The rendered sheet has the stick figure beside the source frame, play / scrub / rate / mirror
-controls, the frame strip (keys pink, pilots blue), a facing line on the head, the performance
-arc, a brief for the artist agent, the frame-note table, and the data as embedded JSON.
+The rendered sheet has the traced frame and its cue, play / scrub / rate / mirror controls, the
+frame strip (keys pink, pilots blue), the sprite-sheet grid, the performance arc, a brief for the
+artist agent, the frame-note table, and the data as embedded JSON.
 
-`export` is the last step: it zips `motion.json`, the sheet and `thumbs/` with a generated
+`spritesheet` builds the pose grid you hand a generator in one call. It tiles `thumbs/` — the
+traced footage — four across and twelve to a sheet, matching the consumer's
+own render grid, so one sheet is one generation call and a longer motion chunks across several.
+Photographs are the pose route because they carry the movement at the size it was really danced:
+measured against the trace, drawn cards come back at 0.43–0.70 of it and photographs at 0.9–1.2.
+It writes a `<name>-spritesheet.json` sidecar declaring the grid in PNG pixels so a consumer slices
+by stated numbers rather than measuring the image, and needs a complete thumb set.
+
+`export` is the last step: it zips `motion.json`, the sheet, `thumbs/` and any sprite sheets with a
+generated
 `manifest.json` (fps, frame count, playback, view, seam, source, and a SHA-256 per file), and
 prints the bundle path and the zip's SHA-256 — the pair a KaraokeParty-Graphics motion-director
 job input references. It warns if `arc` is empty or any frame has no pose.

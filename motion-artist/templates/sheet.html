@@ -4,7 +4,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
 <style>
-:root{--paper:#14131C;--surface:#1D1B27;--sunk:#23212F;--ink:#EDEBF5;--muted:#9A96AC;--line:#302D3F;--step:#FF74A8;--step-wash:#3B1D2C;--tap:#A8A2FF;--tap-wash:#262347;--fig:#C9C5DA;--girdle:#F0A05A;--limb-l:#4FD1C0;--limb-r:#C9A0E8;--focus:#A8A2FF;--shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -16px rgba(0,0,0,.8);color-scheme:dark}
+:root{--paper:#14131C;--surface:#1D1B27;--sunk:#23212F;--ink:#EDEBF5;--muted:#9A96AC;--line:#302D3F;--step:#FF74A8;--step-wash:#3B1D2C;--tap:#A8A2FF;--tap-wash:#262347;--focus:#A8A2FF;--shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -16px rgba(0,0,0,.8);color-scheme:dark}
 *{box-sizing:border-box}
 body{background:var(--paper);color:var(--ink);font-family:"IBM Plex Sans",system-ui,sans-serif;font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased}
 .wrap{max-width:1100px;margin:0 auto;padding:32px 22px 64px;display:flex;flex-direction:column;gap:28px}
@@ -18,10 +18,8 @@ h1{font-size:clamp(30px,5vw,44px);font-weight:800;letter-spacing:-.02em;line-hei
 .spec div:last-child{border-right:0}
 .spec dt{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
 .spec dd{margin:0;font-size:15px;font-weight:600;font-variant-numeric:tabular-nums}
-.stage{display:grid;grid-template-columns:232px 200px 1fr;gap:22px;background:var(--surface);border:1px solid var(--line);border-radius:4px;padding:22px;box-shadow:var(--shadow)}
-.figbox,.refbox{background:var(--sunk);border-radius:3px;display:grid;place-items:center;padding:12px 6px;position:relative;min-height:240px}
-.figbox svg{width:100%;height:auto;max-height:300px;display:block}
-.figbox.mirrored svg{transform:scaleX(-1)}
+.stage{display:grid;grid-template-columns:240px 1fr;gap:22px;background:var(--surface);border:1px solid var(--line);border-radius:4px;padding:22px;box-shadow:var(--shadow)}
+.refbox{background:var(--sunk);border-radius:3px;display:grid;place-items:center;padding:12px 6px;position:relative;min-height:240px}
 .refbox img{height:300px;width:auto;object-fit:contain;border-radius:2px}  /* fixed: an unsized img collapses between src swaps and the stage jumps */
 .refbox.mirrored img{transform:scaleX(-1)}
 .tag{position:absolute;left:10px;bottom:9px;font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
@@ -50,7 +48,7 @@ button[aria-pressed="true"]{background:var(--ink);color:var(--paper);border-colo
 .strip{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:6px}
 .cell{padding:0;overflow:hidden;display:flex;flex-direction:column;align-items:stretch;background:var(--surface);border:1px solid var(--line);border-radius:3px}
 .cell .num{font-family:"IBM Plex Mono",monospace;font-size:11px;font-weight:600;padding:4px 0 3px;color:var(--muted);border-bottom:1px solid var(--line);background:var(--sunk);font-variant-numeric:tabular-nums}
-.cell svg{width:100%;height:auto;display:block;padding:5px 3px}
+.cell img{width:100%;height:auto;display:block}
 .cell[aria-current="true"]{border-color:var(--cellc);background:var(--cellw)}
 .cell[aria-current="true"] .num{background:var(--cellc);color:var(--surface);border-bottom-color:var(--cellc)}
 .cell[data-role="key"] .num{color:var(--step)}.cell[data-role="pilot"] .num{color:var(--tap)}
@@ -61,7 +59,7 @@ button[aria-pressed="true"]{background:var(--ink);color:var(--paper);border-colo
 .stile{display:flex;flex-direction:column;min-width:0}
 .stile .snum{font-family:"IBM Plex Mono",monospace;font-size:11px;font-weight:600;line-height:1.35;color:var(--muted);font-variant-numeric:tabular-nums}
 .stile[data-role="key"] .snum{color:var(--step)}.stile[data-role="pilot"] .snum{color:var(--tap)}
-.stile svg{width:100%;height:auto;display:block}
+.stile img{width:100%;height:auto;display:block;border-radius:2px}
 .map h2,.arc h2,.brief h2,.sprite-head h2{font-size:15px;font-weight:700;margin-bottom:10px}
 .arc{display:flex;flex-direction:column;gap:8px}
 .brief ul{margin:0;padding-left:20px}.brief li{margin:2px 0}
@@ -71,7 +69,7 @@ button[aria-pressed="true"]{background:var(--ink);color:var(--paper);border-colo
 .maprow .ct{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
 footer{color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding-top:14px}
 footer a{color:inherit}
-@media (max-width:860px){.stage{grid-template-columns:1fr 1fr}.readout{grid-column:1/-1}.strip{grid-template-columns:repeat(4,minmax(0,1fr))}.maprow{grid-template-columns:40px 120px 1fr;gap:10px}}
+@media (max-width:860px){.stage{grid-template-columns:1fr}.readout{grid-column:1/-1}.strip{grid-template-columns:repeat(4,minmax(0,1fr))}.maprow{grid-template-columns:40px 120px 1fr;gap:10px}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 <div class="wrap">
@@ -84,8 +82,7 @@ footer a{color:inherit}
 </dl></header>
 
 <section class="stage">
-<div class="figbox" id="figbox"><div id="bigFigure"></div><span class="tag" id="mirrorTag">As filmed</span></div>
-<div class="refbox" id="refbox"><img id="thumb" alt="Source video frame"><span class="tag">Source frame</span></div>
+<div class="refbox" id="refbox"><img id="thumb" alt="Source video frame"><span class="tag" id="mirrorTag">As filmed</span></div>
 <div class="readout">
 <div class="countline"><div class="bigcount" id="bigCount">0</div>
 <div class="phase"><div class="phase-name" id="phaseName"></div><div class="phase-of" id="phaseOf"></div></div></div>
@@ -105,12 +102,12 @@ footer a{color:inherit}
 
 <section><div class="strip-head"><h2>The sheet</h2><span>Click a frame to scrub · ←/→ · space</span></div>
 <div class="strip" id="strip"></div>
-<div class="legend"><span><b class="k">■</b> key (hold / extreme)</span><span><b class="p">■</b> pilot (fastest transition)</span><span>■ in-between</span><span><b style="color:var(--limb-l)">■</b> character-left limbs · <b style="color:var(--limb-r)">■</b> character-right</span><span><b style="color:var(--girdle)">▭</b> pelvis / rib-cage box, heavy face = side toward camera</span><span>brow + nose = head facing</span><span>▭ hand · ▭▭ foot, hinged at the ball</span><span>dashed = floor</span></div>
+<div class="legend"><span><b class="k">■</b> key (hold / extreme)</span><span><b class="p">■</b> pilot (fastest transition)</span><span>■ in-between</span><span>every side named in the cue is the performer's own: character-left / character-right, never screen sides</span></div>
 </section>
 
 <section><div class="strip-head sprite-head"><h2>Sprite sheet</h2><span id="spriteDims"></span></div>
 <div class="sprite-wrap"><div class="sprite" id="sprite"></div></div>
-<p class="note" style="margin-top:9px">The pose grid the <code>spritesheet</code> command emits: one tile per frame at a shared scale, frame <i>i</i> at row <i>i&nbsp;&divide;&nbsp;cols</i>, column <i>i&nbsp;mod&nbsp;cols</i>, filling row by row. A consumer slices it by the numbers declared in the manifest, never by measuring the picture. This preview matches the emitted grid's shape; the exact tile pitch travels in the bundle.</p>
+<p class="note" style="margin-top:9px">The pose grid the <code>spritesheet</code> command emits, tiled straight out of the footage &mdash; four across and twelve to a sheet, which is the generator's own render grid, so one sheet is one call and a longer motion chunks across several. Photographs, not drawn figures: both reference the poses about equally, but the drawn cards come back at 0.43&ndash;0.70 of the traced movement where photographs come back at 0.9&ndash;1.2. A consumer slices by the numbers declared in the manifest, never by measuring the picture.</p>
 </section>
 
 <section class="arc"><h2>Performance arc</h2>{{ARC}}</section>
@@ -131,25 +128,24 @@ footer a{color:inherit}
 <script type="application/json" id="motion">{{DATA}}</script>
 <script>
 (function(){"use strict";
-var D=JSON.parse(document.getElementById("motion").textContent),F=D.frames,FIGS={{FIGS}},THUMBS={{THUMBS}};
+var D=JSON.parse(document.getElementById("motion").textContent),F=D.frames,THUMBS={{THUMBS}};
 var COL={key:"var(--step)",pilot:"var(--tap)",inbetween:"var(--muted)"},WASH={key:"var(--step-wash)",pilot:"var(--tap-wash)",inbetween:"var(--sunk)"};
 var ORDER=F.map(function(f,i){return i});
 if(D.pingpong&&F.length>2)for(var q=F.length-2;q>0;q--)ORDER.push(q);   // out and back over the same cells
 var strip=document.getElementById("strip"),cells=[];
 F.forEach(function(f,i){var b=document.createElement("button");b.className="cell";b.type="button";b.dataset.role=f.role;
 b.style.setProperty("--cellc",COL[f.role]);b.style.setProperty("--cellw",WASH[f.role]);
-b.innerHTML='<span class="num">'+f.i+'</span>'+FIGS[i];b.addEventListener("click",function(){stop();go(ORDER.indexOf(i))});strip.appendChild(b);cells.push(b)});
-// The sprite grid is these same figures on the layout `spritesheet` declares: a 220-unit cell, a
-// 20-unit label band, a 16-unit gap, and a cell width set by the figure's own aspect. Reading that
-// aspect off FIGS' viewBox keeps the preview honest without re-deriving the bounding box here —
-// two derivations of one number is how the drawing and the declared grid drift apart.
-var vb=/viewBox="[-\d.]+ [-\d.]+ ([-\d.]+) ([-\d.]+)"/.exec(FIGS[0]||"");
-var CELLW=(vb?200*vb[1]/vb[2]:170)+20,TW=CELLW+16,TH=220+20+16;
-var COLS=Math.max(1,Math.round(Math.sqrt(F.length*TH/TW))),ROWS=Math.ceil(F.length/COLS);
+b.innerHTML='<span class="num">'+f.i+'</span>'+(THUMBS[i]?'<img src="'+THUMBS[i]+'" alt="Frame '+f.i+'">':'');b.addEventListener("click",function(){stop();go(ORDER.indexOf(i))});strip.appendChild(b);cells.push(b)});
+// The sprite grid, laid out as `spritesheet` writes it: the traced frames, four across and twelve
+// to a sheet, which is the generator's own render grid, so one sheet is one call.
+var COLS=4,PER=12,SHEETS=Math.ceil(F.length/PER);
 var sp=document.getElementById("sprite");sp.style.setProperty("--cols",COLS);
 F.forEach(function(f,i){var t=document.createElement("div");t.className="stile";t.dataset.role=f.role;
-t.innerHTML='<span class="snum">'+(f.i<10?"0":"")+f.i+'</span>'+FIGS[i];sp.appendChild(t)});
-document.getElementById("spriteDims").textContent=COLS+"×"+ROWS+" grid · "+F.length+" frames";
+t.innerHTML='<span class="snum">'+(f.i<10?"0":"")+f.i+'</span>'+
+  (THUMBS[i]?'<img src="'+THUMBS[i]+'" alt="Frame '+f.i+'">':'');
+sp.appendChild(t)});
+document.getElementById("spriteDims").textContent=
+  SHEETS+" sheet"+(SHEETS>1?"s":"")+" · "+COLS+" across · "+PER+" per sheet";
 var idx=0,fps=D.fps,timer=null,mirrored=false,stage=document.querySelector(".stage");
 function render(){var at=ORDER[idx],f=F[at];stage.style.setProperty("--accent",COL[f.role]);stage.style.setProperty("--wash",WASH[f.role]);
 document.getElementById("bigCount").textContent=f.i;
@@ -158,7 +154,6 @@ document.getElementById("phaseOf").textContent="frame "+(f.i+1)+" of "+F.length+
 document.getElementById("cue").textContent=f.cue;
 document.getElementById("note").innerHTML=f.note?"<b>Note:</b> "+f.note.replace(/</g,"&lt;"):"";
 document.getElementById("srcChip").textContent="source "+f.t.toFixed(2)+" s";
-document.getElementById("bigFigure").innerHTML=FIGS[at];
 var im=document.getElementById("thumb");if(THUMBS[at]){im.src=THUMBS[at];im.hidden=false}else{im.hidden=true}
 cells.forEach(function(c,i){c.setAttribute("aria-current",i===at?"true":"false")})}
 function go(i){idx=(i+ORDER.length)%ORDER.length;render()}
@@ -172,7 +167,7 @@ document.querySelectorAll(".rate button").forEach(function(b){b.addEventListener
 document.querySelectorAll(".rate button").forEach(function(o){o.setAttribute("aria-pressed",o===b?"true":"false")});
 document.getElementById("specRate").textContent=fps+" fps";document.getElementById("specLap").textContent=(F.length/fps).toFixed(2)+" s";if(timer){clearInterval(timer);timer=null;start()}})});
 document.getElementById("mirrorBtn").addEventListener("click",function(){mirrored=!mirrored;this.setAttribute("aria-pressed",String(mirrored));
-document.getElementById("figbox").classList.toggle("mirrored",mirrored);document.getElementById("refbox").classList.toggle("mirrored",mirrored);
+document.getElementById("refbox").classList.toggle("mirrored",mirrored);
 document.getElementById("mirrorTag").textContent=mirrored?"Mirrored (sides in text unchanged)":"As filmed"});
 document.addEventListener("keydown",function(e){if(e.key==="ArrowRight"){stop();go(idx+1)}else if(e.key==="ArrowLeft"){stop();go(idx-1)}else if(e.key===" "&&e.target===document.body){e.preventDefault();timer?stop():start()}});
 // The cue and note are a different length on every frame, so the stage row would grow and shrink
