@@ -40,14 +40,21 @@ several — CAG has no concept of chaining bundles, so two bundles are two unrel
 each with its own frame sheet, its own proof and its own registration scale, and the loop relation
 between them is lost.
 
-The number 8 belongs to CAG's renderer, not to the bundle: it draws at most 8 figures per image on
-a grid four wide, and chunks a longer motion across as many renders as it needs before assembling
+The number 8 belongs to CAG's renderer, not to the bundle: it draws 8 figures per image on a grid
+four wide, and chunks a longer motion across as many renders as it needs before assembling
 one sheet. A 24-frame bundle renders as 8 + 8 + 8, a 16 as 8 + 8, a 14 as 8 + 6 — all one animation
 out the other side. That ceiling is not reachable from here: `frame_sheet()` chunks `motion.frames`
 by `FRAME_SHEET_SIZE` unconditionally and no spec field raises it, so nothing this skill ships can
 put more than 8 figures in one render whatever `frame_count` says. (A scratch script calling
 `draw()` directly can, and does tile one pose across the last row past the ceiling — but that path
 is below CAG.)
+
+8 is a chosen size, not the ceiling. That repo measured the ladder 8/12/16/24/32 on one 4-column
+grid: at 16 the generator stops reading distinct poses and tiles one across the final row (figures
+12-15 came back at silhouette IoU 0.88-0.95, the same pose four times), and at 24 and 32 it will
+not draw the count asked for at all — 20 and 28 — which makes every per-frame measurement
+meaningless, because figure `n` stops being frame `n`. 8 and 12 both came back clean. So 12 is the
+hard ceiling and 8 is where they settled inside it.
 
 It was 12 until today, under the older name `SHEET_FRAMES`, and both the rename and the drop to 8
 landed on that repo's main together — so a grep for the old constant finds nothing and a stale
@@ -97,6 +104,13 @@ What this asks of a capture: a tight, consistent crop with the dancer fully in f
 tracked — a frame with no pose writes no thumb, which slides the whole strip out of step with the
 frame indices, and `pose-grid` refuses to build on an incomplete set. `export` warns when the thumb
 count and `frame_count` disagree.
+
+**Take that warning as a blocker, not a note.** CAG's `read_bundle` takes the photographs only when
+`len(thumbs) == frame_count`; on any mismatch it sets `photos = ()` and draws the whole set with no
+pose reference at all. Deliberately — a partial set would pair figure `n` with the wrong frame —
+but it is silent, so one dropped thumb does not read downstream as a missing input. It reads as a
+weak render, and only an amplitude measurement tells the difference. Never hand off a bundle whose
+thumb count disagrees with its frame count, and say so in the hand-off if one ever cannot be made.
 
 Thumbs are written 200px wide at JPEG quality **88**. Both numbers are deliberate. 200px is the
 width every amplitude measurement above was taken at, and CAG letterboxes each thumb onto a 384×512
