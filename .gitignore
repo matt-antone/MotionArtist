@@ -1,7 +1,8 @@
 work/
 *.mp4
 __pycache__/
-.claude
+.claude/*
+!.claude/agents/
 .omc
 work
 .fallow/
