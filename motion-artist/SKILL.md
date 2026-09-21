@@ -33,33 +33,44 @@ ask for "the best loop" inside a range, pass the range as `--start/--end` plus `
 search reports no fully-tracked window, the range holds a scene cut or a shot with no visible body:
 sample it to find the usable span, then search inside that span with `--window`.
 
-## Frame count: any length, but prefer a multiple of 12
+## Frame count: any length, but prefer a multiple of 8
 
 One motion is **one capture and one bundle**, whatever its length. Do not split a long motion into
 several — CAG has no concept of chaining bundles, so two bundles are two unrelated animations there,
 each with its own frame sheet, its own proof and its own registration scale, and the loop relation
 between them is lost.
 
-The number 12 belongs to CAG's renderer, not to the bundle: it draws at most 12 figures per image
-on a grid four wide, and chunks a longer motion across as many renders as it needs before
-assembling one sheet. A 24-frame bundle renders as 12 + 12, a 32 as 12 + 12 + 8, a 14 as 12 + 2 —
-all one animation out the other side. That ceiling is not reachable from here: `sheet()` chunks by
-`SHEET_FRAMES` unconditionally and no spec field raises it, so nothing this skill ships can put more
-than 12 figures in one render whatever `frame_count` says. (A scratch script calling `draw()`
-directly can, and does tile one pose across the last row past 12 — but that path is below CAG.)
+The number 8 belongs to CAG's renderer, not to the bundle: it draws at most 8 figures per image on
+a grid four wide, and chunks a longer motion across as many renders as it needs before assembling
+one sheet. A 24-frame bundle renders as 8 + 8 + 8, a 16 as 8 + 8, a 14 as 8 + 6 — all one animation
+out the other side. That ceiling is not reachable from here: `frame_sheet()` chunks `motion.frames`
+by `FRAME_SHEET_SIZE` unconditionally and no spec field raises it, so nothing this skill ships can
+put more than 8 figures in one render whatever `frame_count` says. (A scratch script calling
+`draw()` directly can, and does tile one pose across the last row past the ceiling — but that path
+is below CAG.)
+
+It was 12 until today, under the older name `SHEET_FRAMES`, and both the rename and the drop to 8
+landed on that repo's main together — so a grep for the old constant finds nothing and a stale
+checkout reads 12 with no sign it ever moved. Check `cag/animation.py` on *their* main, not a
+branch, before trusting a number here. The drop is a resolution argument with one roll behind it:
+at 12 a photograph lands about 344px into a cell that holds about 390px and is upscaled, at 8 it
+lands about 476px and is downsampled. On the same footage, costume bleed went from 11 of 24 figures
+in the dancer's white socks — plus a whole sheet in denim shorts — to 0 of 24. One roll each way,
+on a measure that had read zero at 12 on an earlier roll, so treat the direction as supported by
+the resolution argument rather than proven by the count.
 
 **Each chunk is a separate generation call, and every boundary is a chance for the character to
 drift** — costume, face, proportions. The approved key art is attached to every render, which is
 real mitigation and is also exactly what failed to stop a dancer's trainers arriving on a lifted
 foot. Nothing measures identity across chunks and nothing warns. So prefer a count that divides by
-12: it costs the fewest calls. 24 is two; 26 is three, one of them drawing two figures.
+8: it costs the fewest calls. 16 is two; 24 is three; 26 is four, one of them drawing two figures.
 
 Failing that, prefer a multiple of 4, so the last row of the last chunk fills rather than sitting
-part-empty. That is wasted cells, not a failure, and `extract` says so as a note. Nothing breaks
+part-empty (a chunk of 8 is two full rows of four). That is wasted cells, not a failure, and `extract` says so as a note. Nothing breaks
 at 14.
 
 What does **not** need managing from here is drawn size. The generator draws figures bigger in a
-sparse render than a full one, so a 12 + 2 chunking draws its last two much larger — but
+sparse render than a full one, so an 8 + 2 chunking draws its last two much larger — but
 registration measures each chunk separately and normalises it out, deliberately, because one factor
 across both put a size pop at the seam. Measured on 16 frames with the second chunk drawn at twice
 the height of the first: registered cells came out 389px and 393px, a 4px spread, about 1%, and that
@@ -160,8 +171,11 @@ right thing positively is what held. That applies to any prompt text this skill 
    python3 "$SKILL/scripts/motion_artist.py" pose-grid work/dance/motion.json
    ```
    Tiles `thumbs/` — the footage, never drawn figures; see above for why — **four across and twelve
-   to a sheet**, which is CAG's own render grid, so one sheet is exactly one of its generation calls
-   and a longer motion chunks across several rather than growing one. Writes
+   to a sheet**. The twelve is this tool's own number now: it mirrored CAG's render grid when that
+   grid was twelve, and CAG has since dropped to eight *and* stopped reading the grid at all, so one
+   image is no longer one of its generation calls. Nothing downstream depends on the twelve —
+   `--cols` and the sidecar's `per_sheet` state whatever it actually is — but do not cite it as
+   CAG's batch size. Writes
    `dance-pose-grid.png` for a single image, or `dance-pose-grid-00.png`, `-01.png` … when it
    chunks, plus a `dance-pose-grid.json` sidecar declaring the geometry in PNG pixels (`cols`, `rows`,
    `tile_w/h`, `cell_w/h`, `label_h`, `per_sheet`, `sheets`) so a consumer slices by stated numbers
@@ -253,7 +267,7 @@ consumer generated it from prose — a written sheet has no traced frames and so
 - The cue names girdle twist in words ("hips turned character-left against the shoulders") whenever
   the two girdles differ by 10° or more. Note that **torso rotation does not survive into the CAG
   render**: a frame traced at 28° of body yaw comes back drawn square-on every time, at 1, 4, 8 and
-  12 figures per render, from photographs or skeletons, across three prompt rewordings. Do not spend
+  a full render or a sparse one, from photographs or skeletons, across three prompt rewordings. Do not spend
   effort encoding yaw more richly on this side expecting CAG to use it. It is not a bundle problem.
 - `floor_y` is a **classification threshold, not a ground plane**. It is an 85th *percentile* of the
   lower sole, so by construction about one frame in seven sits below it. It is what `airborne` and

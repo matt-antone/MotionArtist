@@ -52,7 +52,8 @@ Five steps, in order. A capture is not finished until step 5.
 2. Author the arc — fill `arc`, and per-frame `note` only where the generated cue misses intent.
 3. `render` — `motion.json` → the self-contained HTML motion sheet.
 4. `pose-grid` — `thumbs/` → the pose grid: traced frames as pose cards, four across, twelve per
-   image. Traced frames are the only pose reference; nothing in this repo draws a figure.
+   image — this tool's own grid, not the consumer's batch size, which is 8 and which no longer
+   reads the grid. Traced frames are the only pose reference; nothing in this repo draws a figure.
 5. `export` — zip the motion sheet, the HTML, the traced frames, any pose grid images and a
    generated `manifest.json` with a SHA-256 per file.
    The printed bundle path and zip digest are what a KaraokeParty-Graphics job input references.
