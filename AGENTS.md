@@ -1,5 +1,7 @@
 # Working in this repo
 
+All agents must use caveman skill all the time.
+
 This repo is one skill and one script. `motion-artist/SKILL.md` tells an agent how to turn a video
 of a person moving into a motion source; `motion-artist/scripts/motion_artist.py` does the work.
 Everything else is docs and ignored scratch.
@@ -12,7 +14,7 @@ motion-artist/templates/sheet.html     the motion sheet: markup, CSS and player,
 .claude/skills/motion-artist           symlink to motion-artist/, so the skill loads in this repo —
                                        git-ignored, so a fresh clone has to create it (see Setup)
 work/                                  captures and downloaded video — git-ignored, never commit
-exports/                               finished bundles, one zip per capture — git-ignored
+exports/                               finished bundles, one zip per capture — committed
 README.md                              the human-facing version of SKILL.md
 ```
 
