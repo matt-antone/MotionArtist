@@ -268,9 +268,10 @@ def portable(p):
 
 def extract(a):
     import cv2
-    # CAG renders 12 figures per image on a 4-wide grid and chunks a longer motion across as many
-    # renders as it needs, so there is no ceiling here — only the grid. A count off a multiple of 4
-    # leaves the last row of the last chunk part-empty. That wastes cells; it breaks nothing.
+    # CAG renders 8 figures per image on a 4-wide grid (FRAME_SHEET_SIZE, renamed from SHEET_FRAMES
+    # when it dropped from 12) and chunks a longer motion across as many renders as it needs, so
+    # there is no ceiling here — only the grid. A count off a multiple of 4 leaves the last row of
+    # the last chunk part-empty. That wastes cells; it breaks nothing.
     if a.frames % 4:
         print(f"note: {a.frames} frames is not a multiple of 4, so CAG's last render row is "
               f"part-empty. Harmless, but {a.frames - a.frames % 4} or {a.frames + 4 - a.frames % 4} "
@@ -773,9 +774,10 @@ def pose_grid(a):
     gap = 8
     label_h = 0 if a.no_labels else 22
     tile_w, tile_h = cell_w + gap, cell_h + label_h + gap
-    # Four across and twelve to a sheet is cag's own render grid (FIGURES_PER_ROW, SHEET_FRAMES), so
-    # a sheet here is exactly one of its generation calls. A longer motion chunks across several
-    # sheets rather than growing one, because that is how it will be drawn either way.
+    # Four across and twelve to a sheet mirrored cag's render grid when that grid was twelve. It is
+    # now eight there, and cag no longer reads this image at all — it tiles its own from thumbs/ —
+    # so the twelve is this tool's number, for handing a generator the whole set in few images. It
+    # is stated in the sidecar's per_sheet and overridable with --cols; nothing downstream reads it.
     cols = a.cols or 4
     per_sheet = 12
     # BGR, matching templates/sheet.html's :root — key #FF74A8, pilot #A8A2FF, otherwise --muted.

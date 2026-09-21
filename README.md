@@ -75,7 +75,8 @@ frame strip (keys pink, pilots blue), the pose grid, the performance arc, a brie
 artist agent, the frame-note table, and the data as embedded JSON.
 
 `pose-grid` builds the pose grid you hand a generator in one call: the traced frames as pose cards,
-four across and twelve per image, so a longer motion chunks across several. Photographs rather than
+four across and twelve per image (the tool's own grid, not the character generator's batch size),
+so a longer motion chunks across several. Photographs rather than
 drawings because they carry the movement at the size it was really danced — measured against the
 trace, drawn cards come back at 0.43–0.70 of it and photographs at 0.9–1.2. It writes a
 `<name>-pose-grid.json` sidecar declaring the geometry in PNG pixels so a consumer slices by stated
