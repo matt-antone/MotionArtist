@@ -20,7 +20,8 @@ roles: it controls motion only, never character scale, identity, view or prop ha
 | `--frames` | yes | total frame count of the target animation. No ceiling — one motion is one capture and one bundle, however long. Prefer a multiple of 4; see below. |
 | `--start` / `--end` | recommended | trim the span to inspect, seconds or `m:ss`. Without `--end`, the span is `frames / fps` seconds of real time from `--start`. With both, that span is time-stretched onto the frame count (the sheet reports the speed factor). Neither end is taken literally unless `--margin 0` — see below. |
 | `--playback` | default `loop` | `loop` (samples exclude `end`, so the last→first cut is one natural step), `one-shot`, `final-hold`. **Only `loop` reaches CAG as meaning.** Its sole test is `playback == "loop"`; everything else is just not-loop, and whether a set holds its last frame comes from CAG's own per-set plan, never from the bundle — so `final-hold` is decoration there today. It still changes what happens *here*: a non-loop span is snapped to the stillest ending rather than to matching poses. For `loop`, frame 0 and the last frame should both land on their feet — a loop seam an artist has to hold mid-air has no stable pose to draw. `extract` warns when either boundary frame comes back airborne; pick a different `--start`/`--search` window when it does. |
-| `--name` | optional | slug for the output dir and title |
+| `--name` | yes | `<set>-<index>` — the set name the user gave for this video, plus this move's index. See **Naming** below. |
+| `--performer` | optional | `female` or `male` — the filmed performer's body, carried into `motion.json` and the manifest. It describes the trace, not the character the render must draw; omit it rather than guessing. |
 | `--margin` | default `0.5` s | slack around **both** `--start` and `--end`. The span you type is a guess; the move's own cut rarely lands on that exact second. Both ends are probed within the margin for the real one — matching poses for a `loop`, the stillest ending otherwise — and the winner is time-stretched onto the frame count, so the source span may come back a little shorter or longer than asked. `--margin 0` uses the span exactly as typed. Ignored with `--search`, which picks its own span. |
 | `--search` | optional | "find the best loop": slide a `frames / fps`-second window over `--start..--end` (whole video when `--end` is omitted), score each start by loop-closure distance vs motion energy, and use the tightest seam among the livelier half. Prints the top candidates. |
 | `--window` | optional | source seconds to take, when that differs from `frames / fps` — what `--search` looks for, and the span length when `--end` is omitted. Use it when a scene cut or lost tracking leaves less usable footage than the playback length, or to run a fast move slower. The winner is stretched onto the frame count. |
@@ -32,6 +33,32 @@ If the user gives no trim and the video is longer than ~15 s, make a contact she
 ask for "the best loop" inside a range, pass the range as `--start/--end` plus `--search`. When the
 search reports no fully-tracked window, the range holds a scene cut or a shot with no visible body:
 sample it to find the usable span, then search inside that span with `--window`.
+
+## Naming: every capture is `<set>-<index>`
+
+**A video URL always arrives with a set name.** If one is missing, ask for it — do not invent a
+label from the video title, and do not fall back to the old descriptive slugs.
+
+One video is one set. Extract as many *unique* moves from it as it holds, and name them
+`<set>-1`, `<set>-2`, `<set>-3` … — index from 1, incrementing per unique move, in the order you
+cut them. `hip-hop-1` as a set name yields `hip-hop-1-1`, `hip-hop-1-2` and so on; the set's own
+trailing digit is part of the set, not a move index. Unique means a different move, not a different
+cut of the same one: a re-cut of move 3 stays `<set>-3` and replaces it.
+
+Everything follows the name. The capture directory is `work/<set>-<index>/`, the bundle inside the
+zip is `<set>-<index>/`, and the zip lands in **`exports/<set>/`** — one directory per source video,
+never flat. `set_name()` derives the set by stripping the trailing `-<index>`, so nothing needs a
+second flag.
+
+This replaces the old `<label>-<video id>-<start>s` trace name, which existed because a descriptive
+label was not an identifier — "shuffle" named two different dances within an hour. An assigned
+`<set>-<index>` *is* an identifier, so the provenance no longer has to ride in the file name: url,
+start second and span live in `manifest.json`, which is where a consumer reads them anyway. The
+trade is deliberate — a re-cut now **overwrites** its move instead of landing beside it as a second
+zip, which is what the hand-off wanted all along.
+
+**Everything under `exports/` from before this rule is deprecated and has been removed.** Do not
+resurrect one, and do not name a new capture after one.
 
 ## Frame count: any length, but prefer a multiple of 8
 
@@ -202,8 +229,8 @@ right thing positively is what held. That applies to any prompt text this skill 
    python3 "$SKILL/scripts/motion_artist.py" export work/dance/motion.json
    ```
    One motion is one bundle, however many frames it has.
-   Writes `exports/dance-b0ARQ5kM85Y-16.0s-24f-4fps-motion-source.zip` — always `exports/` at the
-   repo root, never inside
+   Writes `exports/hip-hop-1/hip-hop-1-3-24f-4fps-motion-source.zip` — always `exports/<set>/` at
+   the repo root, never inside
    the capture dir: `motion.json`, the sheet HTML, `thumbs/` (the pose reference — see above), any
    pose grid images and their sidecar, and a
    generated `manifest.json` (fps, frame count, playback, view, `seam` and `seam_ratio`, source, and
@@ -217,14 +244,13 @@ right thing positively is what held. That applies to any prompt text this skill 
 
 ## Hand-off to KaraokeParty-Graphics
 
-Copy `exports/<name>-<video id>-<start>s-<frames>f-<fps>fps-motion-source.zip` into that repo's ignored
+Copy `exports/<set>/<set>-<index>-<frames>f-<fps>fps-motion-source.zip` into that repo's ignored
 `work/<character>/motion-source/` and reference it by path and by the SHA-256 the export printed,
 as the authorized motion source in the motion-director job input. A spec names **one** bundle per
 animation (`spec.motions[set_name]` → one bundle directory); CAG chunks it across renders itself.
-**Delete the bundle the copy supersedes in the same step.** A bundle is named by its trace, so a
-re-cut of the same move lands beside the old one rather than over it, and the stale zip stays
-referenceable — a spec pointed at it renders last week's motion with this week's SHA-256 in the job
-input. Copy new, remove deprecated, one action.
+A bundle is named by its set and move index, so a re-cut of the same move replaces it in place and
+no stale twin is left behind to be referenced — but the **SHA-256 changes**, so re-reference it in
+the job input rather than assuming the old digest still describes the file at that path.
 The bundle's `manifest.json`
 carries a SHA-256 per file, so an unzipped copy can be verified file by file. Do not commit
 captures there; the repo excludes motion captures by policy. The sheet's
