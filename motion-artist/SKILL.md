@@ -50,14 +50,33 @@ The procedure that worked:
    shares no footage with it, and so on. Reject a candidate that matches an earlier pick at some
    phase offset — a shuffle repeats its step for bars at a time, and each repeat is not a new move.
    Cache the pose walk per video: every one of these searches reads the same poses.
-4. **Keep the window near the playback length.** The winner is stretched onto `frames / fps`, so a
-   0.9 s cycle drawn over 2.0 s is half speed. Searching a band around the playback length (1.6-2.4 s
-   for a 2.0 s bundle) finds either one cycle at near-real speed or two short ones, both of which
-   close.
+4. **Set the frame count from the window: `frames = fps x window`.** Never pick a frame count and
+   an fps first and then go looking for a window that fits them — see **Timing** below. That is the
+   single worst mistake available here and it is invisible in the output.
 5. **Tempo is not a move.** A video that teaches a step slowly and then "speeds it up" has one move,
    not two: both passes are normalised onto the same frame count with the window matched to the
    cycle, so they come out as two copies of one animation. What *is* a second move is a stage that
    changes the body — legs-only before the arms are added.
+
+**Read the contact sheet even when it costs context.** A video that captions its own moves is
+authoritative and cheaper than any scoring: skipping four sheets to save tokens produced a set with
+two bundles of the same move under different indices, one bundle straddling the boundary between two
+moves, and an arc describing a captioned Charleston as "a crossing step that opens both arms wide".
+The consumer rendered that as lunging with a knife. Where the source names a move, the source wins.
+
+**Loop closure cannot tell dancing from talking.** The unlabelled search scores pose-loop closure
+and motion energy, and a presenter gesturing to camera mid-sentence scores well on both. One
+shipped bundle was a man explaining the dance with his hands — the consumer read his pointing at the
+lens as choreography. Before trusting an unlabelled pick, look at the footage and confirm someone is
+actually dancing in it.
+
+**Check framing on the frames, not the landmarks.** `thumbs/` is the pose reference, so a capture
+whose figure leaves the frame hands the generator a body with no head or no feet. MediaPipe does not
+report this: it **extrapolates** landmarks outside the image rather than dropping them, so a nose
+reads at y=0.20 — comfortably inside the frame — on footage cropped at the chin. An ankle below y=1
+does fire, so a foot crop is detectable from `motion.json`; a head crop needs eyes on the image. An
+instructional video that cuts between wide shots and teaching close-ups will hand you both within
+one labelled section, so check the span you actually chose rather than the section it came from.
 
 **The candidate ranking is not `seam_ratio`.** Whatever a search scores, the number that ships comes
 from `extract`, over the 24 output frames, in the tool's own normalisation — and the two orderings
@@ -70,6 +89,60 @@ Expect a demo clip to yield weak seams. A "six moves in twenty seconds" video do
 move and cuts, so for most of them no window in the footage repeats at all and there is nothing to
 find. Take the best available, say the ratio in the hand-off, and write the arc so it tells the
 artist where to blend.
+
+## Timing: the window length IS the playback length
+
+`frames / fps` is how long the bundle plays. The source span is stretched onto it. So the only way
+the drawn motion runs at the speed it was danced is:
+
+    frames = fps * window
+
+Choose the window first, on the dance; derive the frame count from it. A window of 3.67 s at 12 fps
+is 44 frames, and 44/12 = 3.67 s, so `speed_factor` comes out 1.000 by construction.
+
+**The failure this replaces cost a full re-cut of every bundle.** A fixed 24 frames at 12 fps was
+read as "every move is exactly 2.0 s of source", and the window search was then given a band of
+1.6-2.4 s so its results would fit. Measured afterwards against each move's real cycle: 31 of 41
+bundles had their true cycle outside that band, 16 played more than 15% fast, the worst at 2.35x,
+and others crawled - one at 0.28x. A 4.70 s move was never a candidate because the search could not
+see past 2.4 s.
+
+**And the built-in check could not catch it**, which is why it survived review. `speed_factor` is
+`span / (frames/fps)`. When the search band is itself pinned to `frames/fps`, that ratio can only
+come back near 1.0 — it was restating the constraint, not measuring the dance. It was quoted in
+every arc and every hand-off as evidence the timing was right. A check computed from a quantity you
+constrained is not a check. Now that the window sets the frame count, the same number is a real
+assertion: **any bundle whose `speed_factor` is not 1.00 is a bug.**
+
+Keep `fps` fixed across a library (12 is CAG's editor default) and let the frame count vary per
+move. Frame count drives cost — CAG renders 8 figures per call — so a 4 s move is 48 frames and 6
+calls. That is the honest price of real-time playback; the alternative, a constant frame count, buys
+its predictable cost by time-scaling every move that is not exactly `frames/fps` long.
+
+Constrain candidate window lengths to multiples of `4/fps` seconds. The frame count then lands on a
+multiple of 4 — a full last render row — with **no rounding of the duration**, so timing stays exact
+rather than being traded against a tidy frame count.
+
+### Do not estimate the period
+
+The obvious repair is to measure each move's cycle by self-similarity and use that as the window. It
+does not work, because a move that does not repeat has no period and the measurement returns one
+anyway. On one non-repeating move the lag curve read 0.272, 0.273, 0.275, 0.276 across every
+candidate — flat, noise, and the "deepest" minimum was whichever lag happened to sit lowest. Long
+lags are also measured on few overlapping samples, so they win by having less evidence against them.
+
+None of it is needed: `frames = fps * window` is exact whether or not the move repeats. Period
+belongs to choosing a good *seam*, and the seam search already does that.
+
+### Take the longest window that still closes
+
+Seam ratio falls with window length — a shorter window simply has less room to diverge — so ranking
+on it alone bottoms every move out at the minimum and ships a 1 s scrap of a 3.7 s phrase. Skate's
+two mirrored pushes came back as one push. A relative tolerance does not fix it either: when the
+best ratio is 0.36, a 25% band is 0.50 and still excludes every longer window.
+
+Use the tool's own verdict as the floor. Under 1.5x is "clean", so **take the longest window whose
+ratio is under `max(best * 1.25 + 0.05, 1.5)`**. Content beats a tighter seam once the seam is clean.
 
 ## Search at the source's own frame rate
 
