@@ -70,6 +70,23 @@ shipped bundle was a man explaining the dance with his hands — the consumer re
 lens as choreography. Before trusting an unlabelled pick, look at the footage and confirm someone is
 actually dancing in it.
 
+**Emit the spread, not your judgement of it.** `view` is a single majority vote over the per-frame
+classifications, so a set that is half front and half three-quarter, or one carrying five rear
+frames inside a seven-way tie, reports one tidy word. A consumer then screens on a number that
+cannot bear the weight — a character came back faceless for five of twenty-four frames off a bundle
+whose declared `view` was perfectly legal. The manifest therefore also carries `view_frames`, the
+raw per-frame counts.
+
+Do not "fix" this by screening for purity here instead. A captioned Two-Step turns in **every**
+window its footage contains, so a front-only rule deletes a real dance rather than protecting
+anything. The consumer can set a threshold per character; it cannot recover what the manifest
+averaged away. The one thing that is not a judgement call is a `back` frame: `cag/animation.py`
+accepts only `front`, `left`, `right` and `3/4`, so a bundle declaring `back` fails outright.
+
+Additive manifest keys are free: CAG requires exactly `fps`, `frame_count`, `playback`, `view` and
+`files` and ignores everything else (`cag/motion.py`). Verify that against *their* `origin/main`
+before relying on it — see the hand-off notes.
+
 **Check framing on the frames, not the landmarks.** `thumbs/` is the pose reference, so a capture
 whose figure leaves the frame hands the generator a body with no head or no feet. MediaPipe does not
 report this: it **extrapolates** landmarks outside the image rather than dropping them, so a nose

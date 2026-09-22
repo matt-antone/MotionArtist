@@ -746,6 +746,11 @@ def selftest():
     assert man["seam"] == "needs blend" and man["seam_ratio"] == 2.4, man
     # performer rides through when stated, and reads as unstated rather than guessed when it is not
     assert man["performer"] is None
+    # the per-frame spread rides alongside the majority `view`, and is absent rather than empty
+    # when a caller has no frames to count
+    assert man["view_frames"] is None, man["view_frames"]
+    mixed = {**cap, "frames": [{"features": {"view": v}} for v in ("front", "front", "3/4", "back")]}
+    assert bundle_manifest(mixed, [])["view_frames"] == {"front": 2, "3/4": 1, "back": 1}
     assert bundle_manifest({**cap, "performer": "female"}, [])["performer"] == "female"
     cap.pop("seam_ratio")                                  # a schema/1 capture predates the number
     assert bundle_manifest(cap, [("motion.json", __file__)])["seam_ratio"] is None
@@ -786,6 +791,28 @@ def set_name(d):
     return re.sub(r"-\d+$", "", d["name"]) or d["name"]
 
 
+def view_counts(d):
+    """How many frames face each way — the spread the single `view` throws away.
+
+    `view` is one majority vote over the per-frame classifications, so a set that is half front and
+    half three-quarter, or one carrying five rear frames inside a seven-way tie, reports a single
+    tidy word. The consumer then screens on a number that cannot support the weight put on it: a
+    character was rendered faceless for five of twenty-four frames off a bundle whose declared view
+    was perfectly legal.
+
+    Emitting the raw counts costs nothing and cannot break the consumer — CAG requires exactly
+    fps, frame_count, playback, view and files and ignores every other key (`cag/motion.py`) — and
+    it lets each consumer set its own threshold per character. That matters because purity is not
+    always available to offer: a captioned Two-Step turns in every window the footage contains, so
+    a front-only rule would delete a real dance rather than protect anything.
+    """
+    c = {}
+    for f in d.get("frames") or []:
+        v = (f.get("features") or {}).get("view")
+        if v: c[v] = c.get(v, 0) + 1
+    return c or None
+
+
 def bundle_manifest(d, files):
     """What the motion-director job input references: what the capture is, and a SHA-256 per file.
 
@@ -800,6 +827,7 @@ def bundle_manifest(d, files):
         seam=d["seam"], seam_ratio=d.get("seam_ratio"),   # the verdict, and the number behind it
         stabilized=d.get("stabilized", False), exaggerate=d.get("exaggerate"),
         performer=d.get("performer"),   # the filmed body, not the character the render must draw
+        view_frames=view_counts(d),   # the spread `view` averages away — see below
         missing_frames=d.get("missing_frames", []), source=d["source"],
         arc_written=bool(d.get("arc", "").strip()),
         files={rel: sha256(p) for rel, p in files})

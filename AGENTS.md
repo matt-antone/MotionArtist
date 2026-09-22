@@ -75,6 +75,11 @@ consuming repo — the zip is the unit, and its `manifest.json` is what verifies
 A re-cut of a move keeps its `<set>-<index>` and replaces the bundle in place, so no stale twin is
 left to be referenced — but the SHA-256 changes, so re-reference it in any job input that names it.
 
+The manifest carries `view_frames`, the per-frame view counts, alongside the single majority
+`view`. Screen on the counts: the majority value hides a set that is half three-quarter, or one
+carrying rear frames inside a near-tie. A `back` frame is fatal downstream; a side frame usually is
+not, and some moves turn in every window they have.
+
 Read the printed table, not `motion.json` — the JSON is large and mostly landmarks. Never hand-edit
 `cue`, `role`, `pts`, `depth` or `t`; they are extractor output. Re-run `extract` instead.
 
