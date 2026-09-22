@@ -2,13 +2,16 @@
 
 All agents must use caveman skill all the time.
 
-This repo is one skill and one script. `motion-artist/SKILL.md` tells an agent how to turn a video
-of a person moving into a motion source; `motion-artist/scripts/motion_artist.py` does the work.
-Everything else is docs and ignored scratch.
+This repo is one skill and two scripts. `motion-artist/SKILL.md` tells an agent how to turn a video
+of a person moving into a motion source; `motion-artist/scripts/motion_artist.py` does the work, and
+`motion-artist/scripts/clipper.py` is the browser tool the user marks clip boundaries in before the
+pipeline runs. Everything else is docs and ignored scratch.
 
 ```
 motion-artist/SKILL.md                 the skill an agent loads
 motion-artist/scripts/motion_artist.py extract | render | pose-grid | export | selftest  (single file, ~1030 lines)
+motion-artist/scripts/clipper.py       the clip marker: a local web tool that splits a video into
+                                       frames and records which ones the user wants (see Marking clips)
 motion-artist/templates/sheet.html     the motion sheet: markup, CSS and player, with {{PLACEHOLDER}}s
                                        render() fills. Edit the sheet's design here, not in the script
 .claude/skills/motion-artist           symlink to motion-artist/, so the skill loads in this repo —
@@ -45,6 +48,31 @@ mkdir -p ~/.claude/skills && ln -s "$PWD/motion-artist" ~/.claude/skills/motion-
 
 Either way the skill is named by `motion-artist/SKILL.md`, not by the link. Restart the session
 after linking; skills are read at startup.
+
+## Marking clips
+
+Guessing `--start` and `--end` from a description costs re-cuts. When the user wants to point at
+frames instead of describing them, run the clip marker and let them mark the boundaries:
+
+```bash
+python3 motion-artist/scripts/clipper.py
+```
+
+It opens `http://localhost:8765`. The user names an animation set, pastes a video URL, and the tool
+downloads it into `work/<set>/` (reusing an existing download) and splits every source frame into
+`work/<set>/frames/`. They step through frames, mark in and out, name each clip, and the list is
+written to `exports/<set>/clips.json`:
+
+```json
+{"set": "shuffle-3", "url": "...", "source_fps": 29.97,
+ "clips": [{"name": "side-step", "in_frame": 91, "out_frame": 150, "frames": 60,
+            "start": 3.003, "end": 5.005, "export": "exports/shuffle-3/side-step"}]}
+```
+
+Read that file and run the pipeline per clip, taking `--start`/`--end` from `start`/`end` — those
+seconds are the frames the user marked, so do not re-search around them unless asked. `frames` is
+how many source frames the clip spans, not the capture's frame count: choose `--fps`/`--frames`
+as usual. The marker never runs the pipeline and never writes a bundle.
 
 ## The pipeline
 
