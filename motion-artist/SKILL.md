@@ -34,6 +34,43 @@ ask for "the best loop" inside a range, pass the range as `--start/--end` plus `
 search reports no fully-tracked window, the range holds a scene cut or a shot with no visible body:
 sample it to find the usable span, then search inside that span with `--window`.
 
+## Cutting several moves out of one video
+
+A set is one video, so the usual job is "extract as many unique moves from this URL as it holds".
+The procedure that worked:
+
+1. **Download once.** `yt-dlp` into `work/src/`, then run every `extract` against that local file with
+   `--url` so the origin still reaches the manifest. Passing the URL to `extract` per move
+   re-downloads the video once per move.
+2. **Contact-sheet it** (one frame a second, tiled, labelled with the second). Many dance videos
+   caption their own moves — "1. Skate", "2. Lock it Down" — and when they do, the captions *are*
+   the move boundaries and no scoring is needed to find them.
+3. **When nothing is labelled, score windows.** At the source's frame rate, score every
+   (start, length) pair in a plausible length band; take the best-closing window, then the best that
+   shares no footage with it, and so on. Reject a candidate that matches an earlier pick at some
+   phase offset — a shuffle repeats its step for bars at a time, and each repeat is not a new move.
+   Cache the pose walk per video: every one of these searches reads the same poses.
+4. **Keep the window near the playback length.** The winner is stretched onto `frames / fps`, so a
+   0.9 s cycle drawn over 2.0 s is half speed. Searching a band around the playback length (1.6-2.4 s
+   for a 2.0 s bundle) finds either one cycle at near-real speed or two short ones, both of which
+   close.
+5. **Tempo is not a move.** A video that teaches a step slowly and then "speeds it up" has one move,
+   not two: both passes are normalised onto the same frame count with the window matched to the
+   cycle, so they come out as two copies of one animation. What *is* a second move is a stage that
+   changes the body — legs-only before the arms are added.
+
+**The candidate ranking is not `seam_ratio`.** Whatever a search scores, the number that ships comes
+from `extract`, over the 24 output frames, in the tool's own normalisation — and the two orderings
+disagree, sometimes wildly (one window ranked fourth-best by a search came out of `export` at 8.5x,
+and the search's own first choice was worse than its third). So: propose candidates by search, then
+**measure** by extracting the top few and keeping whichever the tool scores best. Only worth the
+extra extracts on a move that came back bad.
+
+Expect a demo clip to yield weak seams. A "six moves in twenty seconds" video does one pass of each
+move and cuts, so for most of them no window in the footage repeats at all and there is nothing to
+find. Take the best available, say the ratio in the hand-off, and write the arc so it tells the
+artist where to blend.
+
 ## Search at the source's own frame rate
 
 `--search` and the `--margin` snap both walk the source at **its native frame rate**, one sample per
