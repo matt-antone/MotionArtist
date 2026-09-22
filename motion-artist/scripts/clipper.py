@@ -5,8 +5,8 @@
 
 Open http://localhost:8765, name an animation set, paste a video URL. The tool
 downloads it into work/<set>/, splits every source frame into work/<set>/frames/,
-and serves a frame-by-frame viewer. Mark in and out, name the clip, add it to the
-list. The list is saved to exports/<set>/clips.json, where each clip carries the
+and serves a frame-by-frame viewer. Mark in and out, drag either mark along the frame
+track to adjust it, name the clip, add it to the list. The list is saved to exports/<set>/clips.json, where each clip carries the
 exact frame numbers and the seconds they correspond to.
 
 That file is the handoff: `motion_artist.py extract <url> --start S --end S ...`
@@ -159,7 +159,13 @@ PAGE = r"""<!doctype html><meta charset=utf-8><title>clipper</title>
  .stage img{max-height:520px;max-width:100%;display:block}
  .meta{display:flex;gap:18px;font-variant-numeric:tabular-nums;color:#a0a0aa;margin:8px 0}
  .meta b{color:#e8e8ea;font-weight:600}
- input[type=range]{width:100%;margin:6px 0}
+ .track{position:relative;height:28px;margin:10px 0;cursor:pointer;touch-action:none}
+ .track::before{content:"";position:absolute;left:0;right:0;top:12px;height:4px;border-radius:2px;background:#2c2d35}
+ .band{position:absolute;top:12px;height:4px;border-radius:2px;background:#7dd3a0;opacity:.35;display:none}
+ .head{position:absolute;top:5px;width:2px;height:18px;margin-left:-1px;background:#e8e8ea}
+ .handle{position:absolute;top:2px;width:9px;height:24px;margin-left:-4px;border-radius:3px;
+         background:#7dd3a0;border:1px solid #15161a;cursor:ew-resize;display:none}
+ .handle:hover{background:#9ae4bb}
  .marks{color:#7f8694}.marks b{color:#7dd3a0}
  table{width:100%;border-collapse:collapse;margin-top:8px;font-variant-numeric:tabular-nums}
  th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #26272e}
@@ -183,7 +189,12 @@ PAGE = r"""<!doctype html><meta charset=utf-8><title>clipper</title>
 
 <div id=editor hidden>
   <div class=stage><img id=img></div>
-  <input type=range id=scrub min=1 value=1>
+  <div class=track id=track>
+    <div class=band id=band></div>
+    <div class=head id=head></div>
+    <div class=handle id=hin></div>
+    <div class=handle id=hout></div>
+  </div>
   <div class=meta>
     <span>frame <b id=fnum>1</b> / <span id=ftot>0</span></span>
     <span><b id=fsec>0.000</b>s</span>
@@ -197,7 +208,8 @@ PAGE = r"""<!doctype html><meta charset=utf-8><title>clipper</title>
     <button class=go id=add>Add clip</button>
   </div>
   <div class=hint><kbd>←</kbd><kbd>→</kbd> step · <kbd>shift</kbd>+arrows ×10 · <kbd>I</kbd> in ·
-    <kbd>O</kbd> out · <kbd>space</kbd> play · <kbd>enter</kbd> add clip</div>
+    <kbd>O</kbd> out · <kbd>space</kbd> play · <kbd>enter</kbd> add clip ·
+    drag the green marks on the track to move in and out</div>
 
   <table><thead><tr><th>clip</th><th>in</th><th>out</th><th>frames</th><th>seconds</th><th></th></tr></thead>
   <tbody id=list></tbody></table>
@@ -214,13 +226,54 @@ const err = m => $('err').textContent = m || '';
 function show(n){
   S.n = Math.min(Math.max(1, n), S.frames);
   $('img').src = `/api/frame?set=${encodeURIComponent(S.set)}&n=${S.n}`;
-  $('scrub').value = S.n;
   setText('fnum', S.n);
   setText('fsec', ((S.n-1)/S.fps).toFixed(3));
+  place();
 }
+
+// The track is one coordinate system: frame 1 sits at 0%, the last frame at 100%.
+const pct = n => ((n-1) / Math.max(1, S.frames-1)) * 100 + '%';
+const frameAt = e => {
+  const r = $('track').getBoundingClientRect();
+  return clamp(1 + Math.round((e.clientX - r.left) / r.width * (S.frames-1)));
+};
+const clamp = n => Math.min(Math.max(1, n), S.frames);
+
+function place(){
+  $('head').style.left = pct(S.n);
+  for (const [id, n] of [['hin', S.in], ['hout', S.out]]){
+    $(id).style.display = n ? 'block' : 'none';
+    if (n) $(id).style.left = pct(n);
+  }
+  const span = S.in && S.out && S.out >= S.in;
+  $('band').style.display = span ? 'block' : 'none';
+  if (span){
+    $('band').style.left = pct(S.in);
+    $('band').style.width = `calc(${pct(S.out)} - ${pct(S.in)})`;
+  }
+}
+
+// One handler for all three: grabbing a handle drags that mark, anywhere else scrubs.
+// A dragged mark stops at its neighbour rather than pushing past it.
+$('track').onpointerdown = e => {
+  const mark = {hin:'in', hout:'out'}[e.target.id] || null;
+  const move = ev => {
+    const n = frameAt(ev);
+    if (mark === 'in')  S.in  = Math.min(n, S.out || S.frames);
+    if (mark === 'out') S.out = Math.max(n, S.in || 1);
+    if (mark) marks();
+    show(mark ? S[mark] : n);
+  };
+  $('track').setPointerCapture(e.pointerId);
+  $('track').onpointermove = move;
+  $('track').onpointerup = () => $('track').onpointermove = $('track').onpointerup = null;
+  move(e);
+  e.preventDefault();
+};
 function marks(){
   setText('min', S.in ?? '–'); setText('mout', S.out ?? '–');
   setText('mlen', (S.in && S.out && S.out>=S.in) ? (S.out-S.in+1) : '–');
+  place();
 }
 function rows(){
   $('list').innerHTML = S.clips.map((c,i)=>`<tr>
@@ -249,13 +302,12 @@ $('load').onclick = async () => {
     S = {...S, set:j.set, url:j.url, fps:j.fps, frames:j.frames, in:null, out:null,
          clips: j.clips.map(c=>({name:c.name, in:c.in_frame, out:c.out_frame}))};
     $('set').value = j.set; $('url').value = j.url;
-    $('scrub').max = j.frames; setText('ftot', j.frames);
+    setText('ftot', j.frames);
     setText('status', `${j.frames} frames @ ${j.fps.toFixed(3)} fps`);
     $('editor').hidden = false; marks(); rows(); show(1);
   } catch(e){ setText('status',''); err(e.message); }
 };
 
-$('scrub').oninput = e => show(+e.target.value);
 $('bin').onclick = () => { S.in = S.n; if (S.out && S.out < S.in) S.out = null; marks(); };
 $('bout').onclick = () => { S.out = S.n; if (S.in && S.in > S.out) S.in = null; marks(); };
 $('play').onclick = () => {
@@ -285,7 +337,7 @@ $('add').onclick = () => {
 
 addEventListener('keydown', e => {
   if ($('editor').hidden) return;
-  const typing = /^(INPUT|TEXTAREA)$/.test(e.target.tagName) && e.target.type !== 'range';
+  const typing = /^(INPUT|TEXTAREA)$/.test(e.target.tagName);
   if (typing && e.key !== 'Enter') return;
   const step = e.shiftKey ? 10 : 1;
   if (e.key === 'ArrowLeft'){ show(S.n - step); e.preventDefault(); }
@@ -319,6 +371,12 @@ def selftest():
                           "start": 0.0, "end": 0.033, "export": "exports/demo/step-touch"}, out[0]
         assert out[1]["start"] == 1.0 and out[1]["end"] == 2.0 and out[1]["frames"] == 30, out[1]
         assert json.load(open(os.path.join(d, "demo", "clips.json")))["source_fps"] == 30.0
+    # The custom track replaced the range input. Nothing here runs the page, but a
+    # half-finished refactor leaves a dead $('scrub') that only throws in a browser.
+    for part in ("id=track", "id=band", "id=head", "id=hin", "id=hout",
+                 "onpointerdown", "getBoundingClientRect"):
+        assert part in PAGE, part
+    assert "'scrub'" not in PAGE and "type=range" not in PAGE
     print("ok")
 
 

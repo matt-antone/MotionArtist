@@ -60,8 +60,10 @@ python3 motion-artist/scripts/clipper.py
 
 It opens `http://localhost:8765`. The user names an animation set, pastes a video URL, and the tool
 downloads it into `work/<set>/` (reusing an existing download) and splits every source frame into
-`work/<set>/frames/`. They step through frames, mark in and out, name each clip, and the list is
-written to `exports/<set>/clips.json`:
+`work/<set>/frames/`. They step through frames and mark in and out. Both marks sit on the frame track under the
+viewer and can be dragged to adjust, with the frame following the mark as it moves, so a boundary
+is settled by eye rather than re-marked. They name each clip, and the list is written to
+`exports/<set>/clips.json`:
 
 ```json
 {"set": "shuffle-3", "url": "...", "source_fps": 29.97,
