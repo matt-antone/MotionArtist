@@ -23,7 +23,7 @@ roles: it controls motion only, never character scale, identity, view or prop ha
 | `--name` | yes | `<set>-<index>` — the set name the user gave for this video, plus this move's index. See **Naming** below. |
 | `--performer` | optional | `female` or `male` — the filmed performer's body, carried into `motion.json` and the manifest. It describes the trace, not the character the render must draw; omit it rather than guessing. |
 | `--margin` | default `0.5` s | slack around **both** `--start` and `--end`. The span you type is a guess; the move's own cut rarely lands on that exact second. Both ends are probed within the margin for the real one — matching poses for a `loop`, the stillest ending otherwise — and the winner is time-stretched onto the frame count, so the source span may come back a little shorter or longer than asked. `--margin 0` uses the span exactly as typed. Ignored with `--search`, which picks its own span. |
-| `--search` | optional | "find the best loop": slide a `frames / fps`-second window over `--start..--end` (whole video when `--end` is omitted), score each start by loop-closure distance vs motion energy, and use the tightest seam among the livelier half. Prints the top candidates. |
+| `--search` | optional | "find the best loop": slide a `frames / fps`-second window over `--start..--end` (whole video when `--end` is omitted), score each start by loop-closure distance vs motion energy, and use the tightest seam among the livelier half. Prints the top candidates. **The window slides one source frame at a time** — see below. |
 | `--window` | optional | source seconds to take, when that differs from `frames / fps` — what `--search` looks for, and the span length when `--end` is omitted. Use it when a scene cut or lost tracking leaves less usable footage than the playback length, or to run a fast move slower. The winner is stretched onto the frame count. |
 | `--stabilize` | optional | centre the hips horizontally in every frame. Use when the camera pans, tilts or zooms, or the performer travels; otherwise the seam check and the strip show camera motion as body motion. With a moving camera there is no fixed floor, so airborne is never called: the lower sole counts as planted. |
 | `--exaggerate` | default `1.25` | amplify each landmark's deviation from the clip-mean pose; `1.0` = as filmed |
@@ -33,6 +33,24 @@ If the user gives no trim and the video is longer than ~15 s, make a contact she
 ask for "the best loop" inside a range, pass the range as `--start/--end` plus `--search`. When the
 search reports no fully-tracked window, the range holds a scene cut or a shot with no visible body:
 sample it to find the usable span, then search inside that span with `--window`.
+
+## Search at the source's own frame rate
+
+`--search` and the `--margin` snap both walk the source at **its native frame rate**, one sample per
+real frame, and every candidate time they report is a real frame timestamp.
+
+A loop is cut at a frame. Scoring on a coarser grid can only ever land the seam on a sampled
+instant, so the best cut the video can actually be made at is missed by up to half a hop — and half
+a hop on the old 8 Hz grid is ~60 ms, which is a lot of pose in a dance step. `sample_rate()` is
+where the default lives; it also refuses to sample faster than the source, which would only score
+the same frame twice.
+
+Sampling is one seek then a sequential decode, not a seek per sample: at native rate seeking per
+frame is slower, and on an inter-frame codec it does not reliably return the frame asked for.
+
+It costs real time — a native-rate search over a whole video is several times the work of a coarse
+one. Trim the range with `--start/--end` before searching a long video rather than trading the rate
+back down.
 
 ## Naming: every capture is `<set>-<index>`
 

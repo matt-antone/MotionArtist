@@ -475,16 +475,39 @@ def carry_over_writing(jp, doc):
 def pose_dist(a, b): return sum(dist(a[k], b[k]) for k in CORE) / len(CORE)
 
 
-def sample_poses(cap, mp, lm, t0, t1, aspect, hz=8):
-    """Walk [t0, t1] at `hz`, returning (times, poses). A pose is hip-centred and torso-scaled so
-    the comparison is shape only; an untracked sample is None."""
+def sample_rate(cap, hz=None):
+    """The rate a search walks the source at, defaulting to the video's own frame rate.
+
+    A loop is cut at a frame, so a search that hops in coarser steps can only ever land its seam on
+    a sampled instant — at the old 8 Hz that is a 125 ms grid over a 30 fps source, and the real
+    best cut sat up to ~60 ms away from anything scored. A dance step covers a lot of pose in 60 ms.
+    Never faster than the source: asking for more samples than there are frames re-scores the same
+    frame twice.
+    """
     import cv2
+    src = cap.get(cv2.CAP_PROP_FPS) or 30
+    return min(hz or src, src)
+
+
+def sample_poses(cap, mp, lm, t0, t1, aspect, hz=None):
+    """Walk [t0, t1] at `hz` (default: the source's own frame rate), returning (times, poses). A
+    pose is hip-centred and torso-scaled so the comparison is shape only; an untracked sample is
+    None, and each time is the frame's real timestamp rather than the instant asked for.
+
+    One seek, then a sequential read: at native rate a seek per sample is slower than decoding
+    straight through, and on an inter-frame codec it does not reliably land on the frame asked for.
+    """
+    import cv2
+    hz = sample_rate(cap, hz)
     poses, ts = [], []
-    t = t0
-    while t <= t1 + 1e-9:
-        cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
+    cap.set(cv2.CAP_PROP_POS_MSEC, t0 * 1000)
+    nxt, step = t0, 1.0 / hz
+    while nxt <= t1 + 1e-9:
         ok, bgr = cap.read()
-        res = lm.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))) if ok else None
+        if not ok: break
+        t = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+        if t + 1e-9 < nxt: continue            # decoded past the seek but not yet at this sample
+        res = lm.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)))
         if res and res.pose_landmarks:
             img = res.pose_landmarks[0]
             P = {k: [img[j].x * aspect, img[j].y] for k, j in LM.items()}
@@ -492,7 +515,8 @@ def sample_poses(cap, mp, lm, t0, t1, aspect, hz=8):
             poses.append({k: [(v[0] - hip[0]) / h, (v[1] - hip[1]) / h] for k, v in P.items()})
         else:
             poses.append(None)
-        ts.append(t); t += 1.0 / hz
+        ts.append(t)
+        while nxt <= t + 1e-9: nxt += step     # a dropped or long frame skips its sample, not the walk
     return ts, poses
 
 
@@ -524,14 +548,18 @@ def pick_span(ts, poses, start, end, margin, loop):
     return best
 
 
-def best_loop(cap, mp, lm, t0, t1, length, aspect, hz=8):
+def best_loop(cap, mp, lm, t0, t1, length, aspect, hz=None):
     """Slide a `length`-second window over [t0, t1]; return (start, end, info) minimising the pose
-    distance between window start and window end while keeping real motion inside the window."""
+    distance between window start and window end while keeping real motion inside the window.
+
+    The window slides one source frame at a time (see `sample_rate`), so every cut the video can
+    actually be made at is scored, not one in every few."""
+    hz = sample_rate(cap, hz)
     ts, poses = sample_poses(cap, mp, lm, t0, t1, aspect, hz)
     pd = pose_dist
     n = round(length * hz)
     cands = []
-    for i in range(len(poses) - n):
+    for i in range(max(len(poses) - n, 0)):
         win = poses[i:i + n + 1]
         if any(p is None for p in win): continue
         seam = pd(win[0], win[-1])
@@ -717,6 +745,13 @@ def selftest():
     assert bundle_manifest({**cap, "performer": "female"}, [])["performer"] == "female"
     cap.pop("seam_ratio")                                  # a schema/1 capture predates the number
     assert bundle_manifest(cap, [("motion.json", __file__)])["seam_ratio"] is None
+    # a loop is cut at a frame: the search walks the source at its own rate by default, never
+    # coarser by accident and never finer than there are frames to score
+    class _Cap:
+        def get(self, prop): return 29.97
+    assert abs(sample_rate(_Cap()) - 29.97) < 1e-9
+    assert abs(sample_rate(_Cap(), 8) - 8) < 1e-9, "an explicit slower rate is still honoured"
+    assert abs(sample_rate(_Cap(), 120) - 29.97) < 1e-9, "never ask for more samples than frames"
     # the set is the name minus the move index, and a name without one is its own set
     assert set_name({"name": "hip-hop-1-3"}) == "hip-hop-1"
     assert set_name({"name": "shuffle-2-11"}) == "shuffle-2"
