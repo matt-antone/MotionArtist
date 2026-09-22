@@ -179,6 +179,37 @@ It costs real time — a native-rate search over a whole video is several times 
 one. Trim the range with `--start/--end` before searching a long video rather than trading the rate
 back down.
 
+### `--search` ranks the absolute gap, not the ratio the verdict uses
+
+The search reports `seam` as an absolute landmark distance and prefers the smallest, biasing it
+toward the **stillest** windows — it prints `energy` beside each candidate, and the winners are the
+low-energy ones. But the verdict that decides "clean" is `seam_ratio` = gap ÷ median step, and
+stillness shrinks that denominator. The two objectives pull apart on a slow move.
+
+Measured on one 12.5-minute source, searching 143–149s at three window lengths: the winners came
+back at ratios 12.06, 3.68 and 5.65, against 2.21 for a cut chosen by hand from the same range. All
+three searches made the seam worse, and the worst was the one the search liked best. So on a calm
+move, do not use `--search` to repair a flagged seam — score candidates on `seam_ratio` directly.
+
+The same scale-relativity makes `seam_ratio` **incomparable between moves**. A busy phrase measured
+3.29x on a gap of 0.129; a calm one measured 9.17x on a gap of 0.081 — the second number is worse
+while the second gap is smaller. Compare ratios only between cuts of the same move.
+
+### A move that travels does not loop, and no cut will make it
+
+Before hunting a seam, check whether the phrase returns to its own start: measure each frame's
+landmark distance back to frame 0. A loop dips near zero somewhere; a one-shot climbs away and ends
+at its maximum. One clip here rose steadily to the final frame, so every candidate end was the worst
+available, the best cut in a 6-second range still scored 2.21, and cutting to reach it cost a third
+of the move. That is the footage, not the cutting. When the curve says travel, either ship it as
+`--playback one-shot`, where the seam stops mattering at all, or pick a different move.
+
+Estimating a re-cut's seam from the current capture's frames — distance from each candidate last
+frame back to frame 0 — is worth doing, but it only holds when the new span's effective rate is near
+the capture's. It predicted 1.12 and the re-extract returned exactly 1.12 on a span that stayed at
+12fps; the same method missed by 1.1 on a 20-frame span over 1.766s, which is 11.3fps. Treat it as
+a shortlist, then re-extract the winner and read the real number.
+
 ## Naming: every capture is `<set>-<index>`
 
 **A video URL always arrives with a set name.** If one is missing, ask for it — do not invent a
@@ -291,11 +322,56 @@ not the measured condition, so it needs a measurement before it is worth taking.
 from 60 because JPEG artefacts at 60 sit on the limb edges, which is precisely what the generator is
 reading off them. That one is reasoning about the failure mode, not a measured delta.
 
+**That width is a measurement of portrait footage, and it does not survive a landscape source.**
+The thumb is the whole frame scaled to 200px wide, aspect kept, so what 200px buys depends entirely
+on the frame's shape. A 720×1280 Short becomes a 200×355 thumb carrying a figure around 250px tall —
+the condition every number above was measured in. A 1280×720 source becomes a 200×112 thumb carrying
+a figure **66px tall**, a third of it, and the dancer is then smaller than the costume detail the
+generator reads off limb edges. Measured on one clip of each: 262px against 66px, same code.
+
+A better download does not help. The 200px cap is applied after the fetch, so a 4K landscape source
+still yields 200×112. The fix has to happen in the pixels, before `extract`:
+
+```bash
+python3 motion-artist/scripts/portrait_crop.py VIDEO --start S --end S
+```
+
+It traces the performer across the span, takes the union of their landmark box padded by a share of
+figure height, grows that to 9:16 about its centre, clamps it inside the frame, and writes one
+ffmpeg crop at native resolution. Run `extract` against the cropped file. Crop the **video**, never
+the thumbs: `extract` re-traces the cropped frames, so `pts`, the thumbs and the figure all end up
+in one coordinate space, and nothing downstream has to be told the crop happened. Cropping thumbs
+after the fact would decouple them from `pts`, which CAG measures the drawn figure against.
+
+The crop is fixed for the whole file and computed from one span, so it preserves every timestamp —
+marks in `clips.json` and `--start`/`--end` keep their meaning — but a different move from the same
+video may sit elsewhere in frame and needs its own crop. Check `missing_frames` after: a limb that
+leaves a tight crop drops a trace, and by the rule above that costs the pose reference entirely.
+
 Known failure mode of the photo route: photographs bleed the **dancer's costume** into the character
 (a brown boot came back as the dancer's white sneaker on a lifted foot, 2 figures in 16). It is fixed
 on the CAG side with a positive costume sentence — nothing to do here. Worth carrying the general
 lesson though: telling the model to *ignore* the clothing did not work. Negation is weak; naming the
 right thing positively is what held. That applies to any prompt text this skill generates.
+
+## `--exaggerate` cannot repair downstream compression
+
+When a render comes back smaller than the reference, raising `--exaggerate` is the obvious reach and
+the wrong one. It amplifies each landmark's deviation from the **clip-mean** pose, so its effect
+scales with how far a pose already sits from the mean — which is backwards from what compression
+needs. Going 1.25 → 1.6 on one capture widened the frames that had come back *correct* by 2.1x and
+the wide straddle that had actually compressed by 1.19x. The frame needing help moved least.
+
+It is also not free. Amplifying pushes borderline frames across classification boundaries: the same
+1.25 → 1.6 turned a grounded frame airborne on an ankle that rose about 1%, inventing a hop that is
+not in the footage. `features.airborne` physically lifts the character off the contact row
+downstream, so that is a visible defect, and it arrives without anyone touching the threshold —
+raising `--exaggerate` loosens it as a side effect. Re-read `missing_frames` and the airborne list
+after any change to it, and compare against the previous capture rather than reading the new one
+alone.
+
+If the reference is right and the render is small, the gap is downstream. Say so rather than
+over-driving the source to compensate.
 
 ## Steps
 
