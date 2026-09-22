@@ -61,7 +61,7 @@ python3 motion-artist/scripts/motion_artist.py export work/dance/motion.json
 | `render --pingpong` | walk the same cells out and back; the return leg reverses the out leg, so the seam is clean and the sheet still holds only the requested frames |
 | `pose-grid --cols` | pose cards per row; default `4` |
 | `pose-grid --no-labels` | drop the frame-number band, and say so in the sidecar |
-| `export --out`, `--sheet` | bundle path (default `exports/<name>-<video id>-<start>s-<frames>f-<fps>fps-motion-source.zip`) and the sheet HTML to include (default `<name>-motion.html` beside the json) |
+| `export --out`, `--sheet` | bundle path (default `exports/<set>/<set>-<index>-<frames>f-<fps>fps-motion-source.zip`) and the sheet HTML to include (default `<name>-motion.html` beside the json) |
 
 `extract` prints one line per frame (index, source time, key / pilot / in-between, pace, pose cue)
 and writes `motion.json` plus `thumbs/`. Landmarks carry depth — `pts` is `[x, y, z]`, z negative

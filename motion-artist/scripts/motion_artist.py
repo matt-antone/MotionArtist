@@ -12,7 +12,7 @@
 `export` bundles the json, sheet and thumbs with a SHA-256 manifest for hand-off.
 Between extract and render, an agent may fill `arc`, `title` and per-frame `note` in motion.json.
 """
-import argparse, base64, glob, hashlib, html, json, math, os, re, subprocess, sys, tempfile, urllib.request, zipfile
+import argparse, base64, glob, hashlib, html, json, math, os, re, subprocess, sys, urllib.request, zipfile
 
 MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
              "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task")
@@ -237,11 +237,21 @@ def describe(P, W, floor_y, body_h):
 
 # ---------------------------------------------------------------- extract
 def fetch(url, out_dir):
-    """Download with yt-dlp (<=720p mp4). Returns (path, title)."""
+    """Download with yt-dlp, capping the SHORT side at 720px. Returns (path, title).
+
+    The cap is a sort key, not a filter, because `res` is yt-dlp's *smaller*
+    dimension and so means the same thing whichever way the video is turned. A
+    plain `height<=720` filter reads as 720p only for landscape: a portrait
+    Short is 1080x1920, every format above 360x640 fails `height<=720`, and the
+    capture silently traces a 360-wide frame. The thumbs are the pose reference
+    the generator draws from, so that halves the resolution of the one input
+    that matters. Measured on three sources: portrait 360x640 -> 720x1280,
+    landscape 1280x720 -> 1280x720 (unchanged, and no run-up to 4K).
+    """
     os.makedirs(out_dir, exist_ok=True)
     tmpl = os.path.join(out_dir, "source-%(id)s.%(ext)s")
     r = subprocess.run(["yt-dlp", "-q", "--no-warnings", "--no-simulate",
-                        "-f", "bv*[height<=720][ext=mp4]/b[height<=720]/b",
+                        "-f", "bv*[ext=mp4]/bv*/b", "-S", "res:720",
                         "--print", "after_move:%(filepath)s\t%(title)s", "-o", tmpl, url],
                        capture_output=True, text=True, check=True)
     path, title = r.stdout.strip().splitlines()[-1].split("\t", 1)
@@ -401,10 +411,14 @@ def extract(a):
     doc = dict(
         schema=SCHEMA,
         title=name.replace("-", " ").title(), name=name,
-        source=dict(url=a.source if re.match(r"https?://", a.source) else portable(a.source),
+        # `--url` matters more than it looks: since a bundle is named `<set>-<index>`, the manifest
+        # is the *only* place the origin survives. Cutting several moves out of one video means
+        # working from a downloaded copy — re-fetching per move would download it a dozen times —
+        # and without this the capture would record a local path where the provenance should be.
+        source=dict(url=a.source if re.match(r"https?://", a.source) else (a.url or portable(a.source)),
                     file=portable(src), title=title, start=start, end=round(end, 3),
                     speed_factor=round(speed, 2), duration=round(dur, 2)),
-        exaggerate=a.exaggerate, stabilized=a.stabilize,
+        exaggerate=a.exaggerate, stabilized=a.stabilize, performer=a.performer,
         fps=a.fps, frame_count=a.frames, playback=a.playback, view=view,
         seam=("clean" if seam < 1.5 else "needs blend") if loop else "n/a",
         seam_ratio=round(seam, 2) if loop else None,   # the number behind the verdict, for CAG's log
@@ -465,16 +479,39 @@ def carry_over_writing(jp, doc):
 def pose_dist(a, b): return sum(dist(a[k], b[k]) for k in CORE) / len(CORE)
 
 
-def sample_poses(cap, mp, lm, t0, t1, aspect, hz=8):
-    """Walk [t0, t1] at `hz`, returning (times, poses). A pose is hip-centred and torso-scaled so
-    the comparison is shape only; an untracked sample is None."""
+def sample_rate(cap, hz=None):
+    """The rate a search walks the source at, defaulting to the video's own frame rate.
+
+    A loop is cut at a frame, so a search that hops in coarser steps can only ever land its seam on
+    a sampled instant — at the old 8 Hz that is a 125 ms grid over a 30 fps source, and the real
+    best cut sat up to ~60 ms away from anything scored. A dance step covers a lot of pose in 60 ms.
+    Never faster than the source: asking for more samples than there are frames re-scores the same
+    frame twice.
+    """
     import cv2
+    src = cap.get(cv2.CAP_PROP_FPS) or 30
+    return min(hz or src, src)
+
+
+def sample_poses(cap, mp, lm, t0, t1, aspect, hz=None):
+    """Walk [t0, t1] at `hz` (default: the source's own frame rate), returning (times, poses). A
+    pose is hip-centred and torso-scaled so the comparison is shape only; an untracked sample is
+    None, and each time is the frame's real timestamp rather than the instant asked for.
+
+    One seek, then a sequential read: at native rate a seek per sample is slower than decoding
+    straight through, and on an inter-frame codec it does not reliably land on the frame asked for.
+    """
+    import cv2
+    hz = sample_rate(cap, hz)
     poses, ts = [], []
-    t = t0
-    while t <= t1 + 1e-9:
-        cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
+    cap.set(cv2.CAP_PROP_POS_MSEC, t0 * 1000)
+    nxt, step = t0, 1.0 / hz
+    while nxt <= t1 + 1e-9:
         ok, bgr = cap.read()
-        res = lm.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))) if ok else None
+        if not ok: break
+        t = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+        if t + 1e-9 < nxt: continue            # decoded past the seek but not yet at this sample
+        res = lm.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)))
         if res and res.pose_landmarks:
             img = res.pose_landmarks[0]
             P = {k: [img[j].x * aspect, img[j].y] for k, j in LM.items()}
@@ -482,7 +519,8 @@ def sample_poses(cap, mp, lm, t0, t1, aspect, hz=8):
             poses.append({k: [(v[0] - hip[0]) / h, (v[1] - hip[1]) / h] for k, v in P.items()})
         else:
             poses.append(None)
-        ts.append(t); t += 1.0 / hz
+        ts.append(t)
+        while nxt <= t + 1e-9: nxt += step     # a dropped or long frame skips its sample, not the walk
     return ts, poses
 
 
@@ -514,14 +552,18 @@ def pick_span(ts, poses, start, end, margin, loop):
     return best
 
 
-def best_loop(cap, mp, lm, t0, t1, length, aspect, hz=8):
+def best_loop(cap, mp, lm, t0, t1, length, aspect, hz=None):
     """Slide a `length`-second window over [t0, t1]; return (start, end, info) minimising the pose
-    distance between window start and window end while keeping real motion inside the window."""
+    distance between window start and window end while keeping real motion inside the window.
+
+    The window slides one source frame at a time (see `sample_rate`), so every cut the video can
+    actually be made at is scored, not one in every few."""
+    hz = sample_rate(cap, hz)
     ts, poses = sample_poses(cap, mp, lm, t0, t1, aspect, hz)
     pd = pose_dist
     n = round(length * hz)
     cands = []
-    for i in range(len(poses) - n):
+    for i in range(max(len(poses) - n, 0)):
         win = poses[i:i + n + 1]
         if any(p is None for p in win): continue
         seam = pd(win[0], win[-1])
@@ -702,8 +744,27 @@ def selftest():
     assert man["files"]["motion.json"] == sha256(__file__) and len(man["files"]["motion.json"]) == 64
     assert man["arc_written"] is False and man["bundle"] == "motion-source"
     assert man["seam"] == "needs blend" and man["seam_ratio"] == 2.4, man
+    # performer rides through when stated, and reads as unstated rather than guessed when it is not
+    assert man["performer"] is None
+    # the per-frame spread rides alongside the majority `view`, and is absent rather than empty
+    # when a caller has no frames to count
+    assert man["view_frames"] is None, man["view_frames"]
+    mixed = {**cap, "frames": [{"features": {"view": v}} for v in ("front", "front", "3/4", "back")]}
+    assert bundle_manifest(mixed, [])["view_frames"] == {"front": 2, "3/4": 1, "back": 1}
+    assert bundle_manifest({**cap, "performer": "female"}, [])["performer"] == "female"
     cap.pop("seam_ratio")                                  # a schema/1 capture predates the number
     assert bundle_manifest(cap, [("motion.json", __file__)])["seam_ratio"] is None
+    # a loop is cut at a frame: the search walks the source at its own rate by default, never
+    # coarser by accident and never finer than there are frames to score
+    class _Cap:
+        def get(self, prop): return 29.97
+    assert abs(sample_rate(_Cap()) - 29.97) < 1e-9
+    assert abs(sample_rate(_Cap(), 8) - 8) < 1e-9, "an explicit slower rate is still honoured"
+    assert abs(sample_rate(_Cap(), 120) - 29.97) < 1e-9, "never ask for more samples than frames"
+    # the set is the name minus the move index, and a name without one is its own set
+    assert set_name({"name": "hip-hop-1-3"}) == "hip-hop-1"
+    assert set_name({"name": "shuffle-2-11"}) == "shuffle-2"
+    assert set_name({"name": "dougie"}) == "dougie"
     assert portable(os.path.join(os.getcwd(), "work", "x.mp4")) == os.path.join("work", "x.mp4")
     assert portable("/somewhere/else/x.mp4") == "x.mp4"
     print("selftest ok")
@@ -717,21 +778,39 @@ def sha256(path):
     return h.hexdigest()
 
 
-def trace_id(d):
-    """The bundle's name: the capture's label, the video it came from, and the second it starts at.
+def set_name(d):
+    """The set a capture belongs to: its name with the move index stripped.
 
-    A label alone is not an identifier. "shuffle" is a genre, and two different dances — different
-    video, different cut, different choreography — landed on it within an hour of two people agreeing
-    a glossary to stop exactly that. Copying the directory overwrote one with the other silently, and
-    every measurement taken against the first then referred to a dance nobody had rendered.
-
-    Source id and start second are unique by construction, need no registry, and read as provenance.
-    # ponytail: two traces of the SAME cut still collide — add the trace date if that ever happens.
+    Names are assigned here, not derived. Each source video is given a set name, and every unique
+    move cut out of it is `<set>-<index>`, index from 1 — so `hip-hop-1-3` is the third move of the
+    `hip-hop-1` set and lives in `exports/hip-hop-1/`. The name is the identifier, which means a
+    re-cut of a move overwrites that move instead of landing beside it under a different trace.
+    Provenance — url, start second, span — rides in `manifest.json`, which is where a consumer
+    reads it; it is no longer spelled into the file name.
     """
-    s = d["source"]
-    m = re.search(r"(?:/shorts/|v=|youtu\.be/)([\w-]{11})", s.get("url") or "")
-    vid = m.group(1) if m else os.path.splitext(os.path.basename(s.get("file") or "local"))[0]
-    return f"{d['name']}-{vid}-{s['start']:.1f}s"
+    return re.sub(r"-\d+$", "", d["name"]) or d["name"]
+
+
+def view_counts(d):
+    """How many frames face each way — the spread the single `view` throws away.
+
+    `view` is one majority vote over the per-frame classifications, so a set that is half front and
+    half three-quarter, or one carrying five rear frames inside a seven-way tie, reports a single
+    tidy word. The consumer then screens on a number that cannot support the weight put on it: a
+    character was rendered faceless for five of twenty-four frames off a bundle whose declared view
+    was perfectly legal.
+
+    Emitting the raw counts costs nothing and cannot break the consumer — CAG requires exactly
+    fps, frame_count, playback, view and files and ignores every other key (`cag/motion.py`) — and
+    it lets each consumer set its own threshold per character. That matters because purity is not
+    always available to offer: a captioned Two-Step turns in every window the footage contains, so
+    a front-only rule would delete a real dance rather than protect anything.
+    """
+    c = {}
+    for f in d.get("frames") or []:
+        v = (f.get("features") or {}).get("view")
+        if v: c[v] = c.get(v, 0) + 1
+    return c or None
 
 
 def bundle_manifest(d, files):
@@ -747,6 +826,8 @@ def bundle_manifest(d, files):
         fps=d["fps"], frame_count=d["frame_count"], playback=d["playback"], view=d["view"],
         seam=d["seam"], seam_ratio=d.get("seam_ratio"),   # the verdict, and the number behind it
         stabilized=d.get("stabilized", False), exaggerate=d.get("exaggerate"),
+        performer=d.get("performer"),   # the filmed body, not the character the render must draw
+        view_frames=view_counts(d),   # the spread `view` averages away — see below
         missing_frames=d.get("missing_frames", []), source=d["source"],
         arc_written=bool(d.get("arc", "").strip()),
         files={rel: sha256(p) for rel, p in files})
@@ -827,15 +908,11 @@ def export(a):
     sheet = a.sheet or os.path.join(src, f"{d['name']}-motion.html")
     if not os.path.exists(sheet):
         sys.exit(f"export: no motion sheet at {sheet} — run `render` first, or pass --sheet")
-    # The shipped motion.json carries the bundle name too. Renaming only the directory and the
-    # manifest is how a bundle ends up advertising one name and saying another inside — which is
-    # precisely how a swapped dance stayed invisible. Written to a temp file so the manifest digest
-    # is taken over the bytes that actually ship.
-    bundle = trace_id(d)
-    tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
-    json.dump({**d, "name": bundle}, tmp, ensure_ascii=False, indent=1)
-    tmp.close()
-    files = [("motion.json", tmp.name), (os.path.basename(sheet), sheet)]
+    # The bundle is named by the capture, and the shipped motion.json already says that name — so
+    # nothing is rewritten on the way out and the directory, the manifest and the json agree by
+    # construction rather than by a copy that could drift.
+    bundle = d["name"]
+    files = [("motion.json", jp), (os.path.basename(sheet), sheet)]
     tdir = os.path.join(src, "thumbs")
     if os.path.isdir(tdir):
         files += [(f"thumbs/{n}", os.path.join(tdir, n)) for n in sorted(os.listdir(tdir))
@@ -847,21 +924,21 @@ def export(a):
     # bundle while the manifest still described them.
     for p in sorted(glob.glob(os.path.join(src, f"{d['name']}-pose-grid*.png"))):
         files.append((os.path.basename(p), p))
-    man = bundle_manifest({**d, "name": bundle}, files)
+    man = bundle_manifest(d, files)
     # the pose grid's geometry (cols/rows/tile pitch/label band) rides in the manifest too, not
     # just as a sidecar file, so a consumer slices the PNG by declared numbers instead of measuring
     # pixels back out of it.
     layout_p = os.path.join(src, f"{d['name']}-pose-grid.json")
     if os.path.exists(layout_p): man["pose_grid"] = json.load(open(layout_p))
-    # Bundles land in exports/ beside work/, not in the capture dir: one place to hand off from. The
-    # name carries frame count and fps — exports/ is flat, and two cuts of one move differ only there.
-    exports = os.path.join(os.path.dirname(os.path.dirname(src)), "exports")
+    # Bundles land in exports/<set>/, beside work/ and never in the capture dir: one place to hand
+    # off from, one directory per source video. The file name still carries frame count and fps —
+    # a re-cut at a different rate is a different animation from the same move.
+    exports = os.path.join(os.path.dirname(os.path.dirname(src)), "exports", set_name(d))
     out = a.out or os.path.join(exports, f"{bundle}-{d['frame_count']}f-{d['fps']}fps-motion-source.zip")
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         for rel, p in files: z.write(p, f"{bundle}/{rel}")
         z.writestr(f"{bundle}/manifest.json", json.dumps(man, indent=1))
-    os.unlink(tmp.name)
     ratio = man["seam_ratio"]
     print(f"{out}\nsha256 {sha256(out)} | {len(files) + 1} files | {d['frame_count']}f @ "
           f"{d['fps']}fps | {d['playback']} | view {d['view']} | seam {man['seam']}"
@@ -886,12 +963,15 @@ def main():
     e.add_argument("--fps", type=int, required=True); e.add_argument("--frames", type=int, required=True)
     e.add_argument("--start", type=tstamp, help="trim: seconds or m:ss"); e.add_argument("--end", type=tstamp, help="trim: seconds or m:ss")
     e.add_argument("--name"); e.add_argument("--out")
+    e.add_argument("--url", help="origin URL, when `source` is a local copy of it: the manifest is "
+                                 "the only place a bundle's provenance lives")
     e.add_argument("--exaggerate", type=float, default=1.25, help="motion amplification about the mean pose (1.0 = as filmed)")
     e.add_argument("--stabilize", action="store_true", help="centre hips horizontally each frame (moving camera / travelling performer)")
     e.add_argument("--window", type=tstamp, help="source seconds the search looks for (default frames/fps); the winner is stretched onto the frame count")
     e.add_argument("--margin", type=tstamp, default=0.5, help="slack in seconds around --start and --end: probe both ends for the move's own cut (loop: matching poses; one-shot: the stillest ending) and stretch the winner onto the frame count. 0 uses the span exactly as given")
     e.add_argument("--search", action="store_true", help="slide a frames/fps-second window over --start..--end and pick the tightest loop")
     e.add_argument("--playback", choices=["loop", "one-shot", "final-hold"], default="loop")
+    e.add_argument("--performer", choices=["female", "male"], help="the filmed performer's body, carried into the manifest; omit when it should not be stated")
     r = sub.add_parser("render"); r.add_argument("json"); r.add_argument("--out")
     r.add_argument("--template", help=f"sheet template to render into (default {TEMPLATE_PATH})")
     r.add_argument("--pingpong", action="store_true", help="walk the frames out and back (0..N-1..1) so the seam is the motion reversed")

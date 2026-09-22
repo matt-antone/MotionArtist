@@ -2,19 +2,22 @@
 
 All agents must use caveman skill all the time.
 
-This repo is one skill and one script. `motion-artist/SKILL.md` tells an agent how to turn a video
-of a person moving into a motion source; `motion-artist/scripts/motion_artist.py` does the work.
-Everything else is docs and ignored scratch.
+This repo is one skill and two scripts. `motion-artist/SKILL.md` tells an agent how to turn a video
+of a person moving into a motion source; `motion-artist/scripts/motion_artist.py` does the work, and
+`motion-artist/scripts/clipper.py` is the browser tool the user marks clip boundaries in before the
+pipeline runs. Everything else is docs and ignored scratch.
 
 ```
 motion-artist/SKILL.md                 the skill an agent loads
 motion-artist/scripts/motion_artist.py extract | render | pose-grid | export | selftest  (single file, ~1030 lines)
+motion-artist/scripts/clipper.py       the clip marker: a local web tool that splits a video into
+                                       frames and records which ones the user wants (see Marking clips)
 motion-artist/templates/sheet.html     the motion sheet: markup, CSS and player, with {{PLACEHOLDER}}s
                                        render() fills. Edit the sheet's design here, not in the script
 .claude/skills/motion-artist           symlink to motion-artist/, so the skill loads in this repo —
                                        git-ignored, so a fresh clone has to create it (see Setup)
 work/                                  captures and downloaded video — git-ignored, never commit
-exports/                               finished bundles, one zip per capture — committed
+exports/<set>/                         finished bundles, one zip per capture — committed
 README.md                              the human-facing version of SKILL.md
 ```
 
@@ -46,6 +49,33 @@ mkdir -p ~/.claude/skills && ln -s "$PWD/motion-artist" ~/.claude/skills/motion-
 Either way the skill is named by `motion-artist/SKILL.md`, not by the link. Restart the session
 after linking; skills are read at startup.
 
+## Marking clips
+
+Guessing `--start` and `--end` from a description costs re-cuts. When the user wants to point at
+frames instead of describing them, run the clip marker and let them mark the boundaries:
+
+```bash
+python3 motion-artist/scripts/clipper.py
+```
+
+It opens `http://localhost:8765`. The user names an animation set, pastes a video URL, and the tool
+downloads it into `work/<set>/` (reusing an existing download) and splits every source frame into
+`work/<set>/frames/`. They step through frames and mark in and out. Both marks sit on the frame track under the
+viewer and can be dragged to adjust, with the frame following the mark as it moves, so a boundary
+is settled by eye rather than re-marked. They name each clip, and the list is written to
+`exports/<set>/clips.json`:
+
+```json
+{"set": "shuffle-3", "url": "...", "source_fps": 29.97,
+ "clips": [{"name": "side-step", "in_frame": 91, "out_frame": 150, "frames": 60,
+            "start": 3.003, "end": 5.005, "export": "exports/shuffle-3/side-step"}]}
+```
+
+Read that file and run the pipeline per clip, taking `--start`/`--end` from `start`/`end` — those
+seconds are the frames the user marked, so do not re-search around them unless asked. `frames` is
+how many source frames the clip spans, not the capture's frame count: choose `--fps`/`--frames`
+as usual. The marker never runs the pipeline and never writes a bundle.
+
 ## The pipeline
 
 Five steps, in order. A capture is not finished until step 5.
@@ -60,17 +90,25 @@ Five steps, in order. A capture is not finished until step 5.
    generated `manifest.json` with a SHA-256 per file.
    The printed bundle path and zip digest are what a KaraokeParty-Graphics job input references.
 
-Every bundle lands in `exports/` at the repo root, one flat directory of
-`<name>-<video id>-<start>s-<frames>f-<fps>fps-motion-source.zip`. The label alone is not an
-identifier — "shuffle" is a genre, and two different dances landed on it once and one silently
-overwrote the other on a directory copy. The video id and start second make the name unique by
-construction, and the same string is the bundle directory, the manifest `name` and the shipped
-`motion.json` `name`, so a bundle cannot advertise one name and say another inside.
+Every capture is named `<set>-<index>`. A video URL always arrives with a set name; one video is
+one set, and each unique move cut from it takes the next index from 1. That string is the capture
+directory, the bundle directory, the manifest `name` and the shipped `motion.json` `name`, so a
+bundle cannot advertise one name and say another inside. Bundles land in `exports/<set>/`, one
+directory per source video, as `<set>-<index>-<frames>f-<fps>fps-motion-source.zip`.
+
+An assigned name is an identifier in a way a descriptive label never was — "shuffle" is a genre,
+and two different dances landed on it once and one silently overwrote the other. Provenance (url,
+start second, span) rides in `manifest.json` rather than in the file name. Everything exported
+under the older `<name>-<video id>-<start>s` scheme is deprecated and removed.
 Hand off that zip as it is. Do not unpack it, and do not copy loose `motion.json`/`thumbs/` into a
 consuming repo — the zip is the unit, and its `manifest.json` is what verifies it.
-Copying a re-cut in supersedes an older bundle of the same move: delete that one in the same step.
-Because the name carries the trace, the re-cut lands *beside* its predecessor instead of over it,
-and a spec still pointed at the stale zip renders the old motion under the new bundle's digest.
+A re-cut of a move keeps its `<set>-<index>` and replaces the bundle in place, so no stale twin is
+left to be referenced — but the SHA-256 changes, so re-reference it in any job input that names it.
+
+The manifest carries `view_frames`, the per-frame view counts, alongside the single majority
+`view`. Screen on the counts: the majority value hides a set that is half three-quarter, or one
+carrying rear frames inside a near-tie. A `back` frame is fatal downstream; a side frame usually is
+not, and some moves turn in every window they have.
 
 Read the printed table, not `motion.json` — the JSON is large and mostly landmarks. Never hand-edit
 `cue`, `role`, `pts`, `depth` or `t`; they are extractor output. Re-run `extract` instead.
