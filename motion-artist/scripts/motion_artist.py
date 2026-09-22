@@ -411,7 +411,11 @@ def extract(a):
     doc = dict(
         schema=SCHEMA,
         title=name.replace("-", " ").title(), name=name,
-        source=dict(url=a.source if re.match(r"https?://", a.source) else portable(a.source),
+        # `--url` matters more than it looks: since a bundle is named `<set>-<index>`, the manifest
+        # is the *only* place the origin survives. Cutting several moves out of one video means
+        # working from a downloaded copy — re-fetching per move would download it a dozen times —
+        # and without this the capture would record a local path where the provenance should be.
+        source=dict(url=a.source if re.match(r"https?://", a.source) else (a.url or portable(a.source)),
                     file=portable(src), title=title, start=start, end=round(end, 3),
                     speed_factor=round(speed, 2), duration=round(dur, 2)),
         exaggerate=a.exaggerate, stabilized=a.stabilize, performer=a.performer,
@@ -931,6 +935,8 @@ def main():
     e.add_argument("--fps", type=int, required=True); e.add_argument("--frames", type=int, required=True)
     e.add_argument("--start", type=tstamp, help="trim: seconds or m:ss"); e.add_argument("--end", type=tstamp, help="trim: seconds or m:ss")
     e.add_argument("--name"); e.add_argument("--out")
+    e.add_argument("--url", help="origin URL, when `source` is a local copy of it: the manifest is "
+                                 "the only place a bundle's provenance lives")
     e.add_argument("--exaggerate", type=float, default=1.25, help="motion amplification about the mean pose (1.0 = as filmed)")
     e.add_argument("--stabilize", action="store_true", help="centre hips horizontally each frame (moving camera / travelling performer)")
     e.add_argument("--window", type=tstamp, help="source seconds the search looks for (default frames/fps); the winner is stretched onto the frame count")
