@@ -96,7 +96,13 @@ so while you can still drag a mark to fix it.
 
 Play previews the capture rather than the footage: the frames `extract` will sample, at the fps they
 will play. A loop's preview excludes the out frame, exactly as the capture will, so the seam you
-watch is the seam you ship.
+watch is the seam you ship, and a ping-pong preview walks out and back over the same cells the way
+the sheet will.
+
+`ping-pong` sits in the playback list but is not a `--playback` value — it is `render --pingpong`,
+so a clip that picks it is written as `"playback": "loop", "pingpong": true`. It is a flag on the
+motion sheet only: it adds no cells and never reaches `manifest.json`, so a delivered asset that
+must show the return leg needs it traced as real frames.
 
 Or by hand:
 

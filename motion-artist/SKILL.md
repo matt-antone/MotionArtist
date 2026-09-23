@@ -143,7 +143,9 @@ any count exists, so it derives `capture_frames = capture_fps x window` and writ
 `speed_factor` per clip. A clip that comes back off `1.0` has marks that do not land on a whole
 frame at that fps — nudge a mark rather than accepting the rounding. Its Play button previews the
 capture itself: the frames `extract` will sample, at the fps they will play, so a rate can be judged
-before the clip is captured.
+before the clip is captured. Its playback list offers `ping-pong` alongside the three `--playback`
+values; that one is this `--pingpong` flag, and a clip that picked it is written as
+`"playback": "loop", "pingpong": true` so nothing hands `extract` a word it would reject.
 
 Keep `fps` fixed across a library (12 is CAG's editor default) and let the frame count vary per
 move. The marker records fps **per clip**, so this is a convention it will not enforce — a set whose

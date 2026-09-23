@@ -24,6 +24,10 @@ WORK = os.path.join(ROOT, "work")
 EXPORTS = os.path.join(ROOT, "exports")
 FRAME_HEIGHT = 480  # display copies; extract re-reads the source video at full resolution
 PLAYBACK = ("loop", "one-shot", "final-hold")  # extract's own --playback choices, not a second vocabulary
+# ping-pong is offered beside them but is not one of them: it is `render --pingpong`, a loop
+# walked out and back over the same cells. It rides in the clip as its own field.
+PINGPONG = "ping-pong"
+CHOICES = PLAYBACK + (PINGPONG,)
 CAPTURE_FPS = 12  # CAG's editor default; the skill keeps fps fixed across a library
 
 
@@ -95,17 +99,25 @@ def write_clips(name, url, fps, clips):
         a, b = int(c["in"]), int(c["out"])
         cn = slug(c["name"]) or f"clip-{len(out) + 1}"
         pb = c.get("playback") or "loop"
+        pingpong = pb == PINGPONG
+        if pingpong:
+            pb = "loop"  # the capture is a loop; out-and-back is how the sheet walks it
         if pb not in PLAYBACK:  # this file is a command line; a bad value would reach extract as one
-            raise ValueError(f"unknown playback {pb!r}, expected one of {', '.join(PLAYBACK)}")
+            raise ValueError(f"unknown playback {pb!r}, expected one of {', '.join(CHOICES)}")
         cap_fps = c.get("fps")                          # `or` would read a 0 fps as the default
         cap_fps = CAPTURE_FPS if cap_fps is None else int(cap_fps)
         if not 1 <= cap_fps <= 60:
             raise ValueError(f"capture fps {cap_fps} is outside 1..60")
         window = (b - a + 1) / fps                      # seconds of source the marks span
         cap_frames = max(1, round(window * cap_fps))
+        if pingpong and cap_frames <= 2:
+            # render applies --pingpong only above 2 frames and says nothing when it does not
+            raise ValueError(f"{cn}: ping-pong needs more than 2 captured frames, this clip has "
+                             f"{cap_frames} — widen the marks or raise its fps")
         out.append({"name": cn, "in_frame": a, "out_frame": b, "frames": b - a + 1,
                     "start": round((a - 1) / fps, 3), "end": round(b / fps, 3),
-                    "playback": pb, "capture_fps": cap_fps, "capture_frames": cap_frames,
+                    "playback": pb, "pingpong": pingpong,
+                    "capture_fps": cap_fps, "capture_frames": cap_frames,
                     # span / (frames/fps). extract recomputes it; 1.0 here means the marks
                     # already land on a whole frame at this fps, so no rounding is hiding.
                     "speed_factor": round(window / (cap_frames / cap_fps), 3),
@@ -229,10 +241,13 @@ PAGE = r"""<!doctype html><meta charset=utf-8><title>clipper</title>
     <input id=cname placeholder="clip name" size=20>
     <label title="capture fps. The frame count is derived from it: frames = fps x window">
       fps <input id=capfps type=number min=1 max=60 value=12 style=width:4.5em></label>
-    <select id=pmode title="how the capture plays back: extract's --playback">
+    <select id=pmode title="how the capture plays back. ping-pong is render's --pingpong: a loop
+walked out and back over the same cells. It lives on the motion sheet only — it never reaches
+manifest.json, so the character generator does not learn of it.">
       <option value=loop>loop</option>
       <option value=one-shot>one-shot</option>
       <option value=final-hold>final-hold</option>
+      <option value=ping-pong>ping-pong</option>
     </select>
     <button class=go id=add>Add clip</button>
   </div>
@@ -324,13 +339,14 @@ function marks(){
     // would play fast or slow. The marks are draggable: nudge one until it reads exact.
     const off = Math.abs(factor - 1) > 0.0005;
     el.textContent = `→ ${n} frames @ ${capFps()} fps · ${(n/capFps()).toFixed(3)}s` +
+      ($('pmode').value === 'ping-pong' ? ` · out and back over ${2*n-2}` : '') +
       (off ? ` · plays ${factor > 1 ? 'fast' : 'slow'} ${factor.toFixed(3)}x` : ' · exact');
     el.className = off ? 'warn' : 'ok';
   }
   place();
 }
 
-$('capfps').oninput = () => marks();  // rows carry their own fps
+$('capfps').oninput = $('pmode').onchange = () => marks();  // rows carry their own
 function rows(){
   $('list').innerHTML = S.clips.map((c,i)=>`<tr>
     <td>${c.name}</td><td class=n>${c.in}</td><td class=n>${c.out}</td>
@@ -361,7 +377,8 @@ $('load').onclick = async () => {
     const j = await post('/api/load', {set: $('set').value, url: $('url').value});
     S = {...S, set:j.set, url:j.url, fps:j.fps, frames:j.frames, in:null, out:null,
          clips: j.clips.map(c=>({name:c.name, in:c.in_frame, out:c.out_frame,
-                                playback: c.playback || 'loop', fps: c.capture_fps || 12}))};
+                                playback: c.pingpong ? 'ping-pong' : (c.playback || 'loop'),
+                                fps: c.capture_fps || 12}))};
     $('set').value = j.set; $('url').value = j.url;
     setText('ftot', j.frames);
     setText('status', `${j.frames} frames @ ${j.fps.toFixed(3)} fps`);
@@ -376,11 +393,14 @@ $('play').onclick = () => {
   setText('play','Pause (space)');
   // With a window marked, play what the capture will be: its own frames at its own rate.
   // Stepping every source frame at the capture's fps would only be slow motion.
-  const span = S.in && S.out && S.out >= S.in;
-  const n = span ? capFrames(S.in, S.out, capFps()) : 0, loop = $('pmode').value === 'loop';
+  const span = S.in && S.out && S.out >= S.in, pm = $('pmode').value;
+  const n = span ? capFrames(S.in, S.out, capFps()) : 0, loop = pm !== 'one-shot' && pm !== 'final-hold';
+  // the order the sheet walks: straight through, or out and back over the same cells
+  const order = [...Array(n).keys()];
+  if (pm === 'ping-pong' && n > 2) for (let q = n - 2; q > 0; q--) order.push(q);
   let i = 0;
   S.timer = setInterval(() => {
-    if (span) show(captureFrame(i++ % n, n, loop));
+    if (span) show(captureFrame(order[i++ % order.length], n, loop));
     else show(S.n >= S.frames ? 1 : S.n + 1);
   }, 1000 / (span ? capFps() : S.fps));
 };
@@ -389,16 +409,20 @@ async function save(){
   try {
     const j = await post('/api/clips', {set:S.set, url:S.url, fps:S.fps, clips:S.clips});
     $('saved').innerHTML = `<span class=ok>saved</span> ${j.path}`;
-  } catch(e){ err(e.message); }
+    return true;
+  } catch(e){ err(e.message); return false; }
 }
 
-$('add').onclick = () => {
+$('add').onclick = async () => {
   const name = $('cname').value.trim();
   if (!name) return err('name the clip');
   if (!S.in || !S.out) return err('mark an in and an out frame');
   if (S.out < S.in) return err('out frame is before in frame');
   err(''); S.clips.push({name, in:S.in, out:S.out, playback: $('pmode').value, fps: capFps()});
-  $('cname').value = ''; S.in = S.out = null; marks(); rows(); save();
+  // write_clips can refuse a clip the marks allow. Keep the list equal to the file:
+  // drop it again and leave the marks alone so the error can be acted on.
+  if (!await save()){ S.clips.pop(); rows(); return; }
+  $('cname').value = ''; S.in = S.out = null; marks(); rows();
 };
 
 addEventListener('keydown', e => {
@@ -436,7 +460,7 @@ def selftest():
                            {"name": "turn", "in": 31, "out": 60, "playback": "one-shot"},
                            {"name": "ragged", "in": 1, "out": 43}])
         assert out[0] == {"name": "step-touch", "in_frame": 1, "out_frame": 1, "frames": 1,
-                          "start": 0.0, "end": 0.033, "playback": "loop",
+                          "start": 0.0, "end": 0.033, "playback": "loop", "pingpong": False,
                           "capture_fps": 12, "capture_frames": 1, "speed_factor": 0.4,
                           "export": "exports/demo/step-touch"}, out[0]
         assert out[1]["playback"] == "one-shot", out[1]
@@ -452,7 +476,23 @@ def selftest():
                           [{"name": "slow", "in": 31, "out": 60, "fps": 8},
                            {"name": "fast", "in": 31, "out": 60, "fps": 24}])
         assert [c["capture_frames"] for c in two] == [8, 24], two
+        assert [c["capture_fps"] for c in two] == [8, 24], two
         assert two[0]["start"] == two[1]["start"] and two[0]["end"] == two[1]["end"], two
+        # ping-pong is render's flag, not a --playback value: it leaves as a loop that is
+        # walked out and back, so nothing hands extract a --playback it would reject
+        pp = write_clips("demo", "http://x", 30.0,
+                         [{"name": "back and forth", "in": 31, "out": 60, "playback": "ping-pong"}])[0]
+        assert pp["playback"] == "loop" and pp["pingpong"] is True, pp
+        assert pp["capture_frames"] == 12, pp
+        # render applies --pingpong only above 2 frames and is silent when it does not, so a
+        # clip too short to show it must not be written as though it would
+        try:
+            write_clips("demo", "http://x", 30.0,
+                        [{"name": "blink", "in": 1, "out": 1, "playback": "ping-pong"}])
+        except ValueError as e:
+            assert "ping-pong" in str(e), e
+        else:
+            raise AssertionError("ping-pong accepted on a 1-frame capture")
         for bad in (0, 61):
             try:
                 write_clips("demo", "http://x", 30.0, [{"name": "x", "in": 1, "out": 2, "fps": bad}])
@@ -468,9 +508,11 @@ def selftest():
         else:
             raise AssertionError("bad playback accepted")
         assert out[1]["start"] == 1.0 and out[1]["end"] == 2.0 and out[1]["frames"] == 30, out[1]
+        # the file holds the last write: fps is per clip, so no set-level key survives
         saved = json.load(open(os.path.join(d, "demo", "clips.json")))
         assert saved["source_fps"] == 30.0 and "capture_fps" not in saved, saved
-        assert [c["capture_fps"] for c in saved["clips"]] == [8, 24], saved
+        assert saved["clips"][0]["capture_fps"] == 12, saved
+        assert saved["clips"][0]["pingpong"] is True, saved
     # The custom track replaced the range input. Nothing here runs the page, but a
     # half-finished refactor leaves a dead $('scrub') that only throws in a browser.
     for part in ("id=track", "id=band", "id=head", "id=hin", "id=hout", "id=pmode", "id=capfps",
@@ -479,8 +521,8 @@ def selftest():
     # the select must offer exactly what write_clips accepts, or a choice the user
     # can make is a choice this file rejects
     bare = PAGE.count("<option value=") - PAGE.count('<option value="')  # the set list is quoted
-    assert bare == len(PLAYBACK), bare
-    for part in PLAYBACK:
+    assert bare == len(CHOICES), bare
+    for part in CHOICES:
         assert f"<option value={part}>" in PAGE, part
     assert "'scrub'" not in PAGE and "type=range" not in PAGE
     print("ok")

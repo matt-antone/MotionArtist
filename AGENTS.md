@@ -72,7 +72,7 @@ clip is captured at, and the list is written to `exports/<set>/clips.json`:
 ```json
 {"set": "shuffle-3", "url": "...", "source_fps": 29.97,
  "clips": [{"name": "side-step", "in_frame": 91, "out_frame": 150, "frames": 60,
-            "start": 3.003, "end": 5.005, "playback": "loop",
+            "start": 3.003, "end": 5.005, "playback": "loop", "pingpong": false,
             "capture_fps": 12, "capture_frames": 24, "speed_factor": 1.0,
             "export": "exports/shuffle-3/side-step"}]}
 ```
@@ -83,6 +83,14 @@ from `capture_frames`. Do not re-search the span and do not pick a frame count. 
 already `capture_fps x window` for the window the marks fixed, which is the one order that makes
 the capture play at the speed it was danced — see **Timing** in the skill for what picking a frame
 count first costs.
+
+`pingpong` is a separate flag because it is one: ping-pong is offered in the marker beside the
+playbacks, but it is `render --pingpong`, not a `--playback` value. A clip that chose it comes back
+as `"playback": "loop", "pingpong": true` — pass `--playback loop` to `extract` and `--pingpong` to
+`render`. Never pass the word "ping-pong" to `--playback`; `extract` would reject it. Note what the
+skill says about the flag: it walks the sheet's cells out and back and reaches neither
+`manifest.json` nor CAG, so if the delivered asset has to show the return leg, it must be traced as
+real frames.
 
 `speed_factor` is that arithmetic checked: `1.0` means the marks land on a whole frame at this fps.
 Anything else means they do not and the count was rounded, so the capture will play that much fast
