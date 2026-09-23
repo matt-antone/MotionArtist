@@ -24,6 +24,7 @@ WORK = os.path.join(ROOT, "work")
 EXPORTS = os.path.join(ROOT, "exports")
 FRAME_HEIGHT = 480  # display copies; extract re-reads the source video at full resolution
 PLAYBACK = ("loop", "one-shot", "final-hold")  # extract's own --playback choices, not a second vocabulary
+CAPTURE_FPS = 12  # CAG's editor default; the skill keeps fps fixed across a library
 
 
 def slug(s):
@@ -68,7 +69,7 @@ def load_set(name, url):
 
     count = len([f for f in os.listdir(frames_dir) if f.endswith(".jpg")])
     url_file = os.path.join(set_dir, "source-url.txt")
-    return {"set": name, "frames": count, "fps": probe_fps(src),
+    return {"set": name, "frames": count, "fps": probe_fps(src), "cap_fps": read_cap_fps(name),
             "url": open(url_file).read().strip() if os.path.exists(url_file) else (url or ""),
             "clips": read_clips(name)}
 
@@ -82,8 +83,20 @@ def read_clips(name):
     return json.load(open(p))["clips"] if os.path.exists(p) else []
 
 
-def write_clips(name, url, fps, clips):
-    """Each clip records frames and the seconds extract needs, plus where it will land."""
+def read_cap_fps(name):
+    p = clips_path(name)
+    return json.load(open(p)).get("capture_fps", CAPTURE_FPS) if os.path.exists(p) else CAPTURE_FPS
+
+
+def write_clips(name, url, fps, clips, cap_fps=CAPTURE_FPS):
+    """Each clip records frames and the seconds extract needs, plus where it will land.
+
+    The capture's frame count is derived, never typed: `frames = fps * window`, and the
+    window is the span the marks already fixed. Picking a frame count first and hunting a
+    window to fit it is the mistake the skill calls invisible in the output.
+    """
+    if not 1 <= cap_fps <= 60:
+        raise ValueError(f"capture fps {cap_fps} is outside 1..60")
     out = []
     for c in clips:
         a, b = int(c["in"]), int(c["out"])
@@ -91,12 +104,19 @@ def write_clips(name, url, fps, clips):
         pb = c.get("playback") or "loop"
         if pb not in PLAYBACK:  # this file is a command line; a bad value would reach extract as one
             raise ValueError(f"unknown playback {pb!r}, expected one of {', '.join(PLAYBACK)}")
+        window = (b - a + 1) / fps                      # seconds of source the marks span
+        cap_frames = max(1, round(window * cap_fps))
         out.append({"name": cn, "in_frame": a, "out_frame": b, "frames": b - a + 1,
                     "start": round((a - 1) / fps, 3), "end": round(b / fps, 3),
-                    "playback": pb, "export": f"exports/{name}/{cn}"})
+                    "playback": pb, "capture_frames": cap_frames,
+                    # span / (frames/fps). extract recomputes it; 1.0 here means the marks
+                    # already land on a whole frame at this fps, so no rounding is hiding.
+                    "speed_factor": round(window / (cap_frames / cap_fps), 3),
+                    "export": f"exports/{name}/{cn}"})
     os.makedirs(os.path.dirname(clips_path(name)), exist_ok=True)
     with open(clips_path(name), "w") as fh:
-        json.dump({"set": name, "url": url, "source_fps": round(fps, 4), "clips": out}, fh, indent=2)
+        json.dump({"set": name, "url": url, "source_fps": round(fps, 4),
+                   "capture_fps": cap_fps, "clips": out}, fh, indent=2)
     return out
 
 
@@ -139,7 +159,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/load":
                 return self.send(200, json.dumps(load_set(name, body.get("url", "").strip())))
             if self.path == "/api/clips":
-                saved = write_clips(name, body.get("url", ""), float(body["fps"]), body.get("clips", []))
+                saved = write_clips(name, body.get("url", ""), float(body["fps"]),
+                                    body.get("clips", []), int(body.get("cap_fps", CAPTURE_FPS)))
                 return self.send(200, json.dumps({"clips": saved, "path": clips_path(name)}))
         except subprocess.CalledProcessError as e:
             return self.send(500, json.dumps({"error": (e.stderr or str(e))[-400:]}))
@@ -171,6 +192,7 @@ PAGE = r"""<!doctype html><meta charset=utf-8><title>clipper</title>
          background:#7dd3a0;border:1px solid #15161a;cursor:ew-resize;display:none}
  .handle:hover{background:#9ae4bb}
  .marks{color:#7f8694}.marks b{color:#7dd3a0}
+ .warn{color:#e0b341}
  table{width:100%;border-collapse:collapse;margin-top:8px;font-variant-numeric:tabular-nums}
  th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #26272e}
  th{color:#8b8b94;font-weight:500;font-size:12px;text-transform:uppercase;letter-spacing:.06em}
@@ -186,6 +208,8 @@ PAGE = r"""<!doctype html><meta charset=utf-8><title>clipper</title>
 <div class=row>
   <input id=set placeholder="animation set name" size=18>
   <input id=url placeholder="YouTube URL (first time only)" size=38>
+  <label title="capture fps, fixed for the set. The frame count is derived: frames = fps x window">
+    fps <input id=capfps type=number min=1 max=60 value=12 size=3 style=width:4.5em></label>
   <button class=go id=load>Load</button>
   <span id=status></span>
 </div>
@@ -203,6 +227,7 @@ PAGE = r"""<!doctype html><meta charset=utf-8><title>clipper</title>
     <span>frame <b id=fnum>1</b> / <span id=ftot>0</span></span>
     <span><b id=fsec>0.000</b>s</span>
     <span class=marks>in <b id=min>–</b> · out <b id=mout>–</b> · <b id=mlen>–</b> frames</span>
+    <span id=cap></span>
   </div>
   <div class=row>
     <button id=bin>Mark in (I)</button>
@@ -220,7 +245,7 @@ PAGE = r"""<!doctype html><meta charset=utf-8><title>clipper</title>
     <kbd>O</kbd> out · <kbd>space</kbd> play · <kbd>enter</kbd> add clip ·
     drag the green marks on the track to move in and out</div>
 
-  <table><thead><tr><th>clip</th><th>in</th><th>out</th><th>frames</th><th>seconds</th><th>playback</th><th></th></tr></thead>
+  <table><thead><tr><th>clip</th><th>in</th><th>out</th><th>frames</th><th>seconds</th><th>capture</th><th>playback</th><th></th></tr></thead>
   <tbody id=list></tbody></table>
   <div class=hint id=saved></div>
 </div>
@@ -279,16 +304,37 @@ $('track').onpointerdown = e => {
   move(e);
   e.preventDefault();
 };
+// frames = fps x window, and the window is whatever the marks already span. The count is
+// derived here and in write_clips the same way; nothing types a frame count.
+const capFps = () => Math.min(Math.max(1, +$('capfps').value || 1), 60);
+const windowOf = (a, b) => (b - a + 1) / S.fps;
+const capFrames = (a, b) => Math.max(1, Math.round(windowOf(a, b) * capFps()));
+
 function marks(){
   setText('min', S.in ?? '–'); setText('mout', S.out ?? '–');
   setText('mlen', (S.in && S.out && S.out>=S.in) ? (S.out-S.in+1) : '–');
+  const span = S.in && S.out && S.out >= S.in;
+  const el = $('cap');
+  if (!span){ el.textContent = ''; el.className = ''; }
+  else {
+    const w = windowOf(S.in, S.out), n = capFrames(S.in, S.out), factor = w / (n / capFps());
+    // off 1.000 means the marks do not land on a whole frame at this fps, so the bundle
+    // would play fast or slow. The marks are draggable: nudge one until it reads exact.
+    const off = Math.abs(factor - 1) > 0.0005;
+    el.textContent = `→ ${n} frames @ ${capFps()} fps · ${(n/capFps()).toFixed(3)}s` +
+      (off ? ` · plays ${factor > 1 ? 'fast' : 'slow'} ${factor.toFixed(3)}x` : ' · exact');
+    el.className = off ? 'warn' : 'ok';
+  }
   place();
 }
+
+$('capfps').oninput = () => { marks(); rows(); };
 function rows(){
   $('list').innerHTML = S.clips.map((c,i)=>`<tr>
     <td>${c.name}</td><td class=n>${c.in}</td><td class=n>${c.out}</td>
     <td class=n>${c.out-c.in+1}</td>
     <td class=n>${((c.in-1)/S.fps).toFixed(2)}–${(c.out/S.fps).toFixed(2)}</td>
+    <td class=n>${capFrames(c.in, c.out)}f</td>
     <td class=n>${c.playback}</td>
     <td><button data-go=${i}>go</button> <button data-del=${i}>×</button></td></tr>`).join('');
 }
@@ -313,7 +359,7 @@ $('load').onclick = async () => {
     S = {...S, set:j.set, url:j.url, fps:j.fps, frames:j.frames, in:null, out:null,
          clips: j.clips.map(c=>({name:c.name, in:c.in_frame, out:c.out_frame,
                                 playback: c.playback || 'loop'}))};
-    $('set').value = j.set; $('url').value = j.url;
+    $('set').value = j.set; $('url').value = j.url; $('capfps').value = j.cap_fps;
     setText('ftot', j.frames);
     setText('status', `${j.frames} frames @ ${j.fps.toFixed(3)} fps`);
     $('editor').hidden = false; marks(); rows(); show(1);
@@ -333,7 +379,8 @@ $('play').onclick = () => {
 
 async function save(){
   try {
-    const j = await post('/api/clips', {set:S.set, url:S.url, fps:S.fps, clips:S.clips});
+    const j = await post('/api/clips', {set:S.set, url:S.url, fps:S.fps,
+                                        cap_fps: capFps(), clips:S.clips});
     $('saved').innerHTML = `<span class=ok>saved</span> ${j.path}`;
   } catch(e){ err(e.message); }
 }
@@ -379,11 +426,29 @@ def selftest():
         EXPORTS = d
         out = write_clips("demo", "http://x", 30.0,
                           [{"name": "Step Touch", "in": 1, "out": 1},
-                           {"name": "turn", "in": 31, "out": 60, "playback": "one-shot"}])
+                           {"name": "turn", "in": 31, "out": 60, "playback": "one-shot"},
+                           {"name": "ragged", "in": 1, "out": 43}])
         assert out[0] == {"name": "step-touch", "in_frame": 1, "out_frame": 1, "frames": 1,
                           "start": 0.0, "end": 0.033, "playback": "loop",
+                          "capture_frames": 1, "speed_factor": 0.4,
                           "export": "exports/demo/step-touch"}, out[0]
         assert out[1]["playback"] == "one-shot", out[1]
+        # 30 source frames at 30 fps is a 1.000 s window; at 12 fps that is 12 frames and
+        # 12/12 == 1.000 s, so the capture plays at the speed it was danced.
+        assert out[1]["capture_frames"] == 12 and out[1]["speed_factor"] == 1.0, out[1]
+        # 43 source frames is 1.4333 s, which is not a whole frame at 12 fps. The count is
+        # rounded and speed_factor says so rather than the distortion going unrecorded.
+        assert out[2]["capture_frames"] == 17 and out[2]["speed_factor"] != 1.0, out[2]
+        # the frame count follows fps, because the window is what was fixed
+        assert write_clips("demo", "http://x", 30.0,
+                           [{"name": "turn", "in": 31, "out": 60}], 24)[0]["capture_frames"] == 24
+        for bad in (0, 61):
+            try:
+                write_clips("demo", "http://x", 30.0, [{"name": "x", "in": 1, "out": 2}], bad)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"capture fps {bad} accepted")
         # a typo must not reach extract as --playback
         try:
             write_clips("demo", "http://x", 30.0, [{"name": "x", "in": 1, "out": 2, "playback": "looop"}])
@@ -392,10 +457,11 @@ def selftest():
         else:
             raise AssertionError("bad playback accepted")
         assert out[1]["start"] == 1.0 and out[1]["end"] == 2.0 and out[1]["frames"] == 30, out[1]
-        assert json.load(open(os.path.join(d, "demo", "clips.json")))["source_fps"] == 30.0
+        saved = json.load(open(os.path.join(d, "demo", "clips.json")))
+        assert saved["source_fps"] == 30.0 and saved["capture_fps"] == 24, saved
     # The custom track replaced the range input. Nothing here runs the page, but a
     # half-finished refactor leaves a dead $('scrub') that only throws in a browser.
-    for part in ("id=track", "id=band", "id=head", "id=hin", "id=hout", "id=pmode",
+    for part in ("id=track", "id=band", "id=head", "id=hin", "id=hout", "id=pmode", "id=capfps",
                  "onpointerdown", "getBoundingClientRect"):
         assert part in PAGE, part
     # the select must offer exactly what write_clips accepts, or a choice the user

@@ -66,21 +66,31 @@ It opens `http://localhost:8765`. The user names an animation set, pastes a vide
 downloads it into `work/<set>/` (reusing an existing download) and splits every source frame into
 `work/<set>/frames/`. They step through frames and mark in and out. Both marks sit on the frame track under the
 viewer and can be dragged to adjust, with the frame following the mark as it moves, so a boundary
-is settled by eye rather than re-marked. They name each clip, pick how it plays back, and the list
-is written to `exports/<set>/clips.json`:
+is settled by eye rather than re-marked. They name each clip, pick how it plays back and the fps the
+set is captured at, and the list is written to `exports/<set>/clips.json`:
 
 ```json
-{"set": "shuffle-3", "url": "...", "source_fps": 29.97,
+{"set": "shuffle-3", "url": "...", "source_fps": 29.97, "capture_fps": 12,
  "clips": [{"name": "side-step", "in_frame": 91, "out_frame": 150, "frames": 60,
             "start": 3.003, "end": 5.005, "playback": "loop",
+            "capture_frames": 24, "speed_factor": 1.0,
             "export": "exports/shuffle-3/side-step"}]}
 ```
 
-Read that file and run the pipeline per clip, taking `--start`/`--end` from `start`/`end` and
-`--playback` from `playback` — those seconds are the frames the user marked and that word is the
-playback they chose while watching them, so do not re-search around either unless asked. `frames`
-is how many source frames the clip spans, not the capture's frame count: choose `--fps`/`--frames`
-as usual. The marker never runs the pipeline and never writes a bundle.
+Run the pipeline per clip and take every one of those numbers as given: `--start`/`--end` from
+`start`/`end`, `--playback` from `playback`, `--fps` from `capture_fps`, `--frames` from
+`capture_frames`. Do not re-search the span and do not pick a frame count. `capture_frames` is
+already `capture_fps x window` for the window the marks fixed, which is the one order that makes
+the capture play at the speed it was danced — see **Timing** in the skill for what picking a frame
+count first costs.
+
+`speed_factor` is that arithmetic checked: `1.0` means the marks land on a whole frame at this fps.
+Anything else means they do not and the count was rounded, so the capture will play that much fast
+or slow. The marker shows the same number live and its marks are draggable, so a clip that comes
+back off 1.0 is worth handing back to be nudged rather than captured as it stands.
+
+`frames` is how many **source** frames the clip spans, not the capture's count. The marker never
+runs the pipeline and never writes a bundle.
 
 ## The pipeline
 

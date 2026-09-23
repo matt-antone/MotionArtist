@@ -85,8 +85,14 @@ python3 motion-artist/scripts/clipper.py
 ```
 
 That opens a browser at `localhost:8765`, splits the video into frames, and lets you drag an in and
-an out mark per move and choose its playback. It writes `exports/<set>/clips.json` — frame numbers,
-the seconds `--start`/`--end` want, and the `--playback` you chose — and runs nothing else.
+an out mark per move, choose its playback, and set the capture fps for the set. It writes
+`exports/<set>/clips.json` — frame numbers, the seconds `--start`/`--end` want, the `--playback` you
+chose, and `--fps`/`--frames` — and runs nothing else.
+
+The frame count is derived, never typed: `frames = fps x window`, where the window is the span your
+marks already fixed. That is the order that makes the capture play at the speed it was danced, and
+each clip carries the resulting `speed_factor` so a window that does not land on a whole frame says
+so while you can still drag a mark to fix it.
 
 Or by hand:
 

@@ -45,8 +45,10 @@ The procedure that worked:
    re-downloads the video once per move.
    When the user would rather point at frames than describe them, `clipper.py` is the faster path
    to the same list: they mark in and out per move in a browser and it writes
-   `exports/<set>/clips.json`, whose `start`, `end` and `playback` are taken as given. Steps 2 and 3
-   are how you find the boundaries when nobody has marked them for you.
+   `exports/<set>/clips.json`, whose `start`, `end`, `playback`, `capture_fps` and `capture_frames`
+   are all taken as given — it derives the frame count from the marked window the right way round,
+   so do not recompute it. Steps 2 and 3 are how you find the boundaries when nobody has marked
+   them for you.
 2. **Contact-sheet it** (one frame a second, tiled, labelled with the second). Many dance videos
    caption their own moves — "1. Skate", "2. Lock it Down" — and when they do, the captions *are*
    the move boundaries and no scoring is needed to find them.
@@ -135,6 +137,11 @@ come back near 1.0 — it was restating the constraint, not measuring the dance.
 every arc and every hand-off as evidence the timing was right. A check computed from a quantity you
 constrained is not a check. Now that the window sets the frame count, the same number is a real
 assertion: **any bundle whose `speed_factor` is not 1.00 is a bug.**
+
+`clipper.py` is the one tool here that already works in this order: the marks fix the window before
+any count exists, so it derives `capture_frames = capture_fps x window` and writes the resulting
+`speed_factor` per clip. A clip that comes back off `1.0` has marks that do not land on a whole
+frame at that fps — nudge a mark rather than accepting the rounding.
 
 Keep `fps` fixed across a library (12 is CAG's editor default) and let the frame count vary per
 move. Frame count drives cost — CAG renders 8 figures per call — so a 4 s move is 48 frames and 6
