@@ -20,8 +20,8 @@ motion-artist/templates/sheet.html     the motion sheet: markup, CSS and player,
 .claude/skills/motion-artist           symlink to motion-artist/, so the skill loads in this repo —
                                        git-ignored, so a fresh clone has to create it (see Setup)
 work/                                  captures and downloaded video — git-ignored, never commit
-exports/<set>/                         finished bundles, one zip per capture — git-ignored, never
-                                       committed; the set's clips.json beside them is committed
+exports/<set>/                         finished bundles, one zip per capture, and the set's
+                                       clips.json — all git-ignored, never commit any of it
 README.md                              the human-facing version of SKILL.md
 ```
 
@@ -183,7 +183,8 @@ Match what is there rather than introducing a second style.
 - Commit subjects are imperative and describe the behaviour: "Pin the planted ankle to one floor
   line when stabilized", not "fix". Body explains why, wrapped at ~76 columns. Small, atomic commits.
 - PRs target `main` and are merged with a merge commit.
-- Never commit anything under `work/`, any `.mp4`, or a capture bundle.
+- Never commit anything under `work/` or `exports/`, and no `.mp4`. Both trees are git-ignored;
+  a bundle and the `clips.json` beside it are working-copy artefacts, never repo content.
 
 ## graft skill
 
