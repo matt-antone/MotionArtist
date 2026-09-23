@@ -14,20 +14,61 @@ Demo sheets:
 
 ```
 motion-artist/
-  SKILL.md                 # the skill (what Claude does, step by step)
-  scripts/motion_artist.py # extract (video → motion.json + thumbs), render (→ HTML), pose-grid (→ pose grid), export (→ bundle)
-AGENTS.md                  # how to work in this repo: pipeline, conventions, verification
+  SKILL.md                    # the skill (what Claude does, step by step)
+  scripts/motion_artist.py    # extract (video → motion.json + thumbs), render (→ HTML), pose-grid (→ pose grid), export (→ bundle)
+  scripts/clipper.py          # browser tool: step a video frame by frame and mark clip in/out points
+  scripts/portrait_crop.py    # crop a landscape source to a 9:16 window around the performer, before extract
+  templates/sheet.html        # the motion sheet's markup, CSS and player; render() fills its placeholders
+exports/<set>/                # finished bundles, one zip per capture — committed
+AGENTS.md                     # how to work in this repo: pipeline, conventions, verification
 ```
 
 ## Install
 
 ```bash
-pip install "mediapipe<1" opencv-python   # plus yt-dlp on PATH
+pip install "mediapipe<1" opencv-python   # plus yt-dlp and ffmpeg/ffprobe on PATH
 ln -s "$PWD/motion-artist" ~/.claude/skills/motion-artist   # or copy into a repo's .claude/skills or .agents/skills
 ```
 
 `mediapipe<1` is deliberate: the 1.x macOS wheel aborts in its Metal helper. The pose model is
 downloaded once to `~/.cache/motion-artist/`.
+
+## Marking clips
+
+A source video holds several moves, and choosing where each one starts and ends by scrubbing a
+YouTube player is guesswork — a frame either side is a visibly different pose. `clipper` is a
+local web tool for settling that:
+
+```bash
+python3 motion-artist/scripts/clipper.py            # --port 8765 by default
+```
+
+Open `http://localhost:8765`, name an animation set, paste a video URL. It downloads the video
+into `work/<set>/`, splits every source frame into `work/<set>/frames/`, and serves a
+frame-by-frame viewer. Step to the frame you want, mark in and out, drag either mark along the
+frame track to adjust it, name the clip, add it to the list.
+
+The list is saved to `exports/<set>/clips.json`, where each clip carries the exact frame numbers
+and the seconds they correspond to. That file is the handoff: `extract --start S --end S` takes
+the seconds straight from it. The tool runs no part of the pipeline — it only settles which frames
+the pipeline is pointed at.
+
+## Landscape footage
+
+A thumb is the whole frame resized to 200px wide, so a 16:9 source leaves the performer about a
+third the height a portrait source gives. That is fixable only in the pixels, before tracing:
+
+```bash
+python3 motion-artist/scripts/portrait_crop.py work/<set>/video.mp4 --start 12 --end 20
+```
+
+It traces the performer across `--start..--end` to find where they sit in frame, then crops the
+**whole** video to a 9:16 window around them (`--aspect`, `--margin` to tune). Cropping the whole
+video is the point: every timestamp keeps its original meaning, so marks in `clips.json` and
+`extract --start/--end` stay valid and the manifest still records the true second. Tracing then
+runs on the cropped frames, so `pts`, the thumbs and the figure share one coordinate space and
+nothing downstream has to be told about the crop. A different move from the same video may sit
+elsewhere in frame and need its own crop.
 
 ## Use
 
@@ -51,6 +92,9 @@ python3 motion-artist/scripts/motion_artist.py export work/dance/motion.json
 | --- | --- |
 | `--fps`, `--frames` | rate and total frame count of the target animation (required) |
 | `--start`, `--end` | trim the span to inspect, seconds or `m:ss`. Without `--end`, the span is `frames / fps` seconds of real time. With both, the span is time-stretched onto the frame count. |
+| `--margin` | slack in seconds around `--start`/`--end`: probe both ends for the move's own cut (loop: matching poses; one-shot: the stillest ending) and stretch the winner onto the frame count. Default `0.5`; `0` uses the span exactly as given |
+| `--url` | origin URL, when `source` is a local copy of it — the manifest is the only place a bundle's provenance lives |
+| `--performer` | `female` / `male`, the filmed body carried into the manifest; omit when it should not be stated. Not the character the render must draw |
 | `--search` | find the best loop: slide a `frames / fps`-second window over `--start..--end` (whole video if `--end` is omitted), score each start by loop-closure pose distance against motion energy, pick the tightest seam among the livelier half |
 | `--window` | source seconds the search looks for, when that differs from `frames / fps` (a scene cut leaves a short usable span, or a fast move should play slower); the winner is stretched onto the frame count |
 | `--stabilize` | centre the hips horizontally in every frame; use for a moving camera or a travelling performer (airborne is then never called, since there is no fixed floor). Body scale is always normalised per frame from pixels-per-metre, so camera zoom never changes the traced pose's size |
@@ -87,10 +131,13 @@ frames, against its own batch size. The grid here is for handing a generator the
 
 `export` is the last step: it zips the motion sheet, the HTML, `thumbs/` and any pose grid images with a
 generated
-`manifest.json` (fps, frame count, playback, view, seam, source, and a SHA-256 per file), and
+`manifest.json` (fps, frame count, playback, view and the per-frame `view_frames` spread that
+average hides, seam and the `seam_ratio` behind the verdict, `stabilized`, `exaggerate`,
+`performer`, source, the pose grid's geometry, and a SHA-256 per file), and
 prints the bundle path and the zip's SHA-256 — the pair a KaraokeParty-Graphics motion-director
 job input references. It warns if `arc` is empty or any frame has no pose. Two cuts of one
 move get two names, never one overwritten file, so a copy into a consuming repo removes the bundle
 it supersedes in the same step.
 
-Outputs live under `work/` (git-ignored, as are downloaded videos).
+Captures and downloaded video live under `work/`, git-ignored. Finished bundles land in
+`exports/<set>/` and are committed, beside the `clips.json` clipper writes for that set.
