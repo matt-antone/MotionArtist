@@ -4,7 +4,7 @@
   motion_artist.py extract URL|FILE --fps N --frames N [--start S] [--end S] [--name SLUG]
                    [--playback loop|one-shot|final-hold] [--pingpong] [--out DIR]
   motion_artist.py render DIR/motion.json [--out FILE.html] [--pingpong] [--template FILE]
-  motion_artist.py export DIR/motion.json [--out FILE.zip] [--sheet FILE.html]
+  motion_artist.py export DIR/motion.json [--out DIR] [--sheet FILE.html]
   motion_artist.py selftest
 
 `extract` writes DIR/motion.json (+ DIR/thumbs/*.jpg) and prints a compact frame table.
@@ -12,7 +12,7 @@
 `export` bundles the json, sheet and thumbs with a SHA-256 manifest for hand-off.
 Between extract and render, an agent may fill `arc`, `title` and per-frame `note` in motion.json.
 """
-import argparse, base64, glob, hashlib, html, json, math, os, re, subprocess, sys, urllib.request, zipfile
+import argparse, base64, glob, hashlib, html, json, math, os, re, shutil, subprocess, sys, urllib.request
 
 MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
              "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task")
@@ -320,13 +320,10 @@ def extract(a):
             else:
                 print(f"snap: no fully-tracked cut within {a.margin:.2f}s of either end; span used as given")
     span = end - start
-    # loop: samples exclusive of `end` so the last->first cut is one natural step
-    step = span / a.frames if a.playback == "loop" else span / max(a.frames - 1, 1)
     speed = span / (a.frames / a.fps)  # 1.0 == real time; 2.0 == source played at 2x
 
     frames, missing = [], []
-    for i in range(a.frames):
-        t = start + i * step
+    for i, t in enumerate(sample_times(start, span, a.frames)):
         cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
         ok, bgr = cap.read()
         if not ok: missing.append(i); continue
@@ -420,7 +417,11 @@ def extract(a):
                     speed_factor=round(speed, 2), duration=round(dur, 2)),
         exaggerate=a.exaggerate, stabilized=a.stabilize, performer=a.performer,
         fps=a.fps, frame_count=a.frames, playback=a.playback, pingpong=a.pingpong, view=view,
-        seam=("clean" if seam < 1.5 else "needs blend") if loop else "n/a",
+        # `seam` is normalised by the median step, so 1.0 is one natural step. A loop now
+        # contains `end`, and the snap search picks an `end` whose pose matches `start`, so the
+        # last frame can repeat the first: well under a step is a stall -- a frame held at the
+        # loop point -- and reads as wrong as a jump does.
+        seam=(("stalls" if seam < 0.5 else "clean" if seam < 1.5 else "needs blend") if loop else "n/a"),
         seam_ratio=round(seam, 2) if loop else None,   # the number behind the verdict, for CAG's log
         missing_frames=missing, arc="",
         frames=[dict(i=f["i"], t=f["t"], role=f["role"], pace=f["pace"], energy=f["energy"],
@@ -477,6 +478,17 @@ def carry_over_writing(jp, doc):
 
 
 def pose_dist(a, b): return sum(dist(a[k], b[k]) for k in CORE) / len(CORE)
+
+
+def sample_times(start, span, n):
+    """The instants a capture is cut at: `n` samples across the span, inclusive of both ends.
+
+    Every playback samples the same way, so the first frame is `start` and the last is `end` --
+    both boundaries a mark fixed are frames the artist is handed. A loop pays for that: its last
+    frame no longer steps to the first, it can repeat it, which is what `seam` reports as a stall.
+    """
+    step = span / max(n - 1, 1)
+    return [start + i * step for i in range(n)]
 
 
 def sample_rate(cap, hz=None):
@@ -600,7 +612,9 @@ def render(a):
     src = d["source"]
     arc = "".join(f"<p>{html.escape(p)}</p>" for p in d["arc"].split("\n\n") if p.strip()) or \
           "<p class=muted>No performance arc written yet — fill <code>arc</code> in motion.json and re-render.</p>"
-    n = len(d["frames"]); lap = n / d["fps"]
+    # A ping-pong sheet walks 2n-2 cells, not n: the return leg replays every frame but the two ends.
+    # Lap is what the player takes to come back around, so it counts cells walked, not frames held.
+    n = len(d["frames"]); cells = 2 * n - 2 if d.get("pingpong") and n > 2 else n; lap = cells / d["fps"]
     keys = [f["i"] for f in d["frames"] if f["role"] == "key"]
     pilots = [f["i"] for f in d["frames"] if f["role"] == "pilot"]
 
@@ -681,6 +695,9 @@ def selftest():
     still = [cyc(min(t, 1.5)) for t in ts]
     assert pick_span(ts, still, 0.0, 1.75, 0.5, loop=False)["end"] >= 1.625
     assert pick_span(ts, [None] * len(ts), 0.0, 1.75, 0.5, loop=True) is None
+    # both boundaries a mark fixed are frames the capture contains, whatever the playback
+    assert sample_times(1.0, 2.0, 5) == [1.0, 1.5, 2.0, 2.5, 3.0], sample_times(1.0, 2.0, 5)
+    assert sample_times(1.0, 2.0, 1) == [1.0]                 # one frame cannot span anything
     # pelvis wound against the shoulders: the one thing no knee or elbow angle can carry
     P, W = pose(0.60, 0.95)
     W["shL"][2] = 0.0                                   # shoulders square to camera
@@ -910,7 +927,7 @@ def pose_grid(a):
 
 
 def export(a):
-    """Zip motion.json + the sheet + thumbs with a SHA-256 manifest, ready for KP-Graphics."""
+    """Write motion.json + the sheet + thumbs and a SHA-256 manifest into one uncompressed bundle."""
     jp = a.json
     d = json.load(open(jp))
     src = os.path.dirname(os.path.abspath(jp))
@@ -943,13 +960,24 @@ def export(a):
     # off from, one directory per source video. The file name still carries frame count and fps —
     # a re-cut at a different rate is a different animation from the same move.
     exports = os.path.join(os.path.dirname(os.path.dirname(src)), "exports", set_name(d))
-    out = a.out or os.path.join(exports, f"{bundle}-{d['frame_count']}f-{d['fps']}fps-motion-source.zip")
-    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-        for rel, p in files: z.write(p, f"{bundle}/{rel}")
-        z.writestr(f"{bundle}/manifest.json", json.dumps(man, indent=1))
+    out = a.out or os.path.join(exports, f"{bundle}-{d['frame_count']}f-{d['fps']}fps-motion-source")
+    # A plain directory, not a zip: the consumer reads thumbs/ frame by frame, so compressing them
+    # only to have them unpacked again bought nothing. The layout is what unzipping used to give,
+    # minus the redundant <bundle>/ level the archive needed to avoid spilling on extract.
+    # Re-export replaces the bundle in place, so clear the old one first — a shorter re-cut would
+    # otherwise leave stale thumbs behind, and a thumb count past frame_count silently costs the
+    # consumer the whole pose reference.
+    if os.path.isdir(out): shutil.rmtree(out)
+    for rel, p in files:
+        dst = os.path.join(out, rel)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(p, dst)
+    manifest_p = os.path.join(out, "manifest.json")
+    json.dump(man, open(manifest_p, "w"), indent=1)
     ratio = man["seam_ratio"]
-    print(f"{out}\nsha256 {sha256(out)} | {len(files) + 1} files | {d['frame_count']}f @ "
+    # A directory has no digest of its own. The manifest carries a SHA-256 per file, so its own
+    # digest covers every one of them transitively — that is the pair a job input references now.
+    print(f"{out}\nmanifest sha256 {sha256(manifest_p)} | {len(files) + 1} files | {d['frame_count']}f @ "
           f"{d['fps']}fps | {d['playback']} | view {d['view']} | seam {man['seam']}"
           f"{f' ({ratio:.2f}x median step)' if ratio is not None else ''}")
     if not man["arc_written"]:

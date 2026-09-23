@@ -272,6 +272,7 @@ PAGE = r"""<!doctype html><meta charset=utf-8><title>clipper</title>
     <button id=bin>Mark in (I)</button>
     <button id=bout>Mark out (O)</button>
     <button id=play>Play (space)</button>
+    <button id=pcap title="play the capture: the frames extract will keep, at the capture's own fps">Capture (C)</button>
     <input id=cname placeholder="clip name" size=20>
     <label title="capture fps. The frame count is derived from it: frames = fps x window">
       fps <input id=capfps type=number min=1 max=60 value=12 style=width:4.5em></label>
@@ -286,7 +287,7 @@ character generator does not read it yet, so the straight seam is still what pla
     <button class=go id=add>Add clip</button>
   </div>
   <div class=hint><kbd>←</kbd><kbd>→</kbd> step · <kbd>shift</kbd>+arrows ×10 · <kbd>I</kbd> in ·
-    <kbd>O</kbd> out · <kbd>space</kbd> play · <kbd>enter</kbd> add clip ·
+    <kbd>O</kbd> out · <kbd>space</kbd> play footage · <kbd>C</kbd> play capture · <kbd>enter</kbd> add clip ·
     drag the green marks on the track to move in and out</div>
 
   <table><thead><tr><th>clip</th><th>in</th><th>out</th><th>frames</th><th>seconds</th><th>capture</th><th>playback</th><th></th></tr></thead>
@@ -437,20 +438,44 @@ $('load').onclick = async () => {
 
 $('bin').onclick = () => { S.in = S.n; if (S.out && S.out < S.in) S.out = null; marks(); };
 $('bout').onclick = () => { S.out = S.n; if (S.in && S.in > S.out) S.in = null; marks(); };
-$('play').onclick = () => {
-  if (S.timer){ clearInterval(S.timer); S.timer = null; setText('play','Play (space)'); return; }
-  setText('play','Pause (space)');
-  // Play the footage, at the rate it was filmed: every source frame between the marks.
-  // Judging a move means watching the motion, not the frames a capture would keep -- the
-  // derived count and its speed_factor are already on screen for that.
-  // Ping-pong is an order, not a different set of frames, so it walks these same ones out
-  // and back, the way sheet.html walks the rendered cells.
-  const first = S.in || 1, last = S.out || S.frames, order = [];
-  for (let k = first; k <= last; k++) order.push(k);
+// Ping-pong is an order, not a different set of frames: the middle walks back, the way
+// sheet.html walks the rendered cells. Both players share it, so both show the same seam.
+function outAndBack(order){
   const n = order.length;
   if ($('pmode').value === 'ping-pong' && n > 2) for (let q = n - 2; q > 0; q--) order.push(order[q]);
+  return order;
+}
+function stopPlay(){
+  clearInterval(S.timer); S.timer = null;
+  setText('play','Play (space)'); setText('pcap','Capture (C)');
+}
+// One timer, two orders: whichever button started it, the other is idle and the same stop
+// clears both labels.
+function run(order, fps, btn, label){
+  if (S.timer) return stopPlay();
+  setText(btn, label);
   let i = Math.max(0, order.indexOf(S.n));
-  S.timer = setInterval(() => { show(order[i]); i = (i + 1) % order.length; }, 1000 / S.fps);
+  S.timer = setInterval(() => { show(order[i]); i = (i + 1) % order.length; }, 1000 / fps);
+}
+
+// The footage, at the rate it was filmed: every source frame between the marks. Judging
+// whether a move is the move means watching the motion.
+$('play').onclick = () => {
+  const order = [];
+  for (let k = S.in || 1; k <= (S.out || S.frames); k++) order.push(k);
+  run(outAndBack(order), S.fps, 'play', 'Pause (space)');
+};
+
+// The capture, at the rate it will play: the n frames extract will sample across the marked
+// window, inclusive of both marks, the way sample_times cuts them. Both boundaries you set
+// are frames you get, so the preview and the bundle hold the same first and last pose.
+$('pcap').onclick = () => {
+  if (S.timer) return stopPlay();
+  if (!S.in || !S.out || S.out < S.in) return err('mark an in and an out frame');
+  err('');
+  const n = capFrames(S.in, S.out, capFps()), step = (S.out - S.in) / Math.max(n - 1, 1);
+  const order = [...Array(n).keys()].map(k => Math.min(S.out, S.in + Math.round(k * step)));
+  run(outAndBack(order), capFps(), 'pcap', 'Pause (C)');
 };
 
 async function save(){
@@ -497,6 +522,7 @@ addEventListener('keydown', e => {
   if (e.key === 'ArrowLeft'){ show(S.n - step); e.preventDefault(); }
   else if (e.key === 'ArrowRight'){ show(S.n + step); e.preventDefault(); }
   else if (e.key === ' '){ $('play').click(); e.preventDefault(); }
+  else if (!typing && (e.key === 'c' || e.key === 'C')) $('pcap').click();
   else if (e.key === 'Enter'){ $('add').click(); e.preventDefault(); }
   else if (!typing && (e.key === 'i' || e.key === 'I')) $('bin').click();
   else if (!typing && (e.key === 'o' || e.key === 'O')) $('bout').click();
@@ -615,7 +641,7 @@ def selftest():
         assert saved["clips"][0]["pingpong"] is True, saved
     # The custom track replaced the range input. Nothing here runs the page, but a
     # half-finished refactor leaves a dead $('scrub') that only throws in a browser.
-    for part in ("id=track", "id=band", "id=head", "id=hin", "id=hout", "id=pmode", "id=capfps",
+    for part in ("id=track", "id=band", "id=head", "id=hin", "id=hout", "id=pmode", "id=capfps", "id=pcap",
                  "onpointerdown", "getBoundingClientRect"):
         assert part in PAGE, part
     # the select must offer exactly what write_clips accepts, or a choice the user

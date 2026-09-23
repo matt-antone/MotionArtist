@@ -165,7 +165,7 @@ document.getElementById("prevBtn").addEventListener("click",function(){stop();go
 document.getElementById("nextBtn").addEventListener("click",function(){stop();go(idx+1)});
 document.querySelectorAll(".rate button").forEach(function(b){b.addEventListener("click",function(){fps=Number(b.dataset.fps);
 document.querySelectorAll(".rate button").forEach(function(o){o.setAttribute("aria-pressed",o===b?"true":"false")});
-document.getElementById("specRate").textContent=fps+" fps";document.getElementById("specLap").textContent=(F.length/fps).toFixed(2)+" s";if(timer){clearInterval(timer);timer=null;start()}})});
+document.getElementById("specRate").textContent=fps+" fps";document.getElementById("specLap").textContent=(ORDER.length/fps).toFixed(2)+" s";if(timer){clearInterval(timer);timer=null;start()}})});
 document.getElementById("mirrorBtn").addEventListener("click",function(){mirrored=!mirrored;this.setAttribute("aria-pressed",String(mirrored));
 document.getElementById("refbox").classList.toggle("mirrored",mirrored);
 document.getElementById("mirrorTag").textContent=mirrored?"Mirrored (sides in text unchanged)":"As filmed"});
