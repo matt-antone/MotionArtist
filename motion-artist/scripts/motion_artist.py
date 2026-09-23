@@ -612,7 +612,9 @@ def render(a):
     src = d["source"]
     arc = "".join(f"<p>{html.escape(p)}</p>" for p in d["arc"].split("\n\n") if p.strip()) or \
           "<p class=muted>No performance arc written yet — fill <code>arc</code> in motion.json and re-render.</p>"
-    n = len(d["frames"]); lap = n / d["fps"]
+    # A ping-pong sheet walks 2n-2 cells, not n: the return leg replays every frame but the two ends.
+    # Lap is what the player takes to come back around, so it counts cells walked, not frames held.
+    n = len(d["frames"]); cells = 2 * n - 2 if d.get("pingpong") and n > 2 else n; lap = cells / d["fps"]
     keys = [f["i"] for f in d["frames"] if f["role"] == "key"]
     pilots = [f["i"] for f in d["frames"] if f["role"] == "pilot"]
 
