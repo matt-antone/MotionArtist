@@ -277,8 +277,8 @@ PAGE = r"""<!doctype html><meta charset=utf-8><title>clipper</title>
     <label title="capture fps. The frame count is derived from it: frames = fps x window">
       fps <input id=capfps type=number min=1 max=60 value=12 style=width:4.5em></label>
     <select id=pmode title="how the capture plays back. ping-pong is extract's --pingpong, a
-separate flag: the capture is a loop walked out and back. It reaches the manifest, but the
-character generator does not read it yet, so the straight seam is still what plays.">
+separate flag: the capture is a loop walked out and back. It reaches the manifest and motion.json;
+the straight seam is still measured, because a consumer that ignores the flag plays it.">
       <option value=loop>loop</option>
       <option value=one-shot>one-shot</option>
       <option value=final-hold>final-hold</option>

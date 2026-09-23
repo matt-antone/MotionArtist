@@ -633,8 +633,10 @@ def render(a):
              f'{n} frames, {lap:.2f} s per {"lap" if d["playback"] == "loop" else "run"}'
              + (' — played out and back, the return leg reversing the out leg.'
                 if d.get("pingpong") else '.')),
-        N=str(n), FPS=str(d["fps"]), LAP=f"{lap:.2f} s", PLAYBACK=d["playback"] + (" · out and back" if d.get("pingpong") else ""), VIEW=html.escape(d["view"]),
-        SEAM=("clean — the return leg reverses the out leg" if d.get("pingpong") else d["seam"]), KEYS=", ".join(map(str, keys)) or "—", PILOTS=", ".join(map(str, pilots)) or "—",
+        N=str(n), NLAST=str(n - 1), FPS=str(d["fps"]), LAP=f"{lap:.2f} s", PLAYBACK=d["playback"] + (" · out and back" if d.get("pingpong") else ""), VIEW=html.escape(d["view"]),
+        # the manifest's verdict, printed as it stands: a ping-pong capture used to have it
+        # replaced with "clean", which hid a bad straight seam from the one person reviewing it
+        SEAM=d["seam"], KEYS=", ".join(map(str, keys)) or "—", PILOTS=", ".join(map(str, pilots)) or "—",
         URL=html.escape(src["url"]), ARC=arc, ROWS=rows,
         RATES="".join(f'<button data-fps="{r}" aria-pressed="{str(r == d["fps"]).lower()}">{r} fps</button>' for r in rates),
         THUMBS=json.dumps(thumbs), DATA=json.dumps(payload).replace("</", "<\\/"),
@@ -822,9 +824,10 @@ def view_counts(d):
     character was rendered faceless for five of twenty-four frames off a bundle whose declared view
     was perfectly legal.
 
-    Emitting the raw counts costs nothing and cannot break the consumer — CAG requires exactly
-    fps, frame_count, playback, view and files and ignores every other key (`cag/motion.py`) — and
-    it lets each consumer set its own threshold per character. That matters because purity is not
+    Emitting the raw counts costs nothing and cannot break the consumer — CAG ignores every key it
+    does not know — and it lets each consumer set its own threshold per character. (Which keys it
+    *requires* is deliberately not written down here: that list is in another repo, it has already
+    gone stale once in this docstring, and nothing we do depends on knowing it.) That matters because purity is not
     always available to offer: a captioned Two-Step turns in every window the footage contains, so
     a front-only rule would delete a real dance rather than protect anything.
     """
