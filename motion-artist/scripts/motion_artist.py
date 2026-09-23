@@ -3,7 +3,7 @@
 
   motion_artist.py extract URL|FILE --fps N --frames N [--start S] [--end S] [--name SLUG]
                    [--playback loop|one-shot|final-hold] [--pingpong] [--out DIR]
-  motion_artist.py render DIR/motion.json [--out FILE.html] [--pingpong] [--template FILE]
+  motion_artist.py render DIR/motion.json [--out FILE.html] [--template FILE]
   motion_artist.py export DIR/motion.json [--out DIR] [--sheet FILE.html]
   motion_artist.py selftest
 
@@ -594,11 +594,12 @@ def best_loop(cap, mp, lm, t0, t1, length, aspect, hz=None):
 def render(a):
     d = json.load(open(a.json))
     for f in d["frames"]: f.setdefault("src", f["i"])   # which source frame each cell draws from
-    # The sheet holds exactly the frames the animation was specified with — one cell each, no more.
-    # Reviewing a seam is a playback question, not a drawing count: the player already loops forever,
-    # and --pingpong only changes the order it walks the same cells in.
-    if (a.pingpong or d.get("pingpong")) and len(d["frames"]) > 2:
-        d["pingpong"] = True
+    # The sheet holds exactly the frames the animation was specified with — one cell each, no more:
+    # ping-pong is a playback question, not a drawing count, and only changes the order the player
+    # walks the same cells in. The capture owns that answer -- `render` had its own --pingpong once,
+    # which set the flag on the loaded doc and so on the sheet's embedded payload, but never on
+    # motion.json: the bundle then shipped a sheet that bounced beside a motion.json that said it
+    # did not. One writer now, `extract`; to flip an existing capture, re-cut it or edit the json.
     out = a.out or os.path.join(os.path.dirname(a.json), f"{d['name']}-motion.html")
     tdir = os.path.join(os.path.dirname(a.json), "thumbs")
     rates = sorted({1, 4, d["fps"]})
@@ -1015,7 +1016,6 @@ def main():
     e.add_argument("--performer", choices=["female", "male"], help="the filmed performer's body, carried into the manifest; omit when it should not be stated")
     r = sub.add_parser("render"); r.add_argument("json"); r.add_argument("--out")
     r.add_argument("--template", help=f"sheet template to render into (default {TEMPLATE_PATH})")
-    r.add_argument("--pingpong", action="store_true", help="walk the frames out and back (0..N-1..1) so the seam is the motion reversed")
     sp = sub.add_parser("pose-grid"); sp.add_argument("json"); sp.add_argument("--out")
     sp.add_argument("--cols", type=int, help="grid columns (default: near-square given the figure's own aspect)")
     sp.add_argument("--no-labels", action="store_true", help="omit the per-cell frame-number text (nothing for an image generator to copy into the art)")

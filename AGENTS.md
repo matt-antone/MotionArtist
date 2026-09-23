@@ -95,7 +95,8 @@ count first costs.
 playbacks, but it is `extract --pingpong`, not a `--playback` value. A clip that chose it comes back
 as `"playback": "loop", "pingpong": true`, so that clip's `extract` takes both `--playback loop` and
 `--pingpong`. Never pass the word "ping-pong" to `--playback`; `extract` would reject it. `render`
-then reads the flag out of the capture and does not need it repeated.
+then reads the flag out of the capture; it has no `--pingpong` of its own, so a capture cut without
+it is flipped by re-cutting or by editing `motion.json`.
 
 What the flag buys is worth carrying: it reaches `motion.json` and the manifest, and CAG reads it
 from `motion.json` — folding `"playback": "loop"` with `"pingpong": true` into one word and writing
