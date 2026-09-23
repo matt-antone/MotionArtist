@@ -85,7 +85,10 @@ python3 motion-artist/scripts/clipper.py
 ```
 
 That opens a browser at `localhost:8765`, splits the video into frames, and lets you drag an in and
-an out mark per move and choose its playback and capture fps. It writes
+an out mark per move and choose its playback and capture fps. A set name it has not seen is
+confirmed before anything downloads, listing the sets you already have, because a name one letter
+off another is a whole second copy of the video and its frames. Pointing an existing set at a
+different URL offers to replace it instead. It writes
 `exports/<set>/clips.json` — frame numbers, the seconds `--start`/`--end` want, the `--playback` you
 chose, and `--fps`/`--frames` — and runs nothing else.
 

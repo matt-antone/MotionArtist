@@ -64,9 +64,16 @@ python3 motion-artist/scripts/clipper.py
 
 It opens `http://localhost:8765`. The user names an animation set, pastes a video URL, and the tool
 downloads it into `work/<set>/` (reusing an existing download) and splits every source frame into
-`work/<set>/frames/`. They step through frames and mark in and out. Both marks sit on the frame track under the
+`work/<set>/frames/`. A name it has not seen is confirmed first, listing the sets that already
+exist — a set name one letter off another is a second download and a second full frame split, and
+nothing else in the flow would say so. Loading a set that already holds a **different** URL offers
+to replace it, which deletes that video and its frames; the clips survive in `exports/`, but their
+frame numbers were read off the video being replaced. They step through frames and mark in and out. Both marks sit on the frame track under the
 viewer and can be dragged to adjust, with the frame following the mark as it moves, so a boundary
-is settled by eye rather than re-marked. They name each clip, pick how it plays back and the fps the
+is settled by eye rather than re-marked. Loading a clip back into the player fills its name too, so
+adding it again offers to replace it rather than writing a second clip — one name is one export
+directory, and `clips.json` refuses two clips that would share it. They name each clip, pick how it
+plays back and the fps the
 clip is captured at, and the list is written to `exports/<set>/clips.json`:
 
 ```json

@@ -13,7 +13,7 @@ That file is the handoff: `motion_artist.py extract <url> --start S --end S ...`
 takes the seconds straight from it. This tool does not run the pipeline; it only
 settles which frames the pipeline should be pointed at.
 """
-import argparse, errno, json, os, re, subprocess, sys, urllib.parse, webbrowser
+import argparse, errno, json, os, re, shutil, subprocess, sys, urllib.parse, webbrowser
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -45,6 +45,11 @@ def probe_fps(path):
     return float(num) / float(den or 1)
 
 
+def url_of(set_dir):
+    p = os.path.join(set_dir, "source-url.txt")
+    return open(p).read().strip() if os.path.exists(p) else ""
+
+
 def source_of(set_dir):
     for f in sorted(os.listdir(set_dir)):
         if f.startswith("source-"):
@@ -52,14 +57,41 @@ def source_of(set_dir):
     return None
 
 
-def load_set(name, url):
-    """Download (once) and split (once). Returns the viewer's state for this set."""
+def known_sets():
+    """Sets that have already been split, which is what the name box offers."""
+    if not os.path.isdir(WORK):
+        return []
+    return sorted(d for d in os.listdir(WORK) if os.path.isdir(os.path.join(WORK, d, "frames")))
+
+
+def load_set(name, url, confirmed=False):
+    """Download (once) and split (once). Returns the viewer's state for this set.
+
+    A name that is one letter off an existing set is a new set, and nothing about the
+    download says so: it re-fetches the video and re-splits every frame into its own
+    directory. So a name with no source behind it is reported back for confirmation
+    rather than acted on, and no directory is made until the answer comes.
+
+    A name that already holds a different video is the other half of that: answering yes
+    replaces it, which drops the downloaded video and every split frame. The clips stay --
+    they live under exports/ -- but their frame numbers were read off the video being
+    replaced, so the caller is told how many are about to be left pointing at nothing.
+    """
     set_dir = os.path.join(WORK, name)
-    os.makedirs(set_dir, exist_ok=True)
-    src = source_of(set_dir)
+    src = source_of(set_dir) if os.path.isdir(set_dir) else None
+    if src and url and url != url_of(set_dir):
+        if not confirmed:
+            return {"needs_confirm": True, "reason": "replace", "set": name,
+                    "current_url": url_of(set_dir), "clips": len(read_clips(name)),
+                    "sets": known_sets()}
+        shutil.rmtree(set_dir)          # only the video and its frames; exports/ is untouched
+        src = None
     if not src:
         if not url:
             raise ValueError("no video downloaded for this set yet, and no URL given")
+        if not confirmed:
+            return {"needs_confirm": True, "reason": "new", "set": name, "sets": known_sets()}
+        os.makedirs(set_dir, exist_ok=True)
         src, _ = fetch(url, set_dir)
         with open(os.path.join(set_dir, "source-url.txt"), "w") as fh:
             fh.write(url + "\n")
@@ -94,10 +126,13 @@ def write_clips(name, url, fps, clips):
     window is the span the marks already fixed. Picking a frame count first and hunting a
     window to fit it is the mistake the skill calls invisible in the output.
     """
-    out = []
+    out, seen = [], set()
     for c in clips:
         a, b = int(c["in"]), int(c["out"])
         cn = slug(c["name"]) or f"clip-{len(out) + 1}"
+        if cn in seen:  # both would be written to the same export directory
+            raise ValueError(f"two clips are named {cn!r}; they would share exports/{name}/{cn}")
+        seen.add(cn)
         pb = c.get("playback") or "loop"
         pingpong = pb == PINGPONG
         if pingpong:
@@ -146,9 +181,7 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/":
             return self.send(200, PAGE, "text/html; charset=utf-8")
         if u.path == "/api/sets":
-            sets = sorted(d for d in os.listdir(WORK) if os.path.isdir(os.path.join(WORK, d, "frames"))) \
-                if os.path.isdir(WORK) else []
-            return self.send(200, json.dumps(sets))
+            return self.send(200, json.dumps(known_sets()))
         if u.path == "/api/frame":
             name, n = slug(q.get("set", [""])[0]), int(q.get("n", ["1"])[0])
             p = os.path.join(WORK, name, "frames", f"{n:06d}.jpg")
@@ -165,7 +198,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(400, json.dumps({"error": "name the animation set first"}))
         try:
             if self.path == "/api/load":
-                return self.send(200, json.dumps(load_set(name, body.get("url", "").strip())))
+                return self.send(200, json.dumps(load_set(name, body.get("url", "").strip(),
+                                                          bool(body.get("confirmed")))))
             if self.path == "/api/clips":
                 saved = write_clips(name, body.get("url", ""), float(body["fps"]), body.get("clips", []))
                 return self.send(200, json.dumps({"clips": saved, "path": clips_path(name)}))
@@ -262,6 +296,9 @@ manifest.json, so the character generator does not learn of it.">
 </div>
 <script>
 const $ = id => document.getElementById(id);
+// the same name write_clips will give the export directory, so the page can tell a
+// rename from a replace before the server has to
+const slug = s => (s||'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,60);
 let S = {set:'', url:'', fps:30, frames:0, n:1, in:null, out:null, clips:[], timer:null};
 
 const setText = (id,v) => $(id).textContent = v;
@@ -361,6 +398,7 @@ $('list').onclick = e => {
   if (del !== undefined){ S.clips.splice(+del,1); rows(); save(); }
   if (go !== undefined){ const c = S.clips[+go];
     S.in = c.in; S.out = c.out; $('pmode').value = c.playback; $('capfps').value = c.fps;
+    $('cname').value = c.name;  // loaded to be edited: Add then offers to replace it
     marks(); show(S.in); }
 };
 
@@ -374,7 +412,25 @@ async function post(path, body){
 $('load').onclick = async () => {
   err(''); setText('status', 'downloading and splitting frames…');
   try {
-    const j = await post('/api/load', {set: $('set').value, url: $('url').value});
+    let j = await post('/api/load', {set: $('set').value, url: $('url').value});
+    if (j.needs_confirm){
+      // a near-miss name downloads the video again and splits every frame into a second
+      // directory, and nothing else would say so until the disk filled
+      setText('status', '');
+      const msg = j.reason === 'replace'
+        ? `"${j.set}" already holds a different video:\n  ${j.current_url}\n\n` +
+          `Replacing it deletes that video and every split frame, then downloads the new one.` +
+          (j.clips ? `\n\nIts ${j.clips} marked clip(s) are kept, but their frame numbers were ` +
+                     `read off the video being replaced.` : '') +
+          `\n\nReplace it?`
+        : `"${j.set}" is not an existing set.\n\n` +
+          `Loading it downloads the video and splits every frame into work/${j.set}/.` +
+          (j.sets.length ? `\n\nSets already here:\n  ${j.sets.join('\n  ')}` : '') +
+          `\n\nCreate it?`;
+      if (!confirm(msg)) return;
+      setText('status', 'downloading and splitting frames…');
+      j = await post('/api/load', {set: $('set').value, url: $('url').value, confirmed: true});
+    }
     S = {...S, set:j.set, url:j.url, fps:j.fps, frames:j.frames, in:null, out:null,
          clips: j.clips.map(c=>({name:c.name, in:c.in_frame, out:c.out_frame,
                                 playback: c.pingpong ? 'ping-pong' : (c.playback || 'loop'),
@@ -418,10 +474,26 @@ $('add').onclick = async () => {
   if (!name) return err('name the clip');
   if (!S.in || !S.out) return err('mark an in and an out frame');
   if (S.out < S.in) return err('out frame is before in frame');
-  err(''); S.clips.push({name, in:S.in, out:S.out, playback: $('pmode').value, fps: capFps()});
+  // the name is slugged into an export directory, so two clips that slug alike are one
+  // clip written twice. Same name means replace, and say what is being replaced.
+  const i = S.clips.findIndex(c => slug(c.name) === slug(name));
+  if (i >= 0){
+    const c = S.clips[i];
+    if (!confirm(`"${slug(name)}" already exists: frames ${c.in}–${c.out}, ` +
+                 `${capFrames(c.in, c.out, c.fps)} @ ${c.fps} fps, ${c.playback}.\n\n` +
+                 `Replace it with ${S.in}–${S.out}, ` +
+                 `${capFrames(S.in, S.out, capFps())} @ ${capFps()} fps, ${$('pmode').value}?`)) return;
+  }
+  err('');
+  const clip = {name, in:S.in, out:S.out, playback: $('pmode').value, fps: capFps()};
+  const prev = i >= 0 ? S.clips[i] : null;
+  if (i >= 0) S.clips[i] = clip; else S.clips.push(clip);
   // write_clips can refuse a clip the marks allow. Keep the list equal to the file:
-  // drop it again and leave the marks alone so the error can be acted on.
-  if (!await save()){ S.clips.pop(); rows(); return; }
+  // put it back and leave the marks alone so the error can be acted on.
+  if (!await save()){
+    if (i >= 0) S.clips[i] = prev; else S.clips.pop();
+    rows(); return;
+  }
   $('cname').value = ''; S.in = S.out = null; marks(); rows();
 };
 
@@ -449,6 +521,34 @@ def selftest():
     assert slug("Club Male #1") == "club-male-1"
     assert slug("  --Easy  1--  ") == "easy-1"
     assert slug("") == ""
+    # A new set name is reported back, not acted on: the download and the split are what
+    # a typo costs, and nothing else in the flow would mention it.
+    import tempfile as _tf
+    with _tf.TemporaryDirectory() as _w:
+        global WORK
+        WORK = _w
+        ask = load_set("clube-moves", "http://x")
+        assert ask == {"needs_confirm": True, "reason": "new", "set": "clube-moves", "sets": []}, ask
+        assert not os.path.exists(os.path.join(_w, "clube-moves")), "asked, but made the dir anyway"
+        os.makedirs(os.path.join(_w, "club-moves", "frames"))
+        assert known_sets() == ["club-moves"], known_sets()
+        assert load_set("clube-moves", "http://x")["sets"] == ["club-moves"]
+        try:
+            load_set("nothing-here", "")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("a set with no source and no URL loaded")
+        # a set that already holds a different video is asked about, not replaced, and the
+        # ask lands before anything is deleted
+        held = os.path.join(_w, "held")
+        os.makedirs(os.path.join(held, "frames"))
+        open(os.path.join(held, "source-held.mp4"), "w").close()
+        open(os.path.join(held, "source-url.txt"), "w").write("http://first\n")
+        again = load_set("held", "http://second")
+        assert again["needs_confirm"] and again["reason"] == "replace", again
+        assert again["current_url"] == "http://first" and again["clips"] == 0, again
+        assert os.path.exists(os.path.join(held, "source-held.mp4")), "deleted before answering"
     # frame 1 is t=0; the out frame's end is the boundary after it, so a 1-frame
     # clip at 30fps spans 0.000-0.033 and extract sees a non-empty window.
     import tempfile
@@ -500,6 +600,14 @@ def selftest():
                 pass
             else:
                 raise AssertionError(f"capture fps {bad} accepted")
+        # one name is one export directory, whatever the UI did
+        try:
+            write_clips("demo", "http://x", 30.0, [{"name": "Side Step", "in": 1, "out": 9},
+                                                   {"name": "side-step", "in": 20, "out": 29}])
+        except ValueError as e:
+            assert "side-step" in str(e), e
+        else:
+            raise AssertionError("two clips sharing an export directory accepted")
         # a typo must not reach extract as --playback
         try:
             write_clips("demo", "http://x", 30.0, [{"name": "x", "in": 1, "out": 2, "playback": "looop"}])
