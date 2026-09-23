@@ -78,6 +78,35 @@ In Claude Code:
 /motion-artist https://www.youtube.com/watch?v=… from 1:14 to 1:27, find the best loop for an 8 frame 2 fps loop
 ```
 
+To pick the boundaries by eye instead of by description, mark them first:
+
+```bash
+python3 motion-artist/scripts/clipper.py
+```
+
+That opens a browser at `localhost:8765`, splits the video into frames, and lets you drag an in and
+an out mark per move and choose its playback and capture fps. A set name it has not seen is
+confirmed before anything downloads, listing the sets you already have, because a name one letter
+off another is a whole second copy of the video and its frames. Pointing an existing set at a
+different URL offers to replace it instead. It writes
+`exports/<set>/clips.json` — frame numbers, the seconds `--start`/`--end` want, the `--playback` you
+chose, and `--fps`/`--frames` — and runs nothing else.
+
+The frame count is derived, never typed: `frames = fps x window`, where the window is the span your
+marks already fixed. That is the order that makes the capture play at the speed it was danced, and
+each clip carries the resulting `speed_factor` so a window that does not land on a whole frame says
+so while you can still drag a mark to fix it.
+
+Play previews the capture rather than the footage: the frames `extract` will sample, at the fps they
+will play. A loop's preview excludes the out frame, exactly as the capture will, so the seam you
+watch is the seam you ship, and a ping-pong preview walks out and back over the same cells the way
+the sheet will.
+
+`ping-pong` sits in the playback list but is not a `--playback` value — it is `extract --pingpong`,
+so a clip that picks it is written as `"playback": "loop", "pingpong": true` and that clip's
+`extract` takes both. It adds no cells and reaches the manifest, but CAG does not read it yet, so
+the straight seam is still what a consumer plays — which is why `seam_ratio` keeps measuring it.
+
 Or by hand:
 
 ```bash

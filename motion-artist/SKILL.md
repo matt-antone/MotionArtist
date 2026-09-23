@@ -19,7 +19,7 @@ roles: it controls motion only, never character scale, identity, view or prop ha
 | `--fps` | yes | playback rate of the target animation |
 | `--frames` | yes | total frame count of the target animation. No ceiling — one motion is one capture and one bundle, however long. Prefer a multiple of 4; see below. |
 | `--start` / `--end` | recommended | trim the span to inspect, seconds or `m:ss`. Without `--end`, the span is `frames / fps` seconds of real time from `--start`. With both, that span is time-stretched onto the frame count (the sheet reports the speed factor). Neither end is taken literally unless `--margin 0` — see below. |
-| `--playback` | default `loop` | `loop` (samples exclude `end`, so the last→first cut is one natural step), `one-shot`, `final-hold`. **Only `loop` reaches CAG as meaning.** Its sole test is `playback == "loop"`; everything else is just not-loop, and whether a set holds its last frame comes from CAG's own per-set plan, never from the bundle — so `final-hold` is decoration there today. It still changes what happens *here*: a non-loop span is snapped to the stillest ending rather than to matching poses. For `loop`, frame 0 and the last frame should both land on their feet — a loop seam an artist has to hold mid-air has no stable pose to draw. `extract` warns when either boundary frame comes back airborne; pick a different `--start`/`--search` window when it does. |
+| `--playback` | default `loop` | `loop` (samples exclude `end`, so the last→first cut is one natural step), `one-shot`, `final-hold`. **Only `loop` reaches CAG as meaning.** Its sole test is `playback == "loop"`; everything else is just not-loop, and whether a set holds its last frame comes from CAG's own per-set plan, never from the bundle — so `final-hold` is decoration there today. It still changes what happens *here*: a non-loop span is snapped to the stillest ending rather than to matching poses. For `loop`, frame 0 and the last frame should both land on their feet — a loop seam an artist has to hold mid-air has no stable pose to draw. `extract` warns when either boundary frame comes back airborne; pick a different `--start`/`--search` window when it does. When the clip came from `clipper`, take this from the clip's `playback` rather than choosing it: the user picked it while watching the frames. |
 | `--name` | yes | `<set>-<index>` — the set name the user gave for this video, plus this move's index. See **Naming** below. |
 | `--pingpong` | optional | the capture plays out and back — `0..N-1..1` — so the seam is the motion reversed rather than a cut. Recorded in `motion.json` and the manifest as `pingpong`, and `render` walks the sheet that way without repeating the flag. **It buys nothing downstream on its own**: CAG has no ping-pong concept (nothing matches `pingpong` in `cag/`, and `playback` is only ever tested `== "loop"`), so until it reads the flag a consumer still jumps from the last frame to the first. `seam` and `seam_ratio` therefore keep measuring that straight loop — the flag never edits them, because the jump is what an unaware consumer plays. Do not bake the out-and-back into the frames instead: 8 frames is one CAG render chunk, 14 is two, and the duplicated return poses come back drawn differently in the second chunk. |
 | `--performer` | optional | `female` or `male` — the filmed performer's body, carried into `motion.json` and the manifest. It describes the trace, not the character the render must draw; omit it rather than guessing. |
@@ -43,6 +43,12 @@ The procedure that worked:
 1. **Download once.** `yt-dlp` into `work/src/`, then run every `extract` against that local file with
    `--url` so the origin still reaches the manifest. Passing the URL to `extract` per move
    re-downloads the video once per move.
+   When the user would rather point at frames than describe them, `clipper.py` is the faster path
+   to the same list: they mark in and out per move in a browser and it writes
+   `exports/<set>/clips.json`, whose `start`, `end`, `playback`, `capture_fps` and `capture_frames`
+   are all taken as given — it derives the frame count from the marked window the right way round,
+   so do not recompute it. Steps 2 and 3 are how you find the boundaries when nobody has marked
+   them for you.
 2. **Contact-sheet it** (one frame a second, tiled, labelled with the second). Many dance videos
    caption their own moves — "1. Skate", "2. Lock it Down" — and when they do, the captions *are*
    the move boundaries and no scoring is needed to find them.
@@ -132,8 +138,18 @@ every arc and every hand-off as evidence the timing was right. A check computed 
 constrained is not a check. Now that the window sets the frame count, the same number is a real
 assertion: **any bundle whose `speed_factor` is not 1.00 is a bug.**
 
+`clipper.py` is the one tool here that already works in this order: the marks fix the window before
+any count exists, so it derives `capture_frames = capture_fps x window` and writes the resulting
+`speed_factor` per clip. A clip that comes back off `1.0` has marks that do not land on a whole
+frame at that fps — nudge a mark rather than accepting the rounding. Its Play button previews the
+capture itself: the frames `extract` will sample, at the fps they will play, so a rate can be judged
+before the clip is captured. Its playback list offers `ping-pong` alongside the three `--playback`
+values; that one is this `--pingpong` flag, and a clip that picked it is written as
+`"playback": "loop", "pingpong": true` so nothing hands `extract` a word it would reject.
+
 Keep `fps` fixed across a library (12 is CAG's editor default) and let the frame count vary per
-move. Frame count drives cost — CAG renders 8 figures per call — so a 4 s move is 48 frames and 6
+move. The marker records fps **per clip**, so this is a convention it will not enforce — a set whose
+clips carry different `capture_fps` is a deliberate choice, and worth confirming before capture. Frame count drives cost — CAG renders 8 figures per call — so a 4 s move is 48 frames and 6
 calls. That is the honest price of real-time playback; the alternative, a constant frame count, buys
 its predictable cost by time-scaling every move that is not exactly `frames/fps` long.
 
@@ -416,11 +432,13 @@ over-driving the source to compensate.
    The sheet always holds exactly `--frames` cells, and the player loops them forever — a seam is
    reviewed by watching, never by drawing the cycle twice. Add `--pingpong` to walk those same cells
    out and back (0..N-1 then N-2..1): the return leg is the out leg reversed, so the seam is always
-   clean and the artist still draws only the frames asked for. It is a **playback flag on the sheet
-   only** — it adds no cells, leaves `frame_count` alone, and does not reach `manifest.json`. CAG
-   never learns of it, and reverses nothing on its own, so an out-and-back that exists only as this
-   flag appears in neither the frame sheet nor the proof. If the delivered asset has to show it,
-   trace the return leg as real frames.
+   clean and the artist still draws only the frames asked for. A capture cut with `extract --pingpong`
+   already carries it, so `render` walks the sheet that way on its own and the flag only needs
+   repeating to turn it on for a capture that was cut without it. It adds no cells and leaves
+   `frame_count` alone. It does reach `motion.json` and `manifest.json` — but CAG has no ping-pong
+   concept yet and reverses nothing on its own, so until the consumer reads the flag an out-and-back
+   appears in neither the frame sheet nor the proof. If the delivered asset has to show it, trace
+   the return leg as real frames.
    The sheet is rendered from `motion-artist/templates/sheet.html` — markup, CSS and player in one
    file, with `{{PLACEHOLDER}}`s the script fills. Change how a sheet looks by editing that template;
    pass `--template FILE` to render into a different one.

@@ -64,21 +64,51 @@ python3 motion-artist/scripts/clipper.py
 
 It opens `http://localhost:8765`. The user names an animation set, pastes a video URL, and the tool
 downloads it into `work/<set>/` (reusing an existing download) and splits every source frame into
-`work/<set>/frames/`. They step through frames and mark in and out. Both marks sit on the frame track under the
+`work/<set>/frames/`. A name it has not seen is confirmed first, listing the sets that already
+exist — a set name one letter off another is a second download and a second full frame split, and
+nothing else in the flow would say so. Loading a set that already holds a **different** URL offers
+to replace it, which deletes that video and its frames; the clips survive in `exports/`, but their
+frame numbers were read off the video being replaced. They step through frames and mark in and out. Both marks sit on the frame track under the
 viewer and can be dragged to adjust, with the frame following the mark as it moves, so a boundary
-is settled by eye rather than re-marked. They name each clip, and the list is written to
-`exports/<set>/clips.json`:
+is settled by eye rather than re-marked. Loading a clip back into the player fills its name too, so
+adding it again offers to replace it rather than writing a second clip — one name is one export
+directory, and `clips.json` refuses two clips that would share it. They name each clip, pick how it
+plays back and the fps the
+clip is captured at, and the list is written to `exports/<set>/clips.json`:
 
 ```json
 {"set": "shuffle-3", "url": "...", "source_fps": 29.97,
  "clips": [{"name": "side-step", "in_frame": 91, "out_frame": 150, "frames": 60,
-            "start": 3.003, "end": 5.005, "export": "exports/shuffle-3/side-step"}]}
+            "start": 3.003, "end": 5.005, "playback": "loop", "pingpong": false,
+            "capture_fps": 12, "capture_frames": 24, "speed_factor": 1.0,
+            "export": "exports/shuffle-3/side-step"}]}
 ```
 
-Read that file and run the pipeline per clip, taking `--start`/`--end` from `start`/`end` — those
-seconds are the frames the user marked, so do not re-search around them unless asked. `frames` is
-how many source frames the clip spans, not the capture's frame count: choose `--fps`/`--frames`
-as usual. The marker never runs the pipeline and never writes a bundle.
+Run the pipeline per clip and take every one of those numbers as given: `--start`/`--end` from
+`start`/`end`, `--playback` from `playback`, `--fps` from the clip's own `capture_fps`, `--frames`
+from `capture_frames`. Do not re-search the span and do not pick a frame count. `capture_frames` is
+already `capture_fps x window` for the window the marks fixed, which is the one order that makes
+the capture play at the speed it was danced — see **Timing** in the skill for what picking a frame
+count first costs.
+
+`pingpong` is a separate flag because it is one: ping-pong is offered in the marker beside the
+playbacks, but it is `extract --pingpong`, not a `--playback` value. A clip that chose it comes back
+as `"playback": "loop", "pingpong": true`, so that clip's `extract` takes both `--playback loop` and
+`--pingpong`. Never pass the word "ping-pong" to `--playback`; `extract` would reject it. `render`
+then reads the flag out of the capture and does not need it repeated.
+
+What the flag does not buy is worth carrying: it reaches `motion.json` and the manifest, but CAG has
+no ping-pong concept yet, so a consumer still jumps from the last frame to the first. `seam` and
+`seam_ratio` keep measuring that straight loop for exactly that reason — a ping-pong clip whose
+seam reads "needs blend" is still worth re-cutting.
+
+`speed_factor` is that arithmetic checked: `1.0` means the marks land on a whole frame at this fps.
+Anything else means they do not and the count was rounded, so the capture will play that much fast
+or slow. The marker shows the same number live and its marks are draggable, so a clip that comes
+back off 1.0 is worth handing back to be nudged rather than captured as it stands.
+
+`frames` is how many **source** frames the clip spans, not the capture's count. The marker never
+runs the pipeline and never writes a bundle.
 
 ## The pipeline
 
