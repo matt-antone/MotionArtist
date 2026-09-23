@@ -1013,7 +1013,7 @@ def main():
     e.add_argument("--search", action="store_true", help="slide a frames/fps-second window over --start..--end and pick the tightest loop")
     e.add_argument("--playback", choices=["loop", "one-shot", "final-hold"], default="loop")
     e.add_argument("--pingpong", action="store_true", help="the capture plays out and back (0..N-1..1), so the seam is the motion reversed. Recorded in the manifest; `seam` still measures the straight loop a consumer without ping-pong will play")
-    e.add_argument("--performer", choices=["female", "male"], help="the filmed performer's body, carried into the manifest; omit when it should not be stated")
+    e.add_argument("--performer", choices=["female", "male", "neutral"], help="how the motion reads, carried into the manifest: the filmed body, or neutral when the move reads the same either way. Describes the trace, never the character to draw — nothing downstream renders off it. Omit when it should not be stated")
     r = sub.add_parser("render"); r.add_argument("json"); r.add_argument("--out")
     r.add_argument("--template", help=f"sheet template to render into (default {TEMPLATE_PATH})")
     sp = sub.add_parser("pose-grid"); sp.add_argument("json"); sp.add_argument("--out")

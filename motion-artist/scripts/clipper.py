@@ -28,6 +28,12 @@ PLAYBACK = ("loop", "one-shot", "final-hold")  # extract's own --playback choice
 # separate flag on the same command. It rides in the clip as its own field.
 PINGPONG = "ping-pong"
 CHOICES = PLAYBACK + (PINGPONG,)
+# how the motion reads, carried to `extract --performer` and on into the bundle. It describes the
+# trace, never the character to draw: CAG has no such input and nothing downstream renders off it.
+# It is there so a person or an agent picking motions for a character can filter the library.
+# `neutral` is a real answer, not a missing one -- the move reads the same either way. A clip
+# written before this field existed has none, and stays that way rather than being labelled now.
+PERFORMER = ("female", "male", "neutral")
 CAPTURE_FPS = 12  # CAG's editor default; the skill keeps fps fixed across a library
 
 
@@ -133,6 +139,9 @@ def write_clips(name, url, fps, clips):
         if cn in seen:  # both would be written to the same export directory
             raise ValueError(f"two clips are named {cn!r}; they would share exports/{name}/{cn}")
         seen.add(cn)
+        perf = c.get("performer")
+        if perf is not None and perf not in PERFORMER:
+            raise ValueError(f"unknown performer {perf!r}, expected one of {', '.join(PERFORMER)}")
         pb = c.get("playback") or "loop"
         pingpong = pb == PINGPONG
         if pingpong:
@@ -151,7 +160,7 @@ def write_clips(name, url, fps, clips):
                              f"{cap_frames} — widen the marks or raise its fps")
         out.append({"name": cn, "in_frame": a, "out_frame": b, "frames": b - a + 1,
                     "start": round((a - 1) / fps, 3), "end": round(b / fps, 3),
-                    "playback": pb, "pingpong": pingpong,
+                    "playback": pb, "pingpong": pingpong, "performer": perf,
                     "capture_fps": cap_fps, "capture_frames": cap_frames,
                     # span / (frames/fps). extract recomputes it; 1.0 here means the marks
                     # already land on a whole frame at this fps, so no rounding is hiding.
@@ -284,13 +293,21 @@ the straight seam is still measured, because a consumer that ignores the flag pl
       <option value=final-hold>final-hold</option>
       <option value=ping-pong>ping-pong</option>
     </select>
+    <select id=perf title="how the motion reads, carried to extract --performer and on into
+motion.json and the manifest. It describes this trace, never the character to draw -- nothing
+downstream renders off it; it is for picking motions out of the library later. neutral says the
+move reads the same either way; it is an answer, not a blank.">
+      <option value=neutral>neutral</option>
+      <option value=female>female</option>
+      <option value=male>male</option>
+    </select>
     <button class=go id=add>Add clip</button>
   </div>
   <div class=hint><kbd>←</kbd><kbd>→</kbd> step · <kbd>shift</kbd>+arrows ×10 · <kbd>I</kbd> in ·
     <kbd>O</kbd> out · <kbd>space</kbd> play footage · <kbd>C</kbd> play capture · <kbd>enter</kbd> add clip ·
     drag the green marks on the track to move in and out</div>
 
-  <table><thead><tr><th>clip</th><th>in</th><th>out</th><th>frames</th><th>seconds</th><th>capture</th><th>playback</th><th></th></tr></thead>
+  <table><thead><tr><th>clip</th><th>in</th><th>out</th><th>frames</th><th>seconds</th><th>capture</th><th>playback</th><th>for</th><th></th></tr></thead>
   <tbody id=list></tbody></table>
   <div class=hint id=saved></div>
 </div>
@@ -385,6 +402,7 @@ function rows(){
     <td class=n>${((c.in-1)/S.fps).toFixed(2)}–${(c.out/S.fps).toFixed(2)}</td>
     <td class=n>${capFrames(c.in, c.out, c.fps)}f @ ${c.fps}</td>
     <td class=n>${c.playback}</td>
+    <td class=n>${c.performer || '—'}</td>
     <td><button data-go=${i}>go</button> <button data-del=${i}>×</button></td></tr>`).join('');
 }
 $('list').onclick = e => {
@@ -392,6 +410,7 @@ $('list').onclick = e => {
   if (del !== undefined){ S.clips.splice(+del,1); rows(); save(); }
   if (go !== undefined){ const c = S.clips[+go];
     S.in = c.in; S.out = c.out; $('pmode').value = c.playback; $('capfps').value = c.fps;
+    $('perf').value = c.performer || 'neutral';   // an older clip has none; editing it picks one
     $('cname').value = c.name;  // loaded to be edited: Add then offers to replace it
     marks(); show(S.in); }
 };
@@ -428,6 +447,8 @@ $('load').onclick = async () => {
     S = {...S, set:j.set, url:j.url, fps:j.fps, frames:j.frames, in:null, out:null,
          clips: j.clips.map(c=>({name:c.name, in:c.in_frame, out:c.out_frame,
                                 playback: c.pingpong ? 'ping-pong' : (c.playback || 'loop'),
+                                // `|| ` would turn a missing performer into a chosen one on save
+                                performer: c.performer ?? null,
                                 fps: c.capture_fps || 12}))};
     $('set').value = j.set; $('url').value = j.url;
     setText('ftot', j.frames);
@@ -502,7 +523,8 @@ $('add').onclick = async () => {
                  `${capFrames(S.in, S.out, capFps())} @ ${capFps()} fps, ${$('pmode').value}?`)) return;
   }
   err('');
-  const clip = {name, in:S.in, out:S.out, playback: $('pmode').value, fps: capFps()};
+  const clip = {name, in:S.in, out:S.out, playback: $('pmode').value, fps: capFps(),
+                performer: $('perf').value};
   const prev = i >= 0 ? S.clips[i] : null;
   if (i >= 0) S.clips[i] = clip; else S.clips.push(clip);
   // write_clips can refuse a clip the marks allow. Keep the list equal to the file:
@@ -579,6 +601,7 @@ def selftest():
                            {"name": "ragged", "in": 1, "out": 43}])
         assert out[0] == {"name": "step-touch", "in_frame": 1, "out_frame": 1, "frames": 1,
                           "start": 0.0, "end": 0.033, "playback": "loop", "pingpong": False,
+                          "performer": None,
                           "capture_fps": 12, "capture_frames": 1, "speed_factor": 0.4,
                           "export": "exports/demo/step-touch"}, out[0]
         assert out[1]["playback"] == "one-shot", out[1]
@@ -639,16 +662,30 @@ def selftest():
         assert saved["source_fps"] == 30.0 and "capture_fps" not in saved, saved
         assert saved["clips"][0]["capture_fps"] == 12, saved
         assert saved["clips"][0]["pingpong"] is True, saved
+        # performer rides through when chosen, and a clip marked before the field existed keeps
+        # None rather than being labelled `neutral` -- which is a claim about the move, not a blank
+        who = write_clips("demo", "http://x", 30.0,
+                          [{"name": "a", "in": 1, "out": 30, "performer": "neutral"},
+                           {"name": "b", "in": 1, "out": 30, "performer": "male"},
+                           {"name": "c", "in": 1, "out": 30}])
+        assert [x["performer"] for x in who] == ["neutral", "male", None], who
+        try:
+            write_clips("demo", "http://x", 30.0,
+                        [{"name": "x", "in": 1, "out": 2, "performer": "woman"}])
+        except ValueError as e:
+            assert "woman" in str(e), e
+        else:
+            raise AssertionError("bad performer accepted")
     # The custom track replaced the range input. Nothing here runs the page, but a
     # half-finished refactor leaves a dead $('scrub') that only throws in a browser.
     for part in ("id=track", "id=band", "id=head", "id=hin", "id=hout", "id=pmode", "id=capfps", "id=pcap",
-                 "onpointerdown", "getBoundingClientRect"):
+                 "id=perf", "onpointerdown", "getBoundingClientRect"):
         assert part in PAGE, part
-    # the select must offer exactly what write_clips accepts, or a choice the user
+    # the selects must offer exactly what write_clips accepts, or a choice the user
     # can make is a choice this file rejects
     bare = PAGE.count("<option value=") - PAGE.count('<option value="')  # the set list is quoted
-    assert bare == len(CHOICES), bare
-    for part in CHOICES:
+    assert bare == len(CHOICES) + len(PERFORMER), bare
+    for part in CHOICES + PERFORMER:
         assert f"<option value={part}>" in PAGE, part
     assert "'scrub'" not in PAGE and "type=range" not in PAGE
     # Play shows the footage, and ping-pong walks those frames out and back. A capture

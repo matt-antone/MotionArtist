@@ -80,13 +80,15 @@ clip is captured at, and the list is written to `exports/<set>/clips.json`:
 {"set": "shuffle-3", "url": "...", "source_fps": 29.97,
  "clips": [{"name": "side-step", "in_frame": 91, "out_frame": 150, "frames": 60,
             "start": 3.003, "end": 5.005, "playback": "loop", "pingpong": false,
+            "performer": "neutral",
             "capture_fps": 12, "capture_frames": 24, "speed_factor": 1.0,
             "export": "exports/shuffle-3/side-step"}]}
 ```
 
 Run the pipeline per clip and take every one of those numbers as given: `--start`/`--end` from
 `start`/`end`, `--playback` from `playback`, `--fps` from the clip's own `capture_fps`, `--frames`
-from `capture_frames`. Do not re-search the span and do not pick a frame count. `capture_frames` is
+from `capture_frames`, `--performer` from `performer` when the clip states one — a clip marked
+before that field existed has `null` there, and then the flag is omitted rather than guessed. Do not re-search the span and do not pick a frame count. `capture_frames` is
 already `capture_fps x window` for the window the marks fixed, which is the one order that makes
 the capture play at the speed it was danced — see **Timing** in the skill for what picking a frame
 count first costs.
