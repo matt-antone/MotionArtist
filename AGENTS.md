@@ -92,12 +92,15 @@ the capture play at the speed it was danced — see **Timing** in the skill for 
 count first costs.
 
 `pingpong` is a separate flag because it is one: ping-pong is offered in the marker beside the
-playbacks, but it is `render --pingpong`, not a `--playback` value. A clip that chose it comes back
-as `"playback": "loop", "pingpong": true` — pass `--playback loop` to `extract` and `--pingpong` to
-`render`. Never pass the word "ping-pong" to `--playback`; `extract` would reject it. Note what the
-skill says about the flag: it walks the sheet's cells out and back and reaches neither
-`manifest.json` nor CAG, so if the delivered asset has to show the return leg, it must be traced as
-real frames.
+playbacks, but it is `extract --pingpong`, not a `--playback` value. A clip that chose it comes back
+as `"playback": "loop", "pingpong": true`, so that clip's `extract` takes both `--playback loop` and
+`--pingpong`. Never pass the word "ping-pong" to `--playback`; `extract` would reject it. `render`
+then reads the flag out of the capture and does not need it repeated.
+
+What the flag does not buy is worth carrying: it reaches `motion.json` and the manifest, but CAG has
+no ping-pong concept yet, so a consumer still jumps from the last frame to the first. `seam` and
+`seam_ratio` keep measuring that straight loop for exactly that reason — a ping-pong clip whose
+seam reads "needs blend" is still worth re-cutting.
 
 `speed_factor` is that arithmetic checked: `1.0` means the marks land on a whole frame at this fps.
 Anything else means they do not and the count was rounded, so the capture will play that much fast

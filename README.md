@@ -102,10 +102,10 @@ will play. A loop's preview excludes the out frame, exactly as the capture will,
 watch is the seam you ship, and a ping-pong preview walks out and back over the same cells the way
 the sheet will.
 
-`ping-pong` sits in the playback list but is not a `--playback` value — it is `render --pingpong`,
-so a clip that picks it is written as `"playback": "loop", "pingpong": true`. It is a flag on the
-motion sheet only: it adds no cells and never reaches `manifest.json`, so a delivered asset that
-must show the return leg needs it traced as real frames.
+`ping-pong` sits in the playback list but is not a `--playback` value — it is `extract --pingpong`,
+so a clip that picks it is written as `"playback": "loop", "pingpong": true` and that clip's
+`extract` takes both. It adds no cells and reaches the manifest, but CAG does not read it yet, so
+the straight seam is still what a consumer plays — which is why `seam_ratio` keeps measuring it.
 
 Or by hand:
 

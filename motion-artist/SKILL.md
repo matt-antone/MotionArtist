@@ -432,11 +432,13 @@ over-driving the source to compensate.
    The sheet always holds exactly `--frames` cells, and the player loops them forever — a seam is
    reviewed by watching, never by drawing the cycle twice. Add `--pingpong` to walk those same cells
    out and back (0..N-1 then N-2..1): the return leg is the out leg reversed, so the seam is always
-   clean and the artist still draws only the frames asked for. It is a **playback flag on the sheet
-   only** — it adds no cells, leaves `frame_count` alone, and does not reach `manifest.json`. CAG
-   never learns of it, and reverses nothing on its own, so an out-and-back that exists only as this
-   flag appears in neither the frame sheet nor the proof. If the delivered asset has to show it,
-   trace the return leg as real frames.
+   clean and the artist still draws only the frames asked for. A capture cut with `extract --pingpong`
+   already carries it, so `render` walks the sheet that way on its own and the flag only needs
+   repeating to turn it on for a capture that was cut without it. It adds no cells and leaves
+   `frame_count` alone. It does reach `motion.json` and `manifest.json` — but CAG has no ping-pong
+   concept yet and reverses nothing on its own, so until the consumer reads the flag an out-and-back
+   appears in neither the frame sheet nor the proof. If the delivered asset has to show it, trace
+   the return leg as real frames.
    The sheet is rendered from `motion-artist/templates/sheet.html` — markup, CSS and player in one
    file, with `{{PLACEHOLDER}}`s the script fills. Change how a sheet looks by editing that template;
    pass `--template FILE` to render into a different one.

@@ -24,8 +24,8 @@ WORK = os.path.join(ROOT, "work")
 EXPORTS = os.path.join(ROOT, "exports")
 FRAME_HEIGHT = 480  # display copies; extract re-reads the source video at full resolution
 PLAYBACK = ("loop", "one-shot", "final-hold")  # extract's own --playback choices, not a second vocabulary
-# ping-pong is offered beside them but is not one of them: it is `render --pingpong`, a loop
-# walked out and back over the same cells. It rides in the clip as its own field.
+# ping-pong is offered beside them but is not one of them: it is `extract --pingpong`, a
+# separate flag on the same command. It rides in the clip as its own field.
 PINGPONG = "ping-pong"
 CHOICES = PLAYBACK + (PINGPONG,)
 CAPTURE_FPS = 12  # CAG's editor default; the skill keeps fps fixed across a library
@@ -275,9 +275,9 @@ PAGE = r"""<!doctype html><meta charset=utf-8><title>clipper</title>
     <input id=cname placeholder="clip name" size=20>
     <label title="capture fps. The frame count is derived from it: frames = fps x window">
       fps <input id=capfps type=number min=1 max=60 value=12 style=width:4.5em></label>
-    <select id=pmode title="how the capture plays back. ping-pong is render's --pingpong: a loop
-walked out and back over the same cells. It lives on the motion sheet only — it never reaches
-manifest.json, so the character generator does not learn of it.">
+    <select id=pmode title="how the capture plays back. ping-pong is extract's --pingpong, a
+separate flag: the capture is a loop walked out and back. It reaches the manifest, but the
+character generator does not read it yet, so the straight seam is still what plays.">
       <option value=loop>loop</option>
       <option value=one-shot>one-shot</option>
       <option value=final-hold>final-hold</option>
