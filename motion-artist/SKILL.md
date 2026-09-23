@@ -144,8 +144,9 @@ any count exists, so it derives `capture_frames = capture_fps x window` and writ
 frame at that fps — nudge a mark rather than accepting the rounding. Its Play button runs the
 footage, not the capture: every source frame between the marks at the rate it was filmed, which is
 what judging a move needs. The capture is read rather than watched — the line beside the marks
-carries the derived count, its seconds, and whether the window is exact at that fps. Its playback
-list offers `ping-pong` alongside the three `--playback`
+carries the derived count, its seconds, and whether the window is exact at that fps. Choosing
+`ping-pong` walks those same source frames out and back, the order `sheet.html` walks the rendered
+cells in. Its playback list offers `ping-pong` alongside the three `--playback`
 values; that one is this `--pingpong` flag, and a clip that picked it is written as
 `"playback": "loop", "pingpong": true` so nothing hands `extract` a word it would reject.
 

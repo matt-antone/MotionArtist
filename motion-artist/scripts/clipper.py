@@ -443,10 +443,14 @@ $('play').onclick = () => {
   // Play the footage, at the rate it was filmed: every source frame between the marks.
   // Judging a move means watching the motion, not the frames a capture would keep -- the
   // derived count and its speed_factor are already on screen for that.
-  S.timer = setInterval(() => {
-    const last = S.out || S.frames, first = S.in || 1;
-    show(S.n >= last ? first : S.n + 1);
-  }, 1000 / S.fps);
+  // Ping-pong is an order, not a different set of frames, so it walks these same ones out
+  // and back, the way sheet.html walks the rendered cells.
+  const first = S.in || 1, last = S.out || S.frames, order = [];
+  for (let k = first; k <= last; k++) order.push(k);
+  const n = order.length;
+  if ($('pmode').value === 'ping-pong' && n > 2) for (let q = n - 2; q > 0; q--) order.push(order[q]);
+  let i = Math.max(0, order.indexOf(S.n));
+  S.timer = setInterval(() => { show(order[i]); i = (i + 1) % order.length; }, 1000 / S.fps);
 };
 
 async function save(){
@@ -621,8 +625,10 @@ def selftest():
     for part in CHOICES:
         assert f"<option value={part}>" in PAGE, part
     assert "'scrub'" not in PAGE and "type=range" not in PAGE
-    # Play shows the footage. A capture preview left half-wired throws only in a browser.
+    # Play shows the footage, and ping-pong walks those frames out and back. A capture
+    # preview left half-wired, or a lost return leg, shows up only in a browser.
     assert "captureFrame" not in PAGE
+    assert "order.push(order[q])" in PAGE
     print("ok")
 
 

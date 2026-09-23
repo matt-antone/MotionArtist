@@ -100,7 +100,8 @@ so while you can still drag a mark to fix it.
 Play runs the footage, every source frame between the marks at the rate it was filmed, because
 judging whether a move is the right move means watching the motion. The capture is read rather than
 watched: the line beside the marks gives the derived frame count, the seconds it will run, and
-whether the window lands on a whole frame at that fps.
+whether the window lands on a whole frame at that fps. Picking `ping-pong` walks those same
+source frames out and back, so the return leg you watch is the motion reversed.
 
 `ping-pong` sits in the playback list but is not a `--playback` value — it is `extract --pingpong`,
 so a clip that picks it is written as `"playback": "loop", "pingpong": true` and that clip's
