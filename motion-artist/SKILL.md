@@ -141,9 +141,11 @@ assertion: **any bundle whose `speed_factor` is not 1.00 is a bug.**
 `clipper.py` is the one tool here that already works in this order: the marks fix the window before
 any count exists, so it derives `capture_frames = capture_fps x window` and writes the resulting
 `speed_factor` per clip. A clip that comes back off `1.0` has marks that do not land on a whole
-frame at that fps — nudge a mark rather than accepting the rounding. Its Play button previews the
-capture itself: the frames `extract` will sample, at the fps they will play, so a rate can be judged
-before the clip is captured. Its playback list offers `ping-pong` alongside the three `--playback`
+frame at that fps — nudge a mark rather than accepting the rounding. Its Play button runs the
+footage, not the capture: every source frame between the marks at the rate it was filmed, which is
+what judging a move needs. The capture is read rather than watched — the line beside the marks
+carries the derived count, its seconds, and whether the window is exact at that fps. Its playback
+list offers `ping-pong` alongside the three `--playback`
 values; that one is this `--pingpong` flag, and a clip that picked it is written as
 `"playback": "loop", "pingpong": true` so nothing hands `extract` a word it would reject.
 

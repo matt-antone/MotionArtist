@@ -97,10 +97,10 @@ marks already fixed. That is the order that makes the capture play at the speed 
 each clip carries the resulting `speed_factor` so a window that does not land on a whole frame says
 so while you can still drag a mark to fix it.
 
-Play previews the capture rather than the footage: the frames `extract` will sample, at the fps they
-will play. A loop's preview excludes the out frame, exactly as the capture will, so the seam you
-watch is the seam you ship, and a ping-pong preview walks out and back over the same cells the way
-the sheet will.
+Play runs the footage, every source frame between the marks at the rate it was filmed, because
+judging whether a move is the right move means watching the motion. The capture is read rather than
+watched: the line beside the marks gives the derived frame count, the seconds it will run, and
+whether the window lands on a whole frame at that fps.
 
 `ping-pong` sits in the playback list but is not a `--playback` value — it is `extract --pingpong`,
 so a clip that picks it is written as `"playback": "loop", "pingpong": true` and that clip's

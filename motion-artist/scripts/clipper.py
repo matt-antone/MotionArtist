@@ -357,13 +357,6 @@ const capFps = () => Math.min(Math.max(1, +$('capfps').value || 1), 60);
 const windowOf = (a, b) => (b - a + 1) / S.fps;
 const capFrames = (a, b, fps) => Math.max(1, Math.round(windowOf(a, b) * fps));
 
-// The frames extract will pick: n samples across the marked window. A loop's samples are
-// exclusive of the end, so the last->first cut is one step like every other.
-function captureFrame(i, n, loop){
-  const step = (S.out - S.in + (loop ? 1 : 0)) / (loop ? n : Math.max(n - 1, 1));
-  return Math.min(S.out, S.in + Math.round(i * step));
-}
-
 function marks(){
   setText('min', S.in ?? '–'); setText('mout', S.out ?? '–');
   setText('mlen', (S.in && S.out && S.out>=S.in) ? (S.out-S.in+1) : '–');
@@ -447,18 +440,13 @@ $('bout').onclick = () => { S.out = S.n; if (S.in && S.in > S.out) S.in = null; 
 $('play').onclick = () => {
   if (S.timer){ clearInterval(S.timer); S.timer = null; setText('play','Play (space)'); return; }
   setText('play','Pause (space)');
-  // With a window marked, play what the capture will be: its own frames at its own rate.
-  // Stepping every source frame at the capture's fps would only be slow motion.
-  const span = S.in && S.out && S.out >= S.in, pm = $('pmode').value;
-  const n = span ? capFrames(S.in, S.out, capFps()) : 0, loop = pm !== 'one-shot' && pm !== 'final-hold';
-  // the order the sheet walks: straight through, or out and back over the same cells
-  const order = [...Array(n).keys()];
-  if (pm === 'ping-pong' && n > 2) for (let q = n - 2; q > 0; q--) order.push(q);
-  let i = 0;
+  // Play the footage, at the rate it was filmed: every source frame between the marks.
+  // Judging a move means watching the motion, not the frames a capture would keep -- the
+  // derived count and its speed_factor are already on screen for that.
   S.timer = setInterval(() => {
-    if (span) show(captureFrame(order[i++ % order.length], n, loop));
-    else show(S.n >= S.frames ? 1 : S.n + 1);
-  }, 1000 / (span ? capFps() : S.fps));
+    const last = S.out || S.frames, first = S.in || 1;
+    show(S.n >= last ? first : S.n + 1);
+  }, 1000 / S.fps);
 };
 
 async function save(){
@@ -624,7 +612,7 @@ def selftest():
     # The custom track replaced the range input. Nothing here runs the page, but a
     # half-finished refactor leaves a dead $('scrub') that only throws in a browser.
     for part in ("id=track", "id=band", "id=head", "id=hin", "id=hout", "id=pmode", "id=capfps",
-                 "onpointerdown", "getBoundingClientRect", "captureFrame"):
+                 "onpointerdown", "getBoundingClientRect"):
         assert part in PAGE, part
     # the select must offer exactly what write_clips accepts, or a choice the user
     # can make is a choice this file rejects
@@ -633,6 +621,8 @@ def selftest():
     for part in CHOICES:
         assert f"<option value={part}>" in PAGE, part
     assert "'scrub'" not in PAGE and "type=range" not in PAGE
+    # Play shows the footage. A capture preview left half-wired throws only in a browser.
+    assert "captureFrame" not in PAGE
     print("ok")
 
 
