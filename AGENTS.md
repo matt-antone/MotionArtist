@@ -66,18 +66,20 @@ It opens `http://localhost:8765`. The user names an animation set, pastes a vide
 downloads it into `work/<set>/` (reusing an existing download) and splits every source frame into
 `work/<set>/frames/`. They step through frames and mark in and out. Both marks sit on the frame track under the
 viewer and can be dragged to adjust, with the frame following the mark as it moves, so a boundary
-is settled by eye rather than re-marked. They name each clip, and the list is written to
-`exports/<set>/clips.json`:
+is settled by eye rather than re-marked. They name each clip, pick how it plays back, and the list
+is written to `exports/<set>/clips.json`:
 
 ```json
 {"set": "shuffle-3", "url": "...", "source_fps": 29.97,
  "clips": [{"name": "side-step", "in_frame": 91, "out_frame": 150, "frames": 60,
-            "start": 3.003, "end": 5.005, "export": "exports/shuffle-3/side-step"}]}
+            "start": 3.003, "end": 5.005, "playback": "loop",
+            "export": "exports/shuffle-3/side-step"}]}
 ```
 
-Read that file and run the pipeline per clip, taking `--start`/`--end` from `start`/`end` — those
-seconds are the frames the user marked, so do not re-search around them unless asked. `frames` is
-how many source frames the clip spans, not the capture's frame count: choose `--fps`/`--frames`
+Read that file and run the pipeline per clip, taking `--start`/`--end` from `start`/`end` and
+`--playback` from `playback` — those seconds are the frames the user marked and that word is the
+playback they chose while watching them, so do not re-search around either unless asked. `frames`
+is how many source frames the clip spans, not the capture's frame count: choose `--fps`/`--frames`
 as usual. The marker never runs the pipeline and never writes a bundle.
 
 ## The pipeline

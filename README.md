@@ -78,6 +78,16 @@ In Claude Code:
 /motion-artist https://www.youtube.com/watch?v=… from 1:14 to 1:27, find the best loop for an 8 frame 2 fps loop
 ```
 
+To pick the boundaries by eye instead of by description, mark them first:
+
+```bash
+python3 motion-artist/scripts/clipper.py
+```
+
+That opens a browser at `localhost:8765`, splits the video into frames, and lets you drag an in and
+an out mark per move and choose its playback. It writes `exports/<set>/clips.json` — frame numbers,
+the seconds `--start`/`--end` want, and the `--playback` you chose — and runs nothing else.
+
 Or by hand:
 
 ```bash

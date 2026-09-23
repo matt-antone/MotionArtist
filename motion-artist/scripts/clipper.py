@@ -23,6 +23,7 @@ ROOT = os.getcwd()
 WORK = os.path.join(ROOT, "work")
 EXPORTS = os.path.join(ROOT, "exports")
 FRAME_HEIGHT = 480  # display copies; extract re-reads the source video at full resolution
+PLAYBACK = ("loop", "one-shot", "final-hold")  # extract's own --playback choices, not a second vocabulary
 
 
 def slug(s):
@@ -87,9 +88,12 @@ def write_clips(name, url, fps, clips):
     for c in clips:
         a, b = int(c["in"]), int(c["out"])
         cn = slug(c["name"]) or f"clip-{len(out) + 1}"
+        pb = c.get("playback") or "loop"
+        if pb not in PLAYBACK:  # this file is a command line; a bad value would reach extract as one
+            raise ValueError(f"unknown playback {pb!r}, expected one of {', '.join(PLAYBACK)}")
         out.append({"name": cn, "in_frame": a, "out_frame": b, "frames": b - a + 1,
                     "start": round((a - 1) / fps, 3), "end": round(b / fps, 3),
-                    "export": f"exports/{name}/{cn}"})
+                    "playback": pb, "export": f"exports/{name}/{cn}"})
     os.makedirs(os.path.dirname(clips_path(name)), exist_ok=True)
     with open(clips_path(name), "w") as fh:
         json.dump({"set": name, "url": url, "source_fps": round(fps, 4), "clips": out}, fh, indent=2)
@@ -150,7 +154,7 @@ PAGE = r"""<!doctype html><meta charset=utf-8><title>clipper</title>
  body{margin:0;background:#15161a;color:#e8e8ea;font:14px/1.5 ui-sans-serif,system-ui,sans-serif}
  .wrap{max-width:900px;margin:0 auto;padding:20px 16px 60px}
  h1{font-size:16px;letter-spacing:.08em;text-transform:uppercase;color:#8b8b94;margin:0 0 16px}
- input,button{font:inherit;background:#222329;color:#e8e8ea;border:1px solid #34353d;border-radius:6px;padding:7px 10px}
+ input,button,select{font:inherit;background:#222329;color:#e8e8ea;border:1px solid #34353d;border-radius:6px;padding:7px 10px}
  button{cursor:pointer}button:hover{background:#2c2d35}
  button.go{background:#4a6cf7;border-color:#4a6cf7;color:#fff}button.go:hover{background:#5b79f8}
  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
@@ -205,13 +209,18 @@ PAGE = r"""<!doctype html><meta charset=utf-8><title>clipper</title>
     <button id=bout>Mark out (O)</button>
     <button id=play>Play (space)</button>
     <input id=cname placeholder="clip name" size=20>
+    <select id=pmode title="how the capture plays back: extract's --playback">
+      <option value=loop>loop</option>
+      <option value=one-shot>one-shot</option>
+      <option value=final-hold>final-hold</option>
+    </select>
     <button class=go id=add>Add clip</button>
   </div>
   <div class=hint><kbd>←</kbd><kbd>→</kbd> step · <kbd>shift</kbd>+arrows ×10 · <kbd>I</kbd> in ·
     <kbd>O</kbd> out · <kbd>space</kbd> play · <kbd>enter</kbd> add clip ·
     drag the green marks on the track to move in and out</div>
 
-  <table><thead><tr><th>clip</th><th>in</th><th>out</th><th>frames</th><th>seconds</th><th></th></tr></thead>
+  <table><thead><tr><th>clip</th><th>in</th><th>out</th><th>frames</th><th>seconds</th><th>playback</th><th></th></tr></thead>
   <tbody id=list></tbody></table>
   <div class=hint id=saved></div>
 </div>
@@ -280,12 +289,14 @@ function rows(){
     <td>${c.name}</td><td class=n>${c.in}</td><td class=n>${c.out}</td>
     <td class=n>${c.out-c.in+1}</td>
     <td class=n>${((c.in-1)/S.fps).toFixed(2)}–${(c.out/S.fps).toFixed(2)}</td>
+    <td class=n>${c.playback}</td>
     <td><button data-go=${i}>go</button> <button data-del=${i}>×</button></td></tr>`).join('');
 }
 $('list').onclick = e => {
   const del = e.target.dataset.del, go = e.target.dataset.go;
   if (del !== undefined){ S.clips.splice(+del,1); rows(); save(); }
-  if (go !== undefined){ S.in = S.clips[+go].in; S.out = S.clips[+go].out; marks(); show(S.in); }
+  if (go !== undefined){ const c = S.clips[+go];
+    S.in = c.in; S.out = c.out; $('pmode').value = c.playback; marks(); show(S.in); }
 };
 
 async function post(path, body){
@@ -300,7 +311,8 @@ $('load').onclick = async () => {
   try {
     const j = await post('/api/load', {set: $('set').value, url: $('url').value});
     S = {...S, set:j.set, url:j.url, fps:j.fps, frames:j.frames, in:null, out:null,
-         clips: j.clips.map(c=>({name:c.name, in:c.in_frame, out:c.out_frame}))};
+         clips: j.clips.map(c=>({name:c.name, in:c.in_frame, out:c.out_frame,
+                                playback: c.playback || 'loop'}))};
     $('set').value = j.set; $('url').value = j.url;
     setText('ftot', j.frames);
     setText('status', `${j.frames} frames @ ${j.fps.toFixed(3)} fps`);
@@ -331,7 +343,7 @@ $('add').onclick = () => {
   if (!name) return err('name the clip');
   if (!S.in || !S.out) return err('mark an in and an out frame');
   if (S.out < S.in) return err('out frame is before in frame');
-  err(''); S.clips.push({name, in:S.in, out:S.out});
+  err(''); S.clips.push({name, in:S.in, out:S.out, playback: $('pmode').value});
   $('cname').value = ''; S.in = S.out = null; marks(); rows(); save();
 };
 
@@ -365,17 +377,33 @@ def selftest():
     with tempfile.TemporaryDirectory() as d:
         global EXPORTS
         EXPORTS = d
-        out = write_clips("demo", "http://x", 30.0, [{"name": "Step Touch", "in": 1, "out": 1},
-                                                     {"name": "turn", "in": 31, "out": 60}])
+        out = write_clips("demo", "http://x", 30.0,
+                          [{"name": "Step Touch", "in": 1, "out": 1},
+                           {"name": "turn", "in": 31, "out": 60, "playback": "one-shot"}])
         assert out[0] == {"name": "step-touch", "in_frame": 1, "out_frame": 1, "frames": 1,
-                          "start": 0.0, "end": 0.033, "export": "exports/demo/step-touch"}, out[0]
+                          "start": 0.0, "end": 0.033, "playback": "loop",
+                          "export": "exports/demo/step-touch"}, out[0]
+        assert out[1]["playback"] == "one-shot", out[1]
+        # a typo must not reach extract as --playback
+        try:
+            write_clips("demo", "http://x", 30.0, [{"name": "x", "in": 1, "out": 2, "playback": "looop"}])
+        except ValueError as e:
+            assert "looop" in str(e), e
+        else:
+            raise AssertionError("bad playback accepted")
         assert out[1]["start"] == 1.0 and out[1]["end"] == 2.0 and out[1]["frames"] == 30, out[1]
         assert json.load(open(os.path.join(d, "demo", "clips.json")))["source_fps"] == 30.0
     # The custom track replaced the range input. Nothing here runs the page, but a
     # half-finished refactor leaves a dead $('scrub') that only throws in a browser.
-    for part in ("id=track", "id=band", "id=head", "id=hin", "id=hout",
+    for part in ("id=track", "id=band", "id=head", "id=hin", "id=hout", "id=pmode",
                  "onpointerdown", "getBoundingClientRect"):
         assert part in PAGE, part
+    # the select must offer exactly what write_clips accepts, or a choice the user
+    # can make is a choice this file rejects
+    bare = PAGE.count("<option value=") - PAGE.count('<option value="')  # the set list is quoted
+    assert bare == len(PLAYBACK), bare
+    for part in PLAYBACK:
+        assert f"<option value={part}>" in PAGE, part
     assert "'scrub'" not in PAGE and "type=range" not in PAGE
     print("ok")
 
