@@ -4,7 +4,7 @@
   motion_artist.py extract URL|FILE --fps N --frames N [--start S] [--end S] [--name SLUG]
                    [--playback loop|one-shot|final-hold] [--pingpong] [--out DIR]
   motion_artist.py render DIR/motion.json [--out FILE.html] [--pingpong] [--template FILE]
-  motion_artist.py export DIR/motion.json [--out FILE.zip] [--sheet FILE.html]
+  motion_artist.py export DIR/motion.json [--out DIR] [--sheet FILE.html]
   motion_artist.py selftest
 
 `extract` writes DIR/motion.json (+ DIR/thumbs/*.jpg) and prints a compact frame table.
@@ -12,7 +12,7 @@
 `export` bundles the json, sheet and thumbs with a SHA-256 manifest for hand-off.
 Between extract and render, an agent may fill `arc`, `title` and per-frame `note` in motion.json.
 """
-import argparse, base64, glob, hashlib, html, json, math, os, re, subprocess, sys, urllib.request, zipfile
+import argparse, base64, glob, hashlib, html, json, math, os, re, shutil, subprocess, sys, urllib.request
 
 MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
              "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task")
@@ -927,7 +927,7 @@ def pose_grid(a):
 
 
 def export(a):
-    """Zip motion.json + the sheet + thumbs with a SHA-256 manifest, ready for KP-Graphics."""
+    """Write motion.json + the sheet + thumbs and a SHA-256 manifest into one uncompressed bundle."""
     jp = a.json
     d = json.load(open(jp))
     src = os.path.dirname(os.path.abspath(jp))
@@ -960,13 +960,24 @@ def export(a):
     # off from, one directory per source video. The file name still carries frame count and fps —
     # a re-cut at a different rate is a different animation from the same move.
     exports = os.path.join(os.path.dirname(os.path.dirname(src)), "exports", set_name(d))
-    out = a.out or os.path.join(exports, f"{bundle}-{d['frame_count']}f-{d['fps']}fps-motion-source.zip")
-    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-        for rel, p in files: z.write(p, f"{bundle}/{rel}")
-        z.writestr(f"{bundle}/manifest.json", json.dumps(man, indent=1))
+    out = a.out or os.path.join(exports, f"{bundle}-{d['frame_count']}f-{d['fps']}fps-motion-source")
+    # A plain directory, not a zip: the consumer reads thumbs/ frame by frame, so compressing them
+    # only to have them unpacked again bought nothing. The layout is what unzipping used to give,
+    # minus the redundant <bundle>/ level the archive needed to avoid spilling on extract.
+    # Re-export replaces the bundle in place, so clear the old one first — a shorter re-cut would
+    # otherwise leave stale thumbs behind, and a thumb count past frame_count silently costs the
+    # consumer the whole pose reference.
+    if os.path.isdir(out): shutil.rmtree(out)
+    for rel, p in files:
+        dst = os.path.join(out, rel)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(p, dst)
+    manifest_p = os.path.join(out, "manifest.json")
+    json.dump(man, open(manifest_p, "w"), indent=1)
     ratio = man["seam_ratio"]
-    print(f"{out}\nsha256 {sha256(out)} | {len(files) + 1} files | {d['frame_count']}f @ "
+    # A directory has no digest of its own. The manifest carries a SHA-256 per file, so its own
+    # digest covers every one of them transitively — that is the pair a job input references now.
+    print(f"{out}\nmanifest sha256 {sha256(manifest_p)} | {len(files) + 1} files | {d['frame_count']}f @ "
           f"{d['fps']}fps | {d['playback']} | view {d['view']} | seam {man['seam']}"
           f"{f' ({ratio:.2f}x median step)' if ratio is not None else ''}")
     if not man["arc_written"]:

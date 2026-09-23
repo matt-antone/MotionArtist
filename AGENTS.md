@@ -128,7 +128,8 @@ Every capture is named `<set>-<index>`. A video URL always arrives with a set na
 one set, and each unique move cut from it takes the next index from 1. That string is the capture
 directory, the bundle directory, the manifest `name` and the shipped `motion.json` `name`, so a
 bundle cannot advertise one name and say another inside. Bundles land in `exports/<set>/`, one
-directory per source video, as `<set>-<index>-<frames>f-<fps>fps-motion-source.zip`.
+directory per source video, as `<set>-<index>-<frames>f-<fps>fps-motion-source/` — an
+uncompressed directory, not an archive.
 
 An assigned name is an identifier in a way a descriptive label never was — "shuffle" is a genre,
 and two different dances landed on it once and one silently overwrote the other. Provenance (url,

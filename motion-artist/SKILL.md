@@ -479,7 +479,8 @@ over-driving the source to compensate.
    python3 "$SKILL/scripts/motion_artist.py" export work/dance/motion.json
    ```
    One motion is one bundle, however many frames it has.
-   Writes `exports/hip-hop-1/hip-hop-1-3-24f-4fps-motion-source.zip` — always `exports/<set>/` at
+   Writes `exports/hip-hop-1/hip-hop-1-3-24f-4fps-motion-source/` — an uncompressed directory,
+   always `exports/<set>/` at
    the repo root, never inside
    the capture dir: `motion.json`, the sheet HTML, `thumbs/` (the pose reference — see above), any
    pose grid images and their sidecar, and a
@@ -494,15 +495,16 @@ over-driving the source to compensate.
 
 ## Hand-off to KaraokeParty-Graphics
 
-Copy `exports/<set>/<set>-<index>-<frames>f-<fps>fps-motion-source.zip` into that repo's ignored
-`work/<character>/motion-source/` and reference it by path and by the SHA-256 the export printed,
+Copy `exports/<set>/<set>-<index>-<frames>f-<fps>fps-motion-source/` into that repo's ignored
+`work/<character>/motion-source/` and reference it by path and by the manifest SHA-256 the export printed,
 as the authorized motion source in the motion-director job input. A spec names **one** bundle per
 animation (`spec.motions[set_name]` → one bundle directory); CAG chunks it across renders itself.
 A bundle is named by its set and move index, so a re-cut of the same move replaces it in place and
 no stale twin is left behind to be referenced — but the **SHA-256 changes**, so re-reference it in
 the job input rather than assuming the old digest still describes the file at that path.
 The bundle's `manifest.json`
-carries a SHA-256 per file, so an unzipped copy can be verified file by file. Do not commit
+carries a SHA-256 per file, so a copy can be verified file by file, and the manifest's own
+digest covers all of them transitively — a directory has none of its own. Do not commit
 captures there; the repo excludes motion captures by policy. The sheet's
 "view" is the *filmed* view — the manifest's `view` still governs the rendered character.
 
