@@ -13,7 +13,7 @@ That file is the handoff: `motion_artist.py extract <url> --start S --end S ...`
 takes the seconds straight from it. This tool does not run the pipeline; it only
 settles which frames the pipeline should be pointed at.
 """
-import argparse, json, os, re, subprocess, sys, urllib.parse, webbrowser
+import argparse, errno, json, os, re, subprocess, sys, urllib.parse, webbrowser
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -389,6 +389,14 @@ if __name__ == "__main__":
         selftest()
         sys.exit(0)
     os.makedirs(WORK, exist_ok=True)
+    # Bind before announcing: printing the URL first claimed success and then traced back on a
+    # port already held by an earlier clipper — whose page was serving fine all along.
+    try:
+        srv = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
+    except OSError as e:
+        if e.errno != errno.EADDRINUSE: raise
+        sys.exit(f"port {a.port} is already in use — an earlier clipper is likely still serving "
+                 f"http://localhost:{a.port}. Open it, or pass --port.")
     print(f"clipper on http://localhost:{a.port}  (ctrl-c to stop)")
     webbrowser.open(f"http://localhost:{a.port}")
-    ThreadingHTTPServer(("127.0.0.1", a.port), Handler).serve_forever()
+    srv.serve_forever()
