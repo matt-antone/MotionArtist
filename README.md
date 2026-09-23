@@ -94,6 +94,7 @@ python3 motion-artist/scripts/motion_artist.py export work/dance/motion.json
 | `--start`, `--end` | trim the span to inspect, seconds or `m:ss`. Without `--end`, the span is `frames / fps` seconds of real time. With both, the span is time-stretched onto the frame count. |
 | `--margin` | slack in seconds around `--start`/`--end`: probe both ends for the move's own cut (loop: matching poses; one-shot: the stillest ending) and stretch the winner onto the frame count. Default `0.5`; `0` uses the span exactly as given |
 | `--url` | origin URL, when `source` is a local copy of it — the manifest is the only place a bundle's provenance lives |
+| `--pingpong` | the capture plays out and back (`0..N-1..1`); recorded in the manifest and used by `render`. `seam`/`seam_ratio` still measure the straight loop, since a consumer that ignores the flag plays that jump |
 | `--performer` | `female` / `male`, the filmed body carried into the manifest; omit when it should not be stated. Not the character the render must draw |
 | `--search` | find the best loop: slide a `frames / fps`-second window over `--start..--end` (whole video if `--end` is omitted), score each start by loop-closure pose distance against motion energy, pick the tightest seam among the livelier half |
 | `--window` | source seconds the search looks for, when that differs from `frames / fps` (a scene cut leaves a short usable span, or a fast move should play slower); the winner is stretched onto the frame count |

@@ -2,7 +2,7 @@
 """motion_artist: turn a video of a person moving into a frame-by-frame motion source.
 
   motion_artist.py extract URL|FILE --fps N --frames N [--start S] [--end S] [--name SLUG]
-                   [--playback loop|one-shot|final-hold] [--out DIR]
+                   [--playback loop|one-shot|final-hold] [--pingpong] [--out DIR]
   motion_artist.py render DIR/motion.json [--out FILE.html] [--pingpong] [--template FILE]
   motion_artist.py export DIR/motion.json [--out FILE.zip] [--sheet FILE.html]
   motion_artist.py selftest
@@ -419,7 +419,7 @@ def extract(a):
                     file=portable(src), title=title, start=start, end=round(end, 3),
                     speed_factor=round(speed, 2), duration=round(dur, 2)),
         exaggerate=a.exaggerate, stabilized=a.stabilize, performer=a.performer,
-        fps=a.fps, frame_count=a.frames, playback=a.playback, view=view,
+        fps=a.fps, frame_count=a.frames, playback=a.playback, pingpong=a.pingpong, view=view,
         seam=("clean" if seam < 1.5 else "needs blend") if loop else "n/a",
         seam_ratio=round(seam, 2) if loop else None,   # the number behind the verdict, for CAG's log
         missing_frames=missing, arc="",
@@ -585,7 +585,7 @@ def render(a):
     # The sheet holds exactly the frames the animation was specified with — one cell each, no more.
     # Reviewing a seam is a playback question, not a drawing count: the player already loops forever,
     # and --pingpong only changes the order it walks the same cells in.
-    if a.pingpong and len(d["frames"]) > 2:
+    if (a.pingpong or d.get("pingpong")) and len(d["frames"]) > 2:
         d["pingpong"] = True
     out = a.out or os.path.join(os.path.dirname(a.json), f"{d['name']}-motion.html")
     tdir = os.path.join(os.path.dirname(a.json), "thumbs")
@@ -752,6 +752,11 @@ def selftest():
     mixed = {**cap, "frames": [{"features": {"view": v}} for v in ("front", "front", "3/4", "back")]}
     assert bundle_manifest(mixed, [])["view_frames"] == {"front": 2, "3/4": 1, "back": 1}
     assert bundle_manifest({**cap, "performer": "female"}, [])["performer"] == "female"
+    # out-and-back playback is declared, defaults to off, and never edits the seam it sits beside:
+    # a consumer with no ping-pong plays the straight loop and must still see that jump coming
+    assert man["pingpong"] is False
+    pp = bundle_manifest({**cap, "pingpong": True}, [])
+    assert pp["pingpong"] is True and pp["seam"] == "needs blend" and pp["seam_ratio"] == 2.4, pp
     cap.pop("seam_ratio")                                  # a schema/1 capture predates the number
     assert bundle_manifest(cap, [("motion.json", __file__)])["seam_ratio"] is None
     # a loop is cut at a frame: the search walks the source at its own rate by default, never
@@ -824,6 +829,10 @@ def bundle_manifest(d, files):
     return dict(
         bundle="motion-source", schema=d.get("schema", SCHEMA), name=d["name"], title=d["title"],
         fps=d["fps"], frame_count=d["frame_count"], playback=d["playback"], view=d["view"],
+        # Out-and-back playback, declared so a consumer can walk 0..N-1..1 instead of jumping N-1->0.
+        # `seam` below still measures the straight loop, deliberately: a consumer that does not
+        # implement ping-pong plays that jump, and hiding the ratio behind this flag would hide it.
+        pingpong=d.get("pingpong", False),
         seam=d["seam"], seam_ratio=d.get("seam_ratio"),   # the verdict, and the number behind it
         stabilized=d.get("stabilized", False), exaggerate=d.get("exaggerate"),
         performer=d.get("performer"),   # the filmed body, not the character the render must draw
@@ -971,6 +980,7 @@ def main():
     e.add_argument("--margin", type=tstamp, default=0.5, help="slack in seconds around --start and --end: probe both ends for the move's own cut (loop: matching poses; one-shot: the stillest ending) and stretch the winner onto the frame count. 0 uses the span exactly as given")
     e.add_argument("--search", action="store_true", help="slide a frames/fps-second window over --start..--end and pick the tightest loop")
     e.add_argument("--playback", choices=["loop", "one-shot", "final-hold"], default="loop")
+    e.add_argument("--pingpong", action="store_true", help="the capture plays out and back (0..N-1..1), so the seam is the motion reversed. Recorded in the manifest; `seam` still measures the straight loop a consumer without ping-pong will play")
     e.add_argument("--performer", choices=["female", "male"], help="the filmed performer's body, carried into the manifest; omit when it should not be stated")
     r = sub.add_parser("render"); r.add_argument("json"); r.add_argument("--out")
     r.add_argument("--template", help=f"sheet template to render into (default {TEMPLATE_PATH})")
