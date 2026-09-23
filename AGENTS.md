@@ -20,7 +20,8 @@ motion-artist/templates/sheet.html     the motion sheet: markup, CSS and player,
 .claude/skills/motion-artist           symlink to motion-artist/, so the skill loads in this repo —
                                        git-ignored, so a fresh clone has to create it (see Setup)
 work/                                  captures and downloaded video — git-ignored, never commit
-exports/<set>/                         finished bundles, one zip per capture — committed
+exports/<set>/                         finished bundles, one zip per capture — git-ignored, never
+                                       committed; the set's clips.json beside them is committed
 README.md                              the human-facing version of SKILL.md
 ```
 

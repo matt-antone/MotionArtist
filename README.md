@@ -19,7 +19,7 @@ motion-artist/
   scripts/clipper.py          # browser tool: step a video frame by frame and mark clip in/out points
   scripts/portrait_crop.py    # crop a landscape source to a 9:16 window around the performer, before extract
   templates/sheet.html        # the motion sheet's markup, CSS and player; render() fills its placeholders
-exports/<set>/                # finished bundles, one zip per capture — committed
+exports/<set>/                # finished bundles, one zip per capture — git-ignored, plus a committed clips.json
 AGENTS.md                     # how to work in this repo: pipeline, conventions, verification
 ```
 
@@ -141,4 +141,7 @@ move get two names, never one overwritten file, so a copy into a consuming repo 
 it supersedes in the same step.
 
 Captures and downloaded video live under `work/`, git-ignored. Finished bundles land in
-`exports/<set>/` and are committed, beside the `clips.json` clipper writes for that set.
+`exports/<set>/`, beside the `clips.json` clipper writes for that set. The bundles are git-ignored
+too — they are build output, regenerable from that `clips.json` and the pipeline, and their digest
+changes on every re-cut. Hand off the path and the SHA-256; do not commit the zip. `clips.json`
+itself is committed: the marked in and out frames are hand-made and nothing else records them.

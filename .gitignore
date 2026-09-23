@@ -8,3 +8,4 @@ work
 .fallow/
 .DS_Store
 graft/
+exports/**/*.zip
