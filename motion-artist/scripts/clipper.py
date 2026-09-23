@@ -69,7 +69,7 @@ def load_set(name, url):
 
     count = len([f for f in os.listdir(frames_dir) if f.endswith(".jpg")])
     url_file = os.path.join(set_dir, "source-url.txt")
-    return {"set": name, "frames": count, "fps": probe_fps(src), "cap_fps": read_cap_fps(name),
+    return {"set": name, "frames": count, "fps": probe_fps(src),
             "url": open(url_file).read().strip() if os.path.exists(url_file) else (url or ""),
             "clips": read_clips(name)}
 
@@ -83,20 +83,13 @@ def read_clips(name):
     return json.load(open(p))["clips"] if os.path.exists(p) else []
 
 
-def read_cap_fps(name):
-    p = clips_path(name)
-    return json.load(open(p)).get("capture_fps", CAPTURE_FPS) if os.path.exists(p) else CAPTURE_FPS
-
-
-def write_clips(name, url, fps, clips, cap_fps=CAPTURE_FPS):
+def write_clips(name, url, fps, clips):
     """Each clip records frames and the seconds extract needs, plus where it will land.
 
     The capture's frame count is derived, never typed: `frames = fps * window`, and the
     window is the span the marks already fixed. Picking a frame count first and hunting a
     window to fit it is the mistake the skill calls invisible in the output.
     """
-    if not 1 <= cap_fps <= 60:
-        raise ValueError(f"capture fps {cap_fps} is outside 1..60")
     out = []
     for c in clips:
         a, b = int(c["in"]), int(c["out"])
@@ -104,19 +97,22 @@ def write_clips(name, url, fps, clips, cap_fps=CAPTURE_FPS):
         pb = c.get("playback") or "loop"
         if pb not in PLAYBACK:  # this file is a command line; a bad value would reach extract as one
             raise ValueError(f"unknown playback {pb!r}, expected one of {', '.join(PLAYBACK)}")
+        cap_fps = c.get("fps")                          # `or` would read a 0 fps as the default
+        cap_fps = CAPTURE_FPS if cap_fps is None else int(cap_fps)
+        if not 1 <= cap_fps <= 60:
+            raise ValueError(f"capture fps {cap_fps} is outside 1..60")
         window = (b - a + 1) / fps                      # seconds of source the marks span
         cap_frames = max(1, round(window * cap_fps))
         out.append({"name": cn, "in_frame": a, "out_frame": b, "frames": b - a + 1,
                     "start": round((a - 1) / fps, 3), "end": round(b / fps, 3),
-                    "playback": pb, "capture_frames": cap_frames,
+                    "playback": pb, "capture_fps": cap_fps, "capture_frames": cap_frames,
                     # span / (frames/fps). extract recomputes it; 1.0 here means the marks
                     # already land on a whole frame at this fps, so no rounding is hiding.
                     "speed_factor": round(window / (cap_frames / cap_fps), 3),
                     "export": f"exports/{name}/{cn}"})
     os.makedirs(os.path.dirname(clips_path(name)), exist_ok=True)
     with open(clips_path(name), "w") as fh:
-        json.dump({"set": name, "url": url, "source_fps": round(fps, 4),
-                   "capture_fps": cap_fps, "clips": out}, fh, indent=2)
+        json.dump({"set": name, "url": url, "source_fps": round(fps, 4), "clips": out}, fh, indent=2)
     return out
 
 
@@ -159,8 +155,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/load":
                 return self.send(200, json.dumps(load_set(name, body.get("url", "").strip())))
             if self.path == "/api/clips":
-                saved = write_clips(name, body.get("url", ""), float(body["fps"]),
-                                    body.get("clips", []), int(body.get("cap_fps", CAPTURE_FPS)))
+                saved = write_clips(name, body.get("url", ""), float(body["fps"]), body.get("clips", []))
                 return self.send(200, json.dumps({"clips": saved, "path": clips_path(name)}))
         except subprocess.CalledProcessError as e:
             return self.send(500, json.dumps({"error": (e.stderr or str(e))[-400:]}))
@@ -208,8 +203,6 @@ PAGE = r"""<!doctype html><meta charset=utf-8><title>clipper</title>
 <div class=row>
   <input id=set placeholder="animation set name" size=18>
   <input id=url placeholder="YouTube URL (first time only)" size=38>
-  <label title="capture fps, fixed for the set. The frame count is derived: frames = fps x window">
-    fps <input id=capfps type=number min=1 max=60 value=12 size=3 style=width:4.5em></label>
   <button class=go id=load>Load</button>
   <span id=status></span>
 </div>
@@ -234,6 +227,8 @@ PAGE = r"""<!doctype html><meta charset=utf-8><title>clipper</title>
     <button id=bout>Mark out (O)</button>
     <button id=play>Play (space)</button>
     <input id=cname placeholder="clip name" size=20>
+    <label title="capture fps. The frame count is derived from it: frames = fps x window">
+      fps <input id=capfps type=number min=1 max=60 value=12 style=width:4.5em></label>
     <select id=pmode title="how the capture plays back: extract's --playback">
       <option value=loop>loop</option>
       <option value=one-shot>one-shot</option>
@@ -308,7 +303,14 @@ $('track').onpointerdown = e => {
 // derived here and in write_clips the same way; nothing types a frame count.
 const capFps = () => Math.min(Math.max(1, +$('capfps').value || 1), 60);
 const windowOf = (a, b) => (b - a + 1) / S.fps;
-const capFrames = (a, b) => Math.max(1, Math.round(windowOf(a, b) * capFps()));
+const capFrames = (a, b, fps) => Math.max(1, Math.round(windowOf(a, b) * fps));
+
+// The frames extract will pick: n samples across the marked window. A loop's samples are
+// exclusive of the end, so the last->first cut is one step like every other.
+function captureFrame(i, n, loop){
+  const step = (S.out - S.in + (loop ? 1 : 0)) / (loop ? n : Math.max(n - 1, 1));
+  return Math.min(S.out, S.in + Math.round(i * step));
+}
 
 function marks(){
   setText('min', S.in ?? '–'); setText('mout', S.out ?? '–');
@@ -317,7 +319,7 @@ function marks(){
   const el = $('cap');
   if (!span){ el.textContent = ''; el.className = ''; }
   else {
-    const w = windowOf(S.in, S.out), n = capFrames(S.in, S.out), factor = w / (n / capFps());
+    const w = windowOf(S.in, S.out), n = capFrames(S.in, S.out, capFps()), factor = w / (n / capFps());
     // off 1.000 means the marks do not land on a whole frame at this fps, so the bundle
     // would play fast or slow. The marks are draggable: nudge one until it reads exact.
     const off = Math.abs(factor - 1) > 0.0005;
@@ -328,13 +330,13 @@ function marks(){
   place();
 }
 
-$('capfps').oninput = () => { marks(); rows(); };
+$('capfps').oninput = () => marks();  // rows carry their own fps
 function rows(){
   $('list').innerHTML = S.clips.map((c,i)=>`<tr>
     <td>${c.name}</td><td class=n>${c.in}</td><td class=n>${c.out}</td>
     <td class=n>${c.out-c.in+1}</td>
     <td class=n>${((c.in-1)/S.fps).toFixed(2)}–${(c.out/S.fps).toFixed(2)}</td>
-    <td class=n>${capFrames(c.in, c.out)}f</td>
+    <td class=n>${capFrames(c.in, c.out, c.fps)}f @ ${c.fps}</td>
     <td class=n>${c.playback}</td>
     <td><button data-go=${i}>go</button> <button data-del=${i}>×</button></td></tr>`).join('');
 }
@@ -342,7 +344,8 @@ $('list').onclick = e => {
   const del = e.target.dataset.del, go = e.target.dataset.go;
   if (del !== undefined){ S.clips.splice(+del,1); rows(); save(); }
   if (go !== undefined){ const c = S.clips[+go];
-    S.in = c.in; S.out = c.out; $('pmode').value = c.playback; marks(); show(S.in); }
+    S.in = c.in; S.out = c.out; $('pmode').value = c.playback; $('capfps').value = c.fps;
+    marks(); show(S.in); }
 };
 
 async function post(path, body){
@@ -358,8 +361,8 @@ $('load').onclick = async () => {
     const j = await post('/api/load', {set: $('set').value, url: $('url').value});
     S = {...S, set:j.set, url:j.url, fps:j.fps, frames:j.frames, in:null, out:null,
          clips: j.clips.map(c=>({name:c.name, in:c.in_frame, out:c.out_frame,
-                                playback: c.playback || 'loop'}))};
-    $('set').value = j.set; $('url').value = j.url; $('capfps').value = j.cap_fps;
+                                playback: c.playback || 'loop', fps: c.capture_fps || 12}))};
+    $('set').value = j.set; $('url').value = j.url;
     setText('ftot', j.frames);
     setText('status', `${j.frames} frames @ ${j.fps.toFixed(3)} fps`);
     $('editor').hidden = false; marks(); rows(); show(1);
@@ -371,16 +374,20 @@ $('bout').onclick = () => { S.out = S.n; if (S.in && S.in > S.out) S.in = null; 
 $('play').onclick = () => {
   if (S.timer){ clearInterval(S.timer); S.timer = null; setText('play','Play (space)'); return; }
   setText('play','Pause (space)');
+  // With a window marked, play what the capture will be: its own frames at its own rate.
+  // Stepping every source frame at the capture's fps would only be slow motion.
+  const span = S.in && S.out && S.out >= S.in;
+  const n = span ? capFrames(S.in, S.out, capFps()) : 0, loop = $('pmode').value === 'loop';
+  let i = 0;
   S.timer = setInterval(() => {
-    const last = S.out || S.frames, first = S.in || 1;
-    show(S.n >= last ? first : S.n + 1);
-  }, 1000/S.fps);
+    if (span) show(captureFrame(i++ % n, n, loop));
+    else show(S.n >= S.frames ? 1 : S.n + 1);
+  }, 1000 / (span ? capFps() : S.fps));
 };
 
 async function save(){
   try {
-    const j = await post('/api/clips', {set:S.set, url:S.url, fps:S.fps,
-                                        cap_fps: capFps(), clips:S.clips});
+    const j = await post('/api/clips', {set:S.set, url:S.url, fps:S.fps, clips:S.clips});
     $('saved').innerHTML = `<span class=ok>saved</span> ${j.path}`;
   } catch(e){ err(e.message); }
 }
@@ -390,7 +397,7 @@ $('add').onclick = () => {
   if (!name) return err('name the clip');
   if (!S.in || !S.out) return err('mark an in and an out frame');
   if (S.out < S.in) return err('out frame is before in frame');
-  err(''); S.clips.push({name, in:S.in, out:S.out, playback: $('pmode').value});
+  err(''); S.clips.push({name, in:S.in, out:S.out, playback: $('pmode').value, fps: capFps()});
   $('cname').value = ''; S.in = S.out = null; marks(); rows(); save();
 };
 
@@ -430,7 +437,7 @@ def selftest():
                            {"name": "ragged", "in": 1, "out": 43}])
         assert out[0] == {"name": "step-touch", "in_frame": 1, "out_frame": 1, "frames": 1,
                           "start": 0.0, "end": 0.033, "playback": "loop",
-                          "capture_frames": 1, "speed_factor": 0.4,
+                          "capture_fps": 12, "capture_frames": 1, "speed_factor": 0.4,
                           "export": "exports/demo/step-touch"}, out[0]
         assert out[1]["playback"] == "one-shot", out[1]
         # 30 source frames at 30 fps is a 1.000 s window; at 12 fps that is 12 frames and
@@ -439,12 +446,16 @@ def selftest():
         # 43 source frames is 1.4333 s, which is not a whole frame at 12 fps. The count is
         # rounded and speed_factor says so rather than the distortion going unrecorded.
         assert out[2]["capture_frames"] == 17 and out[2]["speed_factor"] != 1.0, out[2]
-        # the frame count follows fps, because the window is what was fixed
-        assert write_clips("demo", "http://x", 30.0,
-                           [{"name": "turn", "in": 31, "out": 60}], 24)[0]["capture_frames"] == 24
+        # fps is per clip: the same window at a different fps is a different frame count,
+        # and the seconds the marks fixed do not move
+        two = write_clips("demo", "http://x", 30.0,
+                          [{"name": "slow", "in": 31, "out": 60, "fps": 8},
+                           {"name": "fast", "in": 31, "out": 60, "fps": 24}])
+        assert [c["capture_frames"] for c in two] == [8, 24], two
+        assert two[0]["start"] == two[1]["start"] and two[0]["end"] == two[1]["end"], two
         for bad in (0, 61):
             try:
-                write_clips("demo", "http://x", 30.0, [{"name": "x", "in": 1, "out": 2}], bad)
+                write_clips("demo", "http://x", 30.0, [{"name": "x", "in": 1, "out": 2, "fps": bad}])
             except ValueError:
                 pass
             else:
@@ -458,11 +469,12 @@ def selftest():
             raise AssertionError("bad playback accepted")
         assert out[1]["start"] == 1.0 and out[1]["end"] == 2.0 and out[1]["frames"] == 30, out[1]
         saved = json.load(open(os.path.join(d, "demo", "clips.json")))
-        assert saved["source_fps"] == 30.0 and saved["capture_fps"] == 24, saved
+        assert saved["source_fps"] == 30.0 and "capture_fps" not in saved, saved
+        assert [c["capture_fps"] for c in saved["clips"]] == [8, 24], saved
     # The custom track replaced the range input. Nothing here runs the page, but a
     # half-finished refactor leaves a dead $('scrub') that only throws in a browser.
     for part in ("id=track", "id=band", "id=head", "id=hin", "id=hout", "id=pmode", "id=capfps",
-                 "onpointerdown", "getBoundingClientRect"):
+                 "onpointerdown", "getBoundingClientRect", "captureFrame"):
         assert part in PAGE, part
     # the select must offer exactly what write_clips accepts, or a choice the user
     # can make is a choice this file rejects

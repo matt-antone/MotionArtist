@@ -67,19 +67,19 @@ downloads it into `work/<set>/` (reusing an existing download) and splits every 
 `work/<set>/frames/`. They step through frames and mark in and out. Both marks sit on the frame track under the
 viewer and can be dragged to adjust, with the frame following the mark as it moves, so a boundary
 is settled by eye rather than re-marked. They name each clip, pick how it plays back and the fps the
-set is captured at, and the list is written to `exports/<set>/clips.json`:
+clip is captured at, and the list is written to `exports/<set>/clips.json`:
 
 ```json
-{"set": "shuffle-3", "url": "...", "source_fps": 29.97, "capture_fps": 12,
+{"set": "shuffle-3", "url": "...", "source_fps": 29.97,
  "clips": [{"name": "side-step", "in_frame": 91, "out_frame": 150, "frames": 60,
             "start": 3.003, "end": 5.005, "playback": "loop",
-            "capture_frames": 24, "speed_factor": 1.0,
+            "capture_fps": 12, "capture_frames": 24, "speed_factor": 1.0,
             "export": "exports/shuffle-3/side-step"}]}
 ```
 
 Run the pipeline per clip and take every one of those numbers as given: `--start`/`--end` from
-`start`/`end`, `--playback` from `playback`, `--fps` from `capture_fps`, `--frames` from
-`capture_frames`. Do not re-search the span and do not pick a frame count. `capture_frames` is
+`start`/`end`, `--playback` from `playback`, `--fps` from the clip's own `capture_fps`, `--frames`
+from `capture_frames`. Do not re-search the span and do not pick a frame count. `capture_frames` is
 already `capture_fps x window` for the window the marks fixed, which is the one order that makes
 the capture play at the speed it was danced — see **Timing** in the skill for what picking a frame
 count first costs.

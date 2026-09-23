@@ -141,10 +141,13 @@ assertion: **any bundle whose `speed_factor` is not 1.00 is a bug.**
 `clipper.py` is the one tool here that already works in this order: the marks fix the window before
 any count exists, so it derives `capture_frames = capture_fps x window` and writes the resulting
 `speed_factor` per clip. A clip that comes back off `1.0` has marks that do not land on a whole
-frame at that fps — nudge a mark rather than accepting the rounding.
+frame at that fps — nudge a mark rather than accepting the rounding. Its Play button previews the
+capture itself: the frames `extract` will sample, at the fps they will play, so a rate can be judged
+before the clip is captured.
 
 Keep `fps` fixed across a library (12 is CAG's editor default) and let the frame count vary per
-move. Frame count drives cost — CAG renders 8 figures per call — so a 4 s move is 48 frames and 6
+move. The marker records fps **per clip**, so this is a convention it will not enforce — a set whose
+clips carry different `capture_fps` is a deliberate choice, and worth confirming before capture. Frame count drives cost — CAG renders 8 figures per call — so a 4 s move is 48 frames and 6
 calls. That is the honest price of real-time playback; the alternative, a constant frame count, buys
 its predictable cost by time-scaling every move that is not exactly `frames/fps` long.
 
