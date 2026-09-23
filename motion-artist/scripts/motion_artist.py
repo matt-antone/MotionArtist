@@ -320,13 +320,10 @@ def extract(a):
             else:
                 print(f"snap: no fully-tracked cut within {a.margin:.2f}s of either end; span used as given")
     span = end - start
-    # loop: samples exclusive of `end` so the last->first cut is one natural step
-    step = span / a.frames if a.playback == "loop" else span / max(a.frames - 1, 1)
     speed = span / (a.frames / a.fps)  # 1.0 == real time; 2.0 == source played at 2x
 
     frames, missing = [], []
-    for i in range(a.frames):
-        t = start + i * step
+    for i, t in enumerate(sample_times(start, span, a.frames)):
         cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
         ok, bgr = cap.read()
         if not ok: missing.append(i); continue
@@ -420,7 +417,11 @@ def extract(a):
                     speed_factor=round(speed, 2), duration=round(dur, 2)),
         exaggerate=a.exaggerate, stabilized=a.stabilize, performer=a.performer,
         fps=a.fps, frame_count=a.frames, playback=a.playback, pingpong=a.pingpong, view=view,
-        seam=("clean" if seam < 1.5 else "needs blend") if loop else "n/a",
+        # `seam` is normalised by the median step, so 1.0 is one natural step. A loop now
+        # contains `end`, and the snap search picks an `end` whose pose matches `start`, so the
+        # last frame can repeat the first: well under a step is a stall -- a frame held at the
+        # loop point -- and reads as wrong as a jump does.
+        seam=(("stalls" if seam < 0.5 else "clean" if seam < 1.5 else "needs blend") if loop else "n/a"),
         seam_ratio=round(seam, 2) if loop else None,   # the number behind the verdict, for CAG's log
         missing_frames=missing, arc="",
         frames=[dict(i=f["i"], t=f["t"], role=f["role"], pace=f["pace"], energy=f["energy"],
@@ -477,6 +478,17 @@ def carry_over_writing(jp, doc):
 
 
 def pose_dist(a, b): return sum(dist(a[k], b[k]) for k in CORE) / len(CORE)
+
+
+def sample_times(start, span, n):
+    """The instants a capture is cut at: `n` samples across the span, inclusive of both ends.
+
+    Every playback samples the same way, so the first frame is `start` and the last is `end` --
+    both boundaries a mark fixed are frames the artist is handed. A loop pays for that: its last
+    frame no longer steps to the first, it can repeat it, which is what `seam` reports as a stall.
+    """
+    step = span / max(n - 1, 1)
+    return [start + i * step for i in range(n)]
 
 
 def sample_rate(cap, hz=None):
@@ -681,6 +693,9 @@ def selftest():
     still = [cyc(min(t, 1.5)) for t in ts]
     assert pick_span(ts, still, 0.0, 1.75, 0.5, loop=False)["end"] >= 1.625
     assert pick_span(ts, [None] * len(ts), 0.0, 1.75, 0.5, loop=True) is None
+    # both boundaries a mark fixed are frames the capture contains, whatever the playback
+    assert sample_times(1.0, 2.0, 5) == [1.0, 1.5, 2.0, 2.5, 3.0], sample_times(1.0, 2.0, 5)
+    assert sample_times(1.0, 2.0, 1) == [1.0]                 # one frame cannot span anything
     # pelvis wound against the shoulders: the one thing no knee or elbow angle can carry
     P, W = pose(0.60, 0.95)
     W["shL"][2] = 0.0                                   # shoulders square to camera
