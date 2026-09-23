@@ -21,7 +21,7 @@ roles: it controls motion only, never character scale, identity, view or prop ha
 | `--start` / `--end` | recommended | trim the span to inspect, seconds or `m:ss`. Without `--end`, the span is `frames / fps` seconds of real time from `--start`. With both, that span is time-stretched onto the frame count (the sheet reports the speed factor). Neither end is taken literally unless `--margin 0` — see below. |
 | `--playback` | default `loop` | `loop`, `one-shot`, `final-hold`. Every playback samples the span the same way — `--frames` instants inclusive of both ends, so the first frame is `--start` and the last is `--end`, and both boundaries a mark fixed are frames the artist is handed. **CAG reads all three, and refuses a fourth.** It normalises them to two words: `loop` stays `loop`, and `one-shot` and `final-hold` both become `once` — whether a set holds its last frame still comes from CAG's own per-set plan, never from the bundle, so `final-hold` buys nothing there beyond `one-shot`. A word outside this list now raises `MotionError` rather than reading as not-loop, so do not invent one. It still changes what happens *here*: a non-loop span is snapped to the stillest ending rather than to matching poses. For `loop`, frame 0 and the last frame should both land on their feet — a loop seam an artist has to hold mid-air has no stable pose to draw. `extract` warns when either boundary frame comes back airborne; pick a different `--start`/`--search` window when it does. When the clip came from `clipper`, take this from the clip's `playback` rather than choosing it: the user picked it while watching the frames. |
 | `--name` | yes | `<set>-<index>` — the set name the user gave for this video, plus this move's index. See **Naming** below. |
-| `--pingpong` | optional | the capture plays out and back — `0..N-1..1` — so the seam is the motion reversed rather than a cut. Recorded in `motion.json` and the manifest as `pingpong`, and `render` walks the sheet that way without repeating the flag. **CAG reads the flag** (`cag/motion.py`): it folds `"playback": "loop"` plus `"pingpong": true` into the single word `pingpong`, writes its proof GIF as the bounce itself, and carries `playback` into the rendered package's manifest so the game plays the same shape. It also stops asking such a bundle about its seam, since the return leg reverses the out leg. `seam` and `seam_ratio` still measure the straight loop — the flag never edits them, because the jump is what an unaware consumer plays. Do not bake the out-and-back into the frames instead: 8 frames is one CAG render chunk, 14 is two, and the duplicated return poses come back drawn differently in the second chunk. CAG expands the bounce itself at playback time, from the N cells it drew. |
+| `--pingpong` | optional | the capture plays out and back — `0..N-1..1` — so the seam is the motion reversed rather than a cut. Recorded in `motion.json` and the manifest as `pingpong`, and `render` walks the sheet that way off the capture, having no `--pingpong` of its own. **CAG reads the flag** (`cag/motion.py`): it folds `"playback": "loop"` plus `"pingpong": true` into the single word `pingpong`, writes its proof GIF as the bounce itself, and carries `playback` into the rendered package's manifest so the game plays the same shape. It also stops asking such a bundle about its seam, since the return leg reverses the out leg. `seam` and `seam_ratio` still measure the straight loop — the flag never edits them, because the jump is what an unaware consumer plays. Do not bake the out-and-back into the frames instead: 8 frames is one CAG render chunk, 14 is two, and the duplicated return poses come back drawn differently in the second chunk. CAG expands the bounce itself at playback time, from the N cells it drew. |
 | `--performer` | optional | `female` or `male` — the filmed performer's body, carried into `motion.json` and the manifest. It describes the trace, not the character the render must draw; omit it rather than guessing. |
 | `--margin` | default `0.5` s | slack around **both** `--start` and `--end`. The span you type is a guess; the move's own cut rarely lands on that exact second. Both ends are probed within the margin for the real one — matching poses for a `loop`, the stillest ending otherwise — and the winner is time-stretched onto the frame count, so the source span may come back a little shorter or longer than asked. `--margin 0` uses the span exactly as typed. Ignored with `--search`, which picks its own span. |
 | `--search` | optional | "find the best loop": slide a `frames / fps`-second window over `--start..--end` (whole video when `--end` is omitted), score each start by loop-closure distance vs motion energy, and use the tightest seam among the livelier half. Prints the top candidates. **The window slides one source frame at a time** — see below. |
@@ -93,8 +93,10 @@ accepts only `front`, `left`, `right` and `3/4`, so a bundle declaring `back` fa
 Additive manifest keys are free: CAG requires exactly `fps`, `frame_count`, `view` and `files`
 and ignores everything else (`cag/motion.py`). `playback` is no longer among them — CAG treats the
 manifest as a record of the trace and reads how a set plays off `motion.json` alone, so a manifest
-may carry it for a human reader but nothing there is consulted. Verify that against *their* `origin/main`
-before relying on it — see the hand-off notes.
+may carry it for a human reader but nothing there is consulted. That is CAG's branch
+`claude/motion-playback-frame-rate-loop-afdfaf`, reported 2026-09-23 and not on their `main` — so
+`origin/main` cannot confirm it, only show that it has not landed. Re-read this paragraph once it
+merges; until then take it as reported — see the hand-off notes.
 
 **Check framing on the frames, not the landmarks.** `thumbs/` is the pose reference, so a capture
 whose figure leaves the frame hands the generator a body with no head or no feet. MediaPipe does not
@@ -443,10 +445,12 @@ over-driving the source to compensate.
    ```
    The sheet always holds exactly `--frames` cells, and the player loops them forever — a seam is
    reviewed by watching, never by drawing the cycle twice. Add `--pingpong` to walk those same cells
-   out and back (0..N-1 then N-2..1): the return leg is the out leg reversed, so the seam is always
-   clean and the artist still draws only the frames asked for. A capture cut with `extract --pingpong`
-   already carries it, so `render` walks the sheet that way on its own and the flag only needs
-   repeating to turn it on for a capture that was cut without it. It adds no cells and leaves
+   out and back (0..N-1 then N-2..1): the return leg is the out leg reversed, so the walk itself has
+   no cut in it and the artist still draws only the frames asked for. The seam the sheet reports is
+   unaffected — it is the straight loop's, because that is what a consumer ignoring the flag plays.
+   `render` has no `--pingpong` of its own: the capture owns the answer and `render` reads it, so a
+   capture cut without the flag is flipped by re-cutting it or editing `motion.json`, not at render
+   time. It adds no cells and leaves
    `frame_count` alone. It does reach `motion.json` and `manifest.json`, and CAG reads it from
    there: the frame sheet still holds the N cells drawn, and the proof GIF is written as the bounce
    `0..N-1..1`. So an out-and-back does not need tracing as real frames for a CAG package.

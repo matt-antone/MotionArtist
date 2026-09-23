@@ -115,7 +115,7 @@ footer a{color:inherit}
 <section class="brief"><h2>For the artist agent</h2><ul>
 <li>This is a <b>motion source</b>: it controls motion only. Character scale, proportions, identity, view and prop hand come from the manifest and approved authorities, never from this video.</li>
 <li>Every side is named <b>character-left</b> / <b>character-right</b> (the performer's own sides). Screen sides are never used for anatomy. The mirror button flips the drawing only; the text does not change.</li>
-<li>Playback is <b>{{PLAYBACK}}</b> at <b>{{FPS}} fps</b>, <b>{{N}}</b> frames. Loop seam: <b>{{SEAM}}</b> (frame {{N}} cuts back to frame 0).</li>
+<li>Playback is <b>{{PLAYBACK}}</b> at <b>{{FPS}} fps</b>, <b>{{N}}</b> frames. Loop seam: <b>{{SEAM}}</b> (frame {{NLAST}} cuts back to frame 0).</li>
 <li>Depth is explicit: every landmark in <code>pts</code> is <code>[x, y, z]</code> with z negative toward the camera and the hips at zero, and each frame carries a <code>depth</code> block plus a cue sentence wherever the legs overlap. Sort bones by mean z and draw the far ones first; never guess which limb is in front.</li>
 <li>Grounded frames keep the supporting heel on the canonical baseline; frames marked airborne leave it only through a coherent takeoff, arc and landing.</li>
 <li>Draw keys first (pink), then pilots (blue), then in-betweens from locked neighbours. The frame notes below are the per-frame instruction set.</li>

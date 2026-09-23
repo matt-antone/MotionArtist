@@ -146,7 +146,7 @@ def write_clips(name, url, fps, clips):
         window = (b - a + 1) / fps                      # seconds of source the marks span
         cap_frames = max(1, round(window * cap_fps))
         if pingpong and cap_frames <= 2:
-            # render applies --pingpong only above 2 frames and says nothing when it does not
+            # the sheet's player bounces only above 2 frames and says nothing when it does not
             raise ValueError(f"{cn}: ping-pong needs more than 2 captured frames, this clip has "
                              f"{cap_frames} — widen the marks or raise its fps")
         out.append({"name": cn, "in_frame": a, "out_frame": b, "frames": b - a + 1,
@@ -277,8 +277,8 @@ PAGE = r"""<!doctype html><meta charset=utf-8><title>clipper</title>
     <label title="capture fps. The frame count is derived from it: frames = fps x window">
       fps <input id=capfps type=number min=1 max=60 value=12 style=width:4.5em></label>
     <select id=pmode title="how the capture plays back. ping-pong is extract's --pingpong, a
-separate flag: the capture is a loop walked out and back. It reaches the manifest, but the
-character generator does not read it yet, so the straight seam is still what plays.">
+separate flag: the capture is a loop walked out and back. It reaches the manifest and motion.json;
+the straight seam is still measured, because a consumer that ignores the flag plays it.">
       <option value=loop>loop</option>
       <option value=one-shot>one-shot</option>
       <option value=final-hold>final-hold</option>
@@ -602,7 +602,7 @@ def selftest():
                          [{"name": "back and forth", "in": 31, "out": 60, "playback": "ping-pong"}])[0]
         assert pp["playback"] == "loop" and pp["pingpong"] is True, pp
         assert pp["capture_frames"] == 12, pp
-        # render applies --pingpong only above 2 frames and is silent when it does not, so a
+        # the sheet's player bounces only above 2 frames and is silent when it does not, so a
         # clip too short to show it must not be written as though it would
         try:
             write_clips("demo", "http://x", 30.0,
