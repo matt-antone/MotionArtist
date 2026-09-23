@@ -93,8 +93,10 @@ accepts only `front`, `left`, `right` and `3/4`, so a bundle declaring `back` fa
 Additive manifest keys are free: CAG requires exactly `fps`, `frame_count`, `view` and `files`
 and ignores everything else (`cag/motion.py`). `playback` is no longer among them — CAG treats the
 manifest as a record of the trace and reads how a set plays off `motion.json` alone, so a manifest
-may carry it for a human reader but nothing there is consulted. Verify that against *their* `origin/main`
-before relying on it — see the hand-off notes.
+may carry it for a human reader but nothing there is consulted. That is CAG's branch
+`claude/motion-playback-frame-rate-loop-afdfaf`, reported 2026-09-23 and not on their `main` — so
+`origin/main` cannot confirm it, only show that it has not landed. Re-read this paragraph once it
+merges; until then take it as reported — see the hand-off notes.
 
 **Check framing on the frames, not the landmarks.** `thumbs/` is the pose reference, so a capture
 whose figure leaves the frame hands the generator a body with no head or no feet. MediaPipe does not
