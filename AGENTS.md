@@ -97,10 +97,11 @@ as `"playback": "loop", "pingpong": true`, so that clip's `extract` takes both `
 `--pingpong`. Never pass the word "ping-pong" to `--playback`; `extract` would reject it. `render`
 then reads the flag out of the capture and does not need it repeated.
 
-What the flag does not buy is worth carrying: it reaches `motion.json` and the manifest, but CAG has
-no ping-pong concept yet, so a consumer still jumps from the last frame to the first. `seam` and
-`seam_ratio` keep measuring that straight loop for exactly that reason — a ping-pong clip whose
-seam reads "needs blend" is still worth re-cutting.
+What the flag buys is worth carrying: it reaches `motion.json` and the manifest, and CAG reads it
+from `motion.json` — folding `"playback": "loop"` with `"pingpong": true` into one word and writing
+its proof as the bounce. A consumer that does not read it still jumps from the last frame to the
+first, which is why `seam` and `seam_ratio` keep measuring that straight loop — a ping-pong clip
+whose seam reads "needs blend" is still worth re-cutting.
 
 `speed_factor` is that arithmetic checked: `1.0` means the marks land on a whole frame at this fps.
 Anything else means they do not and the count was rounded, so the capture will play that much fast
