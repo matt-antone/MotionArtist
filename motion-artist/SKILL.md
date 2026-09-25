@@ -387,38 +387,31 @@ but it is silent, so one dropped thumb does not read downstream as a missing inp
 weak render, and only an amplitude measurement tells the difference. Never hand off a bundle whose
 thumb count disagrees with its frame count, and say so in the hand-off if one ever cannot be made.
 
-Thumbs are written 200px wide at JPEG quality **88**. Both numbers are deliberate. 200px is the
-width every amplitude measurement above was taken at, and CAG letterboxes each thumb onto a 384×512
-card at native size, so it is demonstrably enough; 384 wide would fill the card exactly, but it is
-not the measured condition, so it needs a measurement before it is worth taking. The quality came up
-from 60 because JPEG artefacts at 60 sit on the limb edges, which is precisely what the generator is
-reading off them. That one is reasoning about the failure mode, not a measured delta.
+Thumbs are **384×512 crops around the performer**, JPEG quality **88**. 384×512 is CAG's pose card
+(`cag/poses.py` CARD_WIDTH/CARD_HEIGHT): CAG letterboxes each thumb onto it top-aligned and never
+enlarges, so a thumb that is the card fills it at scale 1.0. The old thumb was the whole frame at
+200px wide; a 1280×720 source became 200×112 with a ~50px dancer in the top strip of a mostly black
+card. Belter on club-01 measured the difference: arm correlation +0.30 on the old thumbs, ~5° mean
+bone-angle error on the cropped ones. The quality came up from 60 because JPEG artefacts at 60 sit
+on the limb edges, which is precisely what the generator is reading off them.
 
-**That width is a measurement of portrait footage, and it does not survive a landscape source.**
-The thumb is the whole frame scaled to 200px wide, aspect kept, so what 200px buys depends entirely
-on the frame's shape. A 720×1280 Short becomes a 200×355 thumb carrying a figure around 250px tall —
-the condition every number above was measured in. A 1280×720 source becomes a 200×112 thumb carrying
-a figure **66px tall**, a third of it, and the dancer is then smaller than the costume detail the
-generator reads off limb edges. Measured on one clip of each: 262px against 66px, same code.
+`extract` computes **one crop for the whole capture**: the union of every traced frame's landmarks,
+padded by 12% of figure height, grown to 3:4 and fitted inside the frame. One box, never one per
+frame, so the performer's travel and size changes survive. It prints the crop, flags `(upscaled)`
+when the box is narrower than 384px, and `figure near <edge> edge` when the padded box runs off the
+frame — look at that frame before handing off, since feet or a head may be cut. Landscape and
+portrait sources need nothing extra; there is no separate crop step.
 
-A better download does not help. The 200px cap is applied after the fetch, so a 4K landscape source
-still yields 200×112. The fix has to happen in the pixels, before `extract`:
+The thumbs no longer share pixel coordinates with `pts`, and nothing needs them to: CAG registers
+cells from `pts` in body-height units and measures renders against the thumbs by tracing both with
+`motion_artist.py trace <images_dir> <out.json>` — every .png/.jpg in name order to
+`{i: {joint: [x·W/H, y, z]}}`, raw, RGBA flattened onto white. Trace the render and the thumbs with
+the same command and compare like for like; never compare a render's trace to `motion.json` `pts`,
+which carry extract's rescale and exaggeration.
 
-```bash
-python3 motion-artist/scripts/portrait_crop.py VIDEO --start S --end S
-```
-
-It traces the performer across the span, takes the union of their landmark box padded by a share of
-figure height, grows that to 9:16 about its centre, clamps it inside the frame, and writes one
-ffmpeg crop at native resolution. Run `extract` against the cropped file. Crop the **video**, never
-the thumbs: `extract` re-traces the cropped frames, so `pts`, the thumbs and the figure all end up
-in one coordinate space, and nothing downstream has to be told the crop happened. Cropping thumbs
-after the fact would decouple them from `pts`, which CAG measures the drawn figure against.
-
-The crop is fixed for the whole file and computed from one span, so it preserves every timestamp —
-marks in `clips.json` and `--start`/`--end` keep their meaning — but a different move from the same
-video may sit elsewhere in frame and needs its own crop. Check `missing_frames` after: a limb that
-leaves a tight crop drops a trace, and by the rule above that costs the pose reference entirely.
+Motion blur caps what a thumb can carry. club-01 f06 is a forearm sweeping ~75° per source frame;
+its pose exists in one blurred frame and every render draws the arm where the sharp neighbours have
+it. No re-crop fixes that — it is a known limit of the source, not of the bundle.
 
 Known failure mode of the photo route: photographs bleed the **dancer's costume** into the character
 (a brown boot came back as the dancer's white sneaker on a lifted foot, 2 figures in 16). It is fixed
