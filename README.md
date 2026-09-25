@@ -19,7 +19,8 @@ motion-artist/
   scripts/clipper.py          # browser tool: step a video frame by frame and mark clip in/out points
   scripts/portrait_crop.py    # crop a landscape source to a 9:16 window around the performer, before extract
   templates/sheet.html        # the motion sheet's markup, CSS and player; render() fills its placeholders
-exports/<set>/                # finished bundles and the set's clips.json — git-ignored, never committed
+work/<creator>-<title>/       # one downloaded video, its split frames, meta.json and clips.json — git-ignored
+exports/<genre>/<genre>-NN/   # finished bundles, numbered within their genre — git-ignored, never committed
 AGENTS.md                     # how to work in this repo: pipeline, conventions, verification
 ```
 
@@ -43,15 +44,30 @@ local web tool for settling that:
 python3 motion-artist/scripts/clipper.py            # --port 8765 by default
 ```
 
-Open `http://localhost:8765`, name an animation set, paste a video URL. It downloads the video
-into `work/<set>/`, splits every source frame into `work/<set>/frames/`, and serves a
+Open `http://localhost:8765`, pick a video you have opened before — listed as `Creator - Title` —
+or paste a YouTube URL for a new one, and name the genre it belongs to. It downloads the video into
+`work/<creator>-<title>/`, splits every source frame into `work/<creator>-<title>/frames/`, and serves a
 frame-by-frame viewer. Step to the frame you want, mark in and out, drag either mark along the
-frame track to adjust it, name the clip, add it to the list.
+frame track to adjust it, add it to the list.
 
-The list is saved to `exports/<set>/clips.json`, where each clip carries the exact frame numbers
-and the seconds they correspond to. That file is the handoff: `extract --start S --end S` takes
-the seconds straight from it. The tool runs no part of the pipeline — it only settles which frames
-the pipeline is pointed at.
+Work is keyed by the video, so a clip can never be read against the wrong source. The directory is
+named for the video to be recognisable, but its YouTube id is what decides whether two URLs are the
+same video: a name already held by a different id becomes `<creator>-<title>-2`, so two uploads
+sharing a creator and a title do not become one directory holding two videos. Exports are keyed by
+genre, and the two counters are separate. A clip is numbered *under its video* — `clip-01`,
+`clip-02`, its place in that video's list, which names the directory it is captured into. A motion is
+numbered *across its genre* — `hiphop-01`, `hiphop-02` — and that is the bundle's name.
+
+Position cannot stand in for the motion number: two videos open on `hiphop` produce 01, 02 in one and
+03 in the other. So nothing writes a motion number while you are marking — it does not exist yet.
+`extract --genre hiphop` allocates it when the clip is first cut, past everything already exported
+into `exports/<genre>/` and everything already claimed by another video, and writes it back into the
+clip. A re-cut reads it back rather than taking a second number, so the re-export replaces the bundle.
+
+The list is saved to `work/<creator>-<title>/clips.json`, where each clip carries the exact frame
+numbers, the seconds they correspond to, and the directory it is captured into. That file is the
+handoff: `extract --start S --end S` takes the seconds straight from it. The tool runs no part of the
+pipeline — it only settles which frames the pipeline is pointed at.
 
 ## Landscape footage
 
@@ -59,7 +75,7 @@ A thumb is the whole frame resized to 200px wide, so a 16:9 source leaves the pe
 third the height a portrait source gives. That is fixable only in the pixels, before tracing:
 
 ```bash
-python3 motion-artist/scripts/portrait_crop.py work/<set>/video.mp4 --start 12 --end 20
+python3 motion-artist/scripts/portrait_crop.py work/britney-spears-toxic/source-P4QeqpsY8v8.mp4 --start 12 --end 20
 ```
 
 It traces the performer across `--start..--end` to find where they sit in frame, then crops the
@@ -85,12 +101,14 @@ python3 motion-artist/scripts/clipper.py
 ```
 
 That opens a browser at `localhost:8765`, splits the video into frames, and lets you drag an in and
-an out mark per move and choose its playback and capture fps. A set name it has not seen is
-confirmed before anything downloads, listing the sets you already have, because a name one letter
-off another is a whole second copy of the video and its frames. Pointing an existing set at a
-different URL offers to replace it instead. It writes
-`exports/<set>/clips.json` — frame numbers, the seconds `--start`/`--end` want, the `--playback` you
-chose, and `--fps`/`--frames` — and runs nothing else.
+an out mark per move and choose its playback and capture fps. Videos are listed by
+`Creator - Title` and keyed by that same name, with the YouTube id beside it in `meta.json`, so
+re-pasting a URL you already opened reopens those frames rather than downloading a second copy —
+there is no set name to get one letter wrong.
+It writes `work/<creator>-<title>/clips.json` — frame numbers, the seconds `--start`/`--end` want,
+the `--playback` you chose, `--fps`/`--frames`, and the `clip-NN` directory each is captured into —
+and runs nothing else. The motion number is not in there: `extract --genre` allocates it on the
+first cut and writes it back.
 
 The frame count is derived, never typed: `frames = fps x window`, where the window is the span your
 marks already fixed. That is the order that makes the capture play at the speed it was danced, and
@@ -112,10 +130,10 @@ Or by hand:
 
 ```bash
 python3 motion-artist/scripts/motion_artist.py extract "https://www.youtube.com/shorts/…" \
-  --fps 4 --frames 16 --start 0:16 --end 0:20 --name dance
-python3 motion-artist/scripts/motion_artist.py render work/dance/motion.json
-python3 motion-artist/scripts/motion_artist.py pose-grid work/dance/motion.json
-python3 motion-artist/scripts/motion_artist.py export work/dance/motion.json
+  --fps 4 --frames 16 --start 0:16 --end 0:20 --genre hiphop --out work/britney-spears-toxic/clip-01
+python3 motion-artist/scripts/motion_artist.py render work/britney-spears-toxic/clip-01/motion.json
+python3 motion-artist/scripts/motion_artist.py pose-grid work/britney-spears-toxic/clip-01/motion.json
+python3 motion-artist/scripts/motion_artist.py export work/britney-spears-toxic/clip-01/motion.json
 ```
 
 | Flag | Meaning |
@@ -131,12 +149,12 @@ python3 motion-artist/scripts/motion_artist.py export work/dance/motion.json
 | `--stabilize` | centre the hips horizontally in every frame; use for a moving camera or a travelling performer (airborne is then never called, since there is no fixed floor). Body scale is always normalised per frame from pixels-per-metre, so camera zoom never changes the traced pose's size |
 | `--playback` | `loop` (default), `one-shot`, `final-hold`. Only `loop` carries meaning downstream; the others differ only in how the span's end is chosen here |
 | `--exaggerate` | amplify each landmark's deviation from the clip-mean pose; default `1.25`, `1.0` = as filmed |
-| `--name`, `--out` | output slug and directory (default `work/<name>/`) |
+| `--name`, `--genre`, `--out` | the capture's name and directory. `--genre hiphop` allocates the name as `<genre>-NN` against `exports/<genre>/`, records it in the video's `clips.json`, and needs `--out` (the clip's `capture` directory). `--name` names it by hand instead; passing both is refused. `--out` defaults to `work/<name>/`. |
 | `render --template FILE` | render into a different sheet template (default `motion-artist/templates/sheet.html`) |
 | `render --pingpong` | walk the same cells out and back; the return leg reverses the out leg, so the seam is clean and the sheet still holds only the requested frames |
 | `pose-grid --cols` | pose cards per row; default `4` |
 | `pose-grid --no-labels` | drop the frame-number band, and say so in the sidecar |
-| `export --out`, `--sheet` | bundle path (default `exports/<set>/<set>-<index>-<frames>f-<fps>fps-motion-source/`, an uncompressed directory) and the sheet HTML to include (default `<name>-motion.html` beside the json) |
+| `export --out`, `--sheet` | bundle path (default `exports/<genre>/<genre>-NN/`, an uncompressed directory, resolved against the `work/` the capture sits under) and the sheet HTML to include (default `<name>-motion.html` beside the json) |
 
 `extract` prints one line per frame (index, source time, key / pilot / in-between, pace, pose cue)
 and writes `motion.json` plus `thumbs/`. Landmarks carry depth — `pts` is `[x, y, z]`, z negative
@@ -166,15 +184,16 @@ generated
 average hides, seam and the `seam_ratio` behind the verdict, `stabilized`, `exaggerate`,
 `performer`, source, the pose grid's geometry, and a SHA-256 per file), and
 prints the bundle path and the zip's SHA-256 — the pair a KaraokeParty-Graphics motion-director
-job input references. It warns if `arc` is empty or any frame has no pose. Two cuts of one
-move get two names, never one overwritten file, so a copy into a consuming repo removes the bundle
-it supersedes in the same step.
+job input references. It warns if `arc` is empty or any frame has no pose. A re-cut keeps its
+`<genre>-NN` and replaces that bundle in place, so no stale twin is left behind to be referenced —
+but the SHA-256 changes, so re-reference it rather than assuming the old digest still holds.
 
-Captures and downloaded video live under `work/`, git-ignored. Finished bundles land in
-`exports/<set>/`, beside the `clips.json` clipper writes for that set. That whole tree is
-git-ignored: the zips are build output, large and re-digested on every re-cut, and the hand-off was
-always the path and the SHA-256 the exporter prints rather than a committed file.
+Downloaded video, split frames, captures and `clips.json` all live under `work/<creator>-<title>/`,
+git-ignored. Finished bundles land in `exports/<genre>/`, also git-ignored: they are build output,
+large and re-digested on every re-cut, and the hand-off was always the path and the SHA-256 the
+exporter prints rather than a committed file.
 
-`clips.json` is ignored with it, so **the frames you marked in the clipper live only in your working
-copy**. Nothing else records them — a fresh clone starts with no marks, and a discarded worktree
-takes its sets with it. Keep a copy outside the repo if a set's boundaries were expensive to find.
+`clips.json` is ignored with them, so **the frames you marked in the clipper live only in your
+working copy**. Nothing else records them — a fresh clone starts with no marks, and a discarded
+worktree takes its videos with it. Keep a copy outside the repo if a video's boundaries were
+expensive to find.

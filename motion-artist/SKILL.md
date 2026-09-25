@@ -20,7 +20,7 @@ roles: it controls motion only, never character scale, identity, view or prop ha
 | `--frames` | yes | total frame count of the target animation. No ceiling — one motion is one capture and one bundle, however long. Prefer a multiple of 4; see below. |
 | `--start` / `--end` | recommended | trim the span to inspect, seconds or `m:ss`. Without `--end`, the span is `frames / fps` seconds of real time from `--start`. With both, that span is time-stretched onto the frame count (the sheet reports the speed factor). Neither end is taken literally unless `--margin 0` — see below. |
 | `--playback` | default `loop` | `loop`, `one-shot`, `final-hold`. Every playback samples the span the same way — `--frames` instants inclusive of both ends, so the first frame is `--start` and the last is `--end`, and both boundaries a mark fixed are frames the artist is handed. **CAG reads all three, and refuses a fourth.** It normalises them to two words: `loop` stays `loop`, and `one-shot` and `final-hold` both become `once` — whether a set holds its last frame still comes from CAG's own per-set plan, never from the bundle, so `final-hold` buys nothing there beyond `one-shot`. A word outside this list now raises `MotionError` rather than reading as not-loop, so do not invent one. It still changes what happens *here*: a non-loop span is snapped to the stillest ending rather than to matching poses. For `loop`, frame 0 and the last frame should both land on their feet — a loop seam an artist has to hold mid-air has no stable pose to draw. `extract` warns when either boundary frame comes back airborne; pick a different `--start`/`--search` window when it does. When the clip came from `clipper`, take this from the clip's `playback` rather than choosing it: the user picked it while watching the frames. |
-| `--name` | yes | `<set>-<index>` — the set name the user gave for this video, plus this move's index. See **Naming** below. |
+| `--name` / `--genre` | yes, one of | `--genre hiphop` is the clipper path: it allocates this capture's `<genre>-NN` against `exports/<genre>/`, records it in the video's `clips.json`, and needs `--out` so it knows which clip. `--name` is the manual path, for a capture with no clip behind it. Passing both is refused — they would be two names for one capture. See **Naming** below. |
 | `--pingpong` | optional | the capture plays out and back — `0..N-1..1` — so the seam is the motion reversed rather than a cut. Recorded in `motion.json` and the manifest as `pingpong`, and `render` walks the sheet that way off the capture, having no `--pingpong` of its own. **CAG reads the flag** (`cag/motion.py`): it folds `"playback": "loop"` plus `"pingpong": true` into the single word `pingpong`, writes its proof GIF as the bounce itself, and carries `playback` into the rendered package's manifest so the game plays the same shape. It also stops asking such a bundle about its seam, since the return leg reverses the out leg. `seam` and `seam_ratio` still measure the straight loop — the flag never edits them, because the jump is what an unaware consumer plays. Do not bake the out-and-back into the frames instead: 8 frames is one CAG render chunk, 14 is two, and the duplicated return poses come back drawn differently in the second chunk. CAG expands the bounce itself at playback time, from the N cells it drew. |
 | `--performer` | optional | `female` or `male` — the filmed performer's body, carried into `motion.json` and the manifest. It describes the trace, not the character the render must draw; omit it rather than guessing. |
 | `--margin` | default `0.5` s | slack around **both** `--start` and `--end`. The span you type is a guess; the move's own cut rarely lands on that exact second. Both ends are probed within the margin for the real one — matching poses for a `loop`, the stillest ending otherwise — and the winner is time-stretched onto the frame count, so the source span may come back a little shorter or longer than asked. `--margin 0` uses the span exactly as typed. Ignored with `--search`, which picks its own span. |
@@ -37,18 +37,21 @@ sample it to find the usable span, then search inside that span with `--window`.
 
 ## Cutting several moves out of one video
 
-A set is one video, so the usual job is "extract as many unique moves from this URL as it holds".
-The procedure that worked:
+The usual job is "extract as many unique moves from this URL as it holds". The procedure that
+worked:
 
-1. **Download once.** `yt-dlp` into `work/src/`, then run every `extract` against that local file with
-   `--url` so the origin still reaches the manifest. Passing the URL to `extract` per move
+1. **Download once.** `yt-dlp` into `work/<creator>-<title>/`, then run every `extract` against that local
+   file with `--url` so the origin still reaches the manifest. Passing the URL to `extract` per move
    re-downloads the video once per move.
    When the user would rather point at frames than describe them, `clipper.py` is the faster path
    to the same list: they mark in and out per move in a browser and it writes
-   `exports/<set>/clips.json`, whose `start`, `end`, `playback`, `capture_fps` and `capture_frames`
+   `work/<creator>-<title>/clips.json`, whose `start`, `end`, `playback`, `capture_fps` and `capture_frames`
    are all taken as given — it derives the frame count from the marked window the right way round,
-   so do not recompute it. Steps 2 and 3 are how you find the boundaries when nobody has marked
-   them for you.
+   so do not recompute it. Each clip also names its own `capture` and `export` directories and the
+   file names the video and genre they belong to, so nothing about where a bundle goes is inferred.
+   `clipper` downloads into `work/<creator>-<title>/` itself, so when clips already exist the video is
+   there too and no second download is needed. Steps 2 and 3 are how you find the boundaries when
+   nobody has marked them for you.
 2. **Contact-sheet it** (one frame a second, tiled, labelled with the second). Many dance videos
    caption their own moves — "1. Skate", "2. Lock it Down" — and when they do, the captions *are*
    the move boundaries and no scoring is needed to find them.
@@ -222,6 +225,15 @@ the loop holds a frame at its own seam. `extract` calls that **`stalls`** below 
 0.5 and 1.5, `needs blend` above. A stall is fixed by pulling `--end` one step earlier, not by
 blending.
 
+**None of those three verdicts applies to a pingpong.** A pingpong has no cut: the return leg is
+the out leg reversed, so the last frame is followed by the one before it, never by frame 0. The
+gap the verdict measures is never played. `seam` and `seam_ratio` are still written on a pingpong
+bundle — they describe the straight loop an unaware consumer would play, and the flag deliberately
+does not edit them — but on a bundle whose `playback` folds to `pingpong` they are inert. Do not
+read `needs blend` there as work outstanding, do not blend, do not re-cut to chase a better ratio,
+and do not rank pingpong clips by it. The only question a pingpong's ends have to answer is
+whether they are drawable poses, which is the airborne check, not the seam check.
+
 The same scale-relativity makes `seam_ratio` **incomparable between moves**. A busy phrase measured
 3.29x on a gap of 0.129; a calm one measured 9.17x on a gap of 0.081 — the second number is worse
 while the second gap is smaller. Compare ratios only between cuts of the same move.
@@ -241,31 +253,60 @@ the capture's. It predicted 1.12 and the re-extract returned exactly 1.12 on a s
 12fps; the same method missed by 1.1 on a 20-frame span over 1.766s, which is 11.3fps. Treat it as
 a shortlist, then re-extract the winner and read the real number.
 
-## Naming: every capture is `<set>-<index>`
+## Naming: work is keyed by video, exports by genre
 
-**A video URL always arrives with a set name.** If one is missing, ask for it — do not invent a
-label from the video title, and do not fall back to the old descriptive slugs.
+Two axes, and they are not the same axis. **Work is keyed by the video** — everything read off one
+lives in `work/<creator>-<title>/`: the downloaded source, every split frame, `meta.json`
+(YouTube id, url, title, creator, genre) and `clips.json`. Sources are YouTube URLs; `clipper` has
+no path for a local file.
 
-One video is one set. Extract as many *unique* moves from it as it holds, and name them
-`<set>-1`, `<set>-2`, `<set>-3` … — index from 1, incrementing per unique move, in the order you
-cut them. `hip-hop-1` as a set name yields `hip-hop-1-1`, `hip-hop-1-2` and so on; the set's own
-trailing digit is part of the set, not a move index. Unique means a different move, not a different
-cut of the same one: a re-cut of move 3 stays `<set>-3` and replaces it.
+The directory is named for the video so it can be recognised, but the **YouTube id** is what says
+whether two URLs are the same video, and it is kept in `meta.json` for exactly that. A creator can
+post two videos under one title and a re-upload shares both, so a name already held by a different
+id goes to `<creator>-<title>-2` rather than opening the first one's frames and reading its marks
+against them. Never rename one of these directories by hand: the name is how `clips.json`'s
+`capture` paths reach it. **Exports are keyed by genre** — the user's word for
+the kind of movement, `hiphop`, `karate`, `salsa`, not a label for one video.
 
-Everything follows the name. The capture directory is `work/<set>-<index>/`, the bundle inside the
-zip is `<set>-<index>/`, and the zip lands in **`exports/<set>/`** — one directory per source video,
-never flat. `set_name()` derives the set by stripping the trailing `-<index>`, so nothing needs a
-second flag.
+**A video URL always arrives with a genre.** If one is missing, ask for it — do not invent one from
+the video title, and do not fall back to a per-video label like `club-01`.
 
-This replaces the old `<label>-<video id>-<start>s` trace name, which existed because a descriptive
-label was not an identifier — "shuffle" named two different dances within an hour. An assigned
-`<set>-<index>` *is* an identifier, so the provenance no longer has to ride in the file name: url,
-start second and span live in `manifest.json`, which is where a consumer reads them anyway. The
-trade is deliberate — a re-cut now **overwrites** its move instead of landing beside it as a second
-zip, which is what the hand-off wanted all along.
+**Two counters, and they are not the same counter.** A clip is numbered *under its video* —
+`clip-01`, `clip-02` — which is only its place in that video's `clips.json` array and names the
+directory it is captured into. A motion is numbered *across its genre* — `hiphop-01`, `hiphop-02` —
+and that is the bundle's name.
 
-**Everything under `exports/` from before this rule is deprecated and has been removed.** Do not
-resurrect one, and do not name a new capture after one.
+A clip's position cannot stand in for its motion number, because numbers are handed out across every
+video in the genre: two videos open on `hiphop` produce 01, 02 in one and 03 in the other, so one
+video may yield `hiphop-03`, `hiphop-04`, `hiphop-07` while another holds `hiphop-05` and `06`. So
+`clips.json` does **not** carry a motion number when the marks are made — it does not exist yet.
+
+`extract --genre hiphop` allocates it the first time a clip is cut, past every number already
+exported into `exports/<genre>/` **and** every number already claimed by any other video's
+`clips.json`, and writes it back into that clip as `motion`. Asked again for the same capture it
+reads that back rather than taking a second number, which is what makes a re-export replace the
+bundle. Never pass `--name` on this path: `--genre` allocates the name, and the two together would
+be two names for one capture.
+
+So the capture directory is `work/<creator>-<title>/clip-NN/`, the bundle is `<genre>-NN/`, and it
+lands in **`exports/<genre>/<genre>-NN/`**. `set_name()` derives the genre by
+stripping the trailing `-NN`, so nothing needs a second flag, and the genre is inside the bundle's
+own name so it survives being copied into a consumer's flat `motions/` directory — `motion-01` from
+two genres would collide there, `hiphop-01` and `karate-01` cannot.
+
+The number is the motion's identity, which is what makes a re-cut safe: **re-cutting keeps the
+number and replaces that bundle in place.** Allocating a fresh number on every re-cut would fill a
+genre with near-duplicates and nothing would say which was current. A new number is for a genuinely
+different move. In `clipper`, editing a clip keeps its number and the Add button says which motion
+it will replace; only an unedited new clip takes the next one.
+
+The export directory carries the name and nothing else — no `-24f-4fps-motion-source` suffix. That
+suffix meant a re-cut at a different rate landed *beside* the old bundle rather than replacing it,
+and both stayed installable. Provenance — url, start second, span, fps, frame count — lives in
+`manifest.json`, which is where a consumer reads it.
+
+**Everything under `exports/` and `work/` from before this rule is deprecated and has been removed.**
+Do not resurrect one, and do not name a new capture after one.
 
 ## Frame count: any length, but prefer a multiple of 8
 
@@ -408,12 +449,17 @@ over-driving the source to compensate.
 
 `$SKILL` below is this skill's directory (the folder holding this SKILL.md).
 
-1. Run the extractor (first run downloads the video ≤720p and the MediaPipe model):
+1. Run the extractor (first run downloads the video ≤720p and the MediaPipe model). `--name` is the
+   genre and `--out` is the clip's own `capture` directory. The name is allocated from the genre, not
+   typed, and written back into `clips.json` as that clip's `motion`:
    ```bash
-   python3 "$SKILL/scripts/motion_artist.py" extract URL --fps 4 --frames 16 --start 0:16 --end 0:20 --name dance
+   python3 "$SKILL/scripts/motion_artist.py" extract URL --fps 4 --frames 16 --start 0:16 --end 0:20 \
+       --genre hiphop --out work/britney-spears-toxic/clip-01
    ```
+   It prints the name it allocated. Every later step in this list takes its paths from that capture
+   directory, so run them against `<out>/motion.json` rather than retyping a name.
    It prints a `snap:` line first — the span it moved to inside `--margin`, its seam and energy
-   score, and the runners-up — then writes `work/<name>/motion.json`, `work/<name>/thumbs/`, and
+   score, and the runners-up — then writes `<out>/motion.json`, `<out>/thumbs/`, and
    one line per frame:
    index, source time, role (`key` = hold/extreme, `pilot` = fastest transition, `inbetween`),
    pace, and the generated pose cue. Frame 0 is always a key. Check `missing` is empty and the
@@ -441,7 +487,7 @@ over-driving the source to compensate.
    per limb), and the cue names which leg is behind whenever the legs overlap.
 3. Render:
    ```bash
-   python3 "$SKILL/scripts/motion_artist.py" render work/dance/motion.json
+   python3 "$SKILL/scripts/motion_artist.py" render work/britney-spears-toxic/clip-01/motion.json
    ```
    The sheet always holds exactly `--frames` cells, and the player loops them forever — a seam is
    reviewed by watching, never by drawing the cycle twice. Add `--pingpong` to walk those same cells
@@ -457,14 +503,14 @@ over-driving the source to compensate.
    The sheet is rendered from `motion-artist/templates/sheet.html` — markup, CSS and player in one
    file, with `{{PLACEHOLDER}}`s the script fills. Change how a sheet looks by editing that template;
    pass `--template FILE` to render into a different one.
-   Output `work/dance/dance-motion.html`: masthead (frames, fps, lap, playback, view, key and pilot
+   Output `work/britney-spears-toxic/clip-01/hiphop-07-motion.html`: masthead (frames, fps, lap, playback, view, key and pilot
    indices), a stage holding the traced frame and its cue, a transport (play/scrub, rate, mirror),
    the frame strip, the pose grid, the arc, a fixed "for the artist agent" brief, and
    the full frame-note table. A `<script type="application/json" id="motion">` block carries the
    data for machine readers.
 4. Build the pose grid — the one image you hand a generator the whole set in:
    ```bash
-   python3 "$SKILL/scripts/motion_artist.py" pose-grid work/dance/motion.json
+   python3 "$SKILL/scripts/motion_artist.py" pose-grid work/britney-spears-toxic/clip-01/motion.json
    ```
    Tiles `thumbs/` — the footage, never drawn figures; see above for why — **four across and twelve
    to a sheet**. The twelve is this tool's own number now: it mirrored CAG's render grid when that
@@ -481,13 +527,11 @@ over-driving the source to compensate.
 5. Show it: open the HTML in the browser, or publish it as an Artifact when the user wants a link.
 6. Export — always finish here. The capture is not done until it is bundled:
    ```bash
-   python3 "$SKILL/scripts/motion_artist.py" export work/dance/motion.json
+   python3 "$SKILL/scripts/motion_artist.py" export work/britney-spears-toxic/clip-01/motion.json
    ```
    One motion is one bundle, however many frames it has.
-   Writes `exports/hip-hop-1/hip-hop-1-3-24f-4fps-motion-source/` — an uncompressed directory,
-   always `exports/<set>/` at
-   the repo root, never inside
-   the capture dir: `motion.json`, the sheet HTML, `thumbs/` (the pose reference — see above), any
+   Writes `exports/hiphop/hiphop-07/` — an uncompressed directory, always `exports/<genre>/` at
+   the repo root beside `work/`, never inside the capture dir: `motion.json`, the sheet HTML, `thumbs/` (the pose reference — see above), any
    pose grid images and their sidecar, and a
    generated `manifest.json` (fps, frame count, playback, view, `seam` and `seam_ratio`, source, and
    a SHA-256 per file), all under a `<name>/` folder. The sidecar's grid rides in the manifest as a
@@ -500,12 +544,14 @@ over-driving the source to compensate.
 
 ## Hand-off to KaraokeParty-Graphics
 
-Copy `exports/<set>/<set>-<index>-<frames>f-<fps>fps-motion-source/` into that repo's ignored
+Copy `exports/<genre>/<genre>-NN/` into that repo's ignored
 `work/<character>/motion-source/` and reference it by path and by the manifest SHA-256 the export printed,
 as the authorized motion source in the motion-director job input. A spec names **one** bundle per
 animation (`spec.motions[set_name]` → one bundle directory); CAG chunks it across renders itself.
-A bundle is named by its set and move index, so a re-cut of the same move replaces it in place and
-no stale twin is left behind to be referenced — but the **SHA-256 changes**, so re-reference it in
+That repo's `motions/` is flat, which is why the genre is in the bundle's own name: `hiphop-01` and
+`karate-01` land side by side there, where two `motion-01`s would be one directory.
+A bundle is named by its genre and motion number, so a re-cut of the same motion replaces it in
+place and no stale twin is left behind to be referenced — but the **SHA-256 changes**, so re-reference it in
 the job input rather than assuming the old digest still describes the file at that path.
 The bundle's `manifest.json`
 carries a SHA-256 per file, so a copy can be verified file by file, and the manifest's own
@@ -553,7 +599,10 @@ consumer generated it from prose — a written sheet has no traced frames and so
   landmarks falls back to a per-chunk height cluster. Keep them accurate; do not hand-edit them.
 - `seam` is read on the CAG side, not just by us: before drawing, it logs that the proof will jump
   from the last frame back to the first unless the verdict is `clean` or empty (an unset seam reads
-  as no complaint), and `cag sheets` prints it per bundle. `seam_ratio` rides alongside it — the
+  as no complaint) — or unless the bundle is a pingpong, which never cuts and so is never asked.
+  `cag sheets` still prints the word per bundle, pingpong included, so a reader who skips
+  `playback` can talk themselves into a blend nobody needs; read the two columns together.
+  `seam_ratio` rides alongside it — the
   same cut as a number rather than a word, so a log can say "loops on a 2.3-step cut". It is
   additive and nothing reads it yet. `schema` does not move for an added key.
 - The bundle's `schema` stays `motion-artist/2`. That version means the landmarks carry a third
