@@ -286,13 +286,21 @@ def extract(a):
         print(f"note: {a.frames} frames is not a multiple of 4, so CAG's last render row is "
               f"part-empty. Harmless, but {a.frames - a.frames % 4} or {a.frames + 4 - a.frames % 4} "
               f"fills the grid.", file=sys.stderr)
+    # `--genre` is the clipper path: the capture directory says which clip this is, and the
+    # name is allocated from the genre rather than typed, so no two captures can be handed
+    # the same one. `--name` is the manual path. Both would be two names for one capture.
+    if a.genre and a.name:
+        sys.exit("--genre allocates the name; pass one or the other, not both")
+    if a.genre and not a.out:
+        sys.exit("--genre needs --out: the capture's directory is how its clip is found")
     out = a.out or os.path.join("work", a.name or "motion")
+    name = allocate_motion(a.genre, out) if a.genre else a.name
     os.makedirs(os.path.join(out, "thumbs"), exist_ok=True)
     if re.match(r"https?://", a.source):
         src, title = fetch(a.source, out)
     else:
         src, title = a.source, os.path.basename(a.source)
-    name = a.name or re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:40] or "motion"
+    name = name or re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:40] or "motion"
 
     cap = cv2.VideoCapture(src)
     dur = cap.get(cv2.CAP_PROP_FRAME_COUNT) / (cap.get(cv2.CAP_PROP_FPS) or 30)
@@ -408,7 +416,7 @@ def extract(a):
     doc = dict(
         schema=SCHEMA,
         title=name.replace("-", " ").title(), name=name,
-        # `--url` matters more than it looks: since a bundle is named `<set>-<index>`, the manifest
+        # `--url` matters more than it looks: since a bundle is named `<genre>-NN`, the manifest
         # is the *only* place the origin survives. Cutting several moves out of one video means
         # working from a downloaded copy — re-fetching per move would download it a dozen times —
         # and without this the capture would record a local path where the provenance should be.
@@ -786,10 +794,44 @@ def selftest():
     assert abs(sample_rate(_Cap()) - 29.97) < 1e-9
     assert abs(sample_rate(_Cap(), 8) - 8) < 1e-9, "an explicit slower rate is still honoured"
     assert abs(sample_rate(_Cap(), 120) - 29.97) < 1e-9, "never ask for more samples than frames"
-    # the set is the name minus the move index, and a name without one is its own set
-    assert set_name({"name": "hip-hop-1-3"}) == "hip-hop-1"
-    assert set_name({"name": "shuffle-2-11"}) == "shuffle-2"
+    # the genre is the name minus the motion number, and a genre may carry digits of its own
+    assert set_name({"name": "hiphop-07"}) == "hiphop"
+    assert set_name({"name": "hip-hop-2-11"}) == "hip-hop-2"
     assert set_name({"name": "dougie"}) == "dougie"
+    assert motion_num("hiphop-07", "hiphop") == 7 and motion_num("hiphop-07", "karate") is None
+    assert motion_num("hip-hop-2-07", "hip-hop-2") == 7   # a genre may carry its own digits
+    # A clip's position in its video's array is not its motion number: numbers are handed out
+    # across every video in the genre, so the second video's first clip is not hiphop-01.
+    import tempfile as _t
+    with _t.TemporaryDirectory() as _d:
+        def _clips(key, genre, caps):
+            os.makedirs(os.path.join(_d, "work", key), exist_ok=True)
+            json.dump({"video": key, "genre": genre,
+                       "clips": [{"capture": f"work/{key}/{c}"} for c in caps]},
+                      open(os.path.join(_d, "work", key, "clips.json"), "w"))
+        cap = lambda k, c: os.path.join(_d, "work", k, c)
+
+        _clips("britney-spears-toxic", "hiphop", ["clip-01", "clip-02"])
+        _clips("dojo-kata", "hiphop", ["clip-01"])
+        assert allocate_motion("hiphop", cap("britney-spears-toxic", "clip-01")) == "hiphop-01"
+        assert allocate_motion("hiphop", cap("britney-spears-toxic", "clip-02")) == "hiphop-02"
+        # the other video's *first* clip is the genre's third motion, not its first
+        assert allocate_motion("hiphop", cap("dojo-kata", "clip-01")) == "hiphop-03"
+        # asked again, a capture reads back the number it was given -- a re-cut must replace
+        # its bundle, not take a second number
+        assert allocate_motion("hiphop", cap("dojo-kata", "clip-01")) == "hiphop-03"
+        # and it was written back beside the clip, which is the only place it lives
+        doc = json.load(open(os.path.join(_d, "work", "dojo-kata", "clips.json")))
+        assert doc["clips"][0]["motion"] == "hiphop-03", doc
+        # a number already exported is taken even though no clips file claims it
+        os.makedirs(os.path.join(_d, "exports", "hiphop", "hiphop-09"))
+        _clips("sensei-kick", "hiphop", ["clip-01"])
+        assert allocate_motion("hiphop", cap("sensei-kick", "clip-01")) == "hiphop-10"
+        # a genre of its own starts at 01 again
+        _clips("sensei-flip", "karate", ["clip-01"])
+        assert allocate_motion("karate", cap("sensei-flip", "clip-01")) == "karate-01"
+        assert work_root(cap("dojo-kata", "clip-01")) == _d
+        assert work_root("/nowhere/near/a/capture") is None
     assert portable(os.path.join(os.getcwd(), "work", "x.mp4")) == os.path.join("work", "x.mp4")
     assert portable("/somewhere/else/x.mp4") == "x.mp4"
     print("selftest ok")
@@ -804,16 +846,86 @@ def sha256(path):
 
 
 def set_name(d):
-    """The set a capture belongs to: its name with the move index stripped.
+    """The genre a capture belongs to: its name with the motion number stripped.
 
-    Names are assigned here, not derived. Each source video is given a set name, and every unique
-    move cut out of it is `<set>-<index>`, index from 1 — so `hip-hop-1-3` is the third move of the
-    `hip-hop-1` set and lives in `exports/hip-hop-1/`. The name is the identifier, which means a
-    re-cut of a move overwrites that move instead of landing beside it under a different trace.
+    Names are assigned by `clipper`, not derived here. Every motion is `<genre>-NN`, numbered from
+    01 within its genre — so `hiphop-07` is the seventh motion filed under `hiphop` and lives in
+    `exports/hiphop/hiphop-07/`. The number is the motion's identity, which means a re-cut
+    overwrites that bundle instead of landing beside it under a second name, and the genre is in
+    the bundle's own name so it survives being copied into a consumer's flat motions/ directory.
     Provenance — url, start second, span — rides in `manifest.json`, which is where a consumer
     reads it; it is no longer spelled into the file name.
     """
     return re.sub(r"-\d+$", "", d["name"]) or d["name"]
+
+
+def motion_num(name, genre):
+    """The NN out of a `<genre>-NN` name, or None if it is not one of this genre's."""
+    m = re.fullmatch(re.escape(genre) + r"-(\d+)", name or "")
+    return int(m.group(1)) if m else None
+
+
+def work_root(path):
+    """The directory holding `work/` and `exports/`: the parent of the `work` above `path`.
+
+    Found by walking up rather than by counting levels — a capture is
+    `work/<creator>-<title>/clip-NN/`, and fixed arithmetic put `exports/` inside `work/`.
+    """
+    d = os.path.abspath(path)
+    while os.path.basename(d) != "work" and os.path.dirname(d) != d:
+        d = os.path.dirname(d)
+    return os.path.dirname(d) if os.path.basename(d) == "work" else None
+
+
+def allocate_motion(genre, capture_dir):
+    """This capture's `<genre>-NN`, allocated once and then remembered in clips.json.
+
+    The number is not in `clips.json` when the marks are made, because it does not exist
+    yet — and the clip's position in that array cannot stand in for it. Numbers are handed
+    out across *every* video clipped into a genre: two videos open on `hiphop` produce
+    01, 02 in one and 03 in the other, so position 3 of one video is not the third motion
+    of that genre.
+
+    So it is allocated here, the first time the clip is cut, and written back beside the
+    clip it came from. A re-cut reads it back instead of taking a second number, which is
+    what makes the re-export replace that bundle in place rather than land beside it.
+    """
+    root = work_root(capture_dir)
+    if not root:
+        sys.exit(f"--genre needs the capture under work/, and {capture_dir} is not")
+    cpath = os.path.join(os.path.dirname(os.path.abspath(capture_dir)), "clips.json")
+    if not os.path.exists(cpath):
+        sys.exit(f"--genre reads the video's clips.json, and there is none at {cpath}")
+    doc = json.load(open(cpath))
+    rel = os.path.relpath(os.path.abspath(capture_dir), root).replace(os.sep, "/")
+    clip = next((c for c in doc.get("clips", []) if c.get("capture") == rel), None)
+    if clip is None:
+        sys.exit(f"no clip in {cpath} captures into {rel}")
+    if clip.get("motion"):
+        return clip["motion"]
+    if doc.get("genre") and doc["genre"] != genre:
+        sys.exit(f"{cpath} files this video under {doc['genre']!r}, not {genre!r}")
+    # every number already spoken for: exported as a directory, or claimed by any video's
+    # clips.json. A number becomes a directory only on export, so exports/ alone would hand
+    # the same 01 to two videos cut in the same genre before either one was exported.
+    used = set()
+    gdir = os.path.join(root, "exports", genre)
+    if os.path.isdir(gdir):
+        used |= {n for d in os.listdir(gdir) if (n := motion_num(d, genre)) is not None}
+    wdir = os.path.join(root, "work")
+    for vd in (sorted(os.listdir(wdir)) if os.path.isdir(wdir) else []):
+        p = os.path.join(wdir, vd, "clips.json")
+        if not os.path.exists(p):
+            continue
+        other = json.load(open(p))
+        if other.get("genre") != genre:
+            continue
+        used |= {n for c in other.get("clips", [])
+                 if (n := motion_num(c.get("motion"), genre)) is not None}
+    clip["motion"] = f"{genre}-{(max(used) + 1) if used else 1:02d}"
+    with open(cpath, "w") as fh:
+        json.dump(doc, fh, indent=2)
+    return clip["motion"]
 
 
 def view_counts(d):
@@ -960,11 +1072,17 @@ def export(a):
     # pixels back out of it.
     layout_p = os.path.join(src, f"{d['name']}-pose-grid.json")
     if os.path.exists(layout_p): man["pose_grid"] = json.load(open(layout_p))
-    # Bundles land in exports/<set>/, beside work/ and never in the capture dir: one place to hand
-    # off from, one directory per source video. The file name still carries frame count and fps —
-    # a re-cut at a different rate is a different animation from the same move.
-    exports = os.path.join(os.path.dirname(os.path.dirname(src)), "exports", set_name(d))
-    out = a.out or os.path.join(exports, f"{bundle}-{d['frame_count']}f-{d['fps']}fps-motion-source")
+    # Bundles land in exports/<genre>/<genre>-NN/, beside work/ and never in the capture dir: one
+    # place to hand off from, one directory per genre. The directory is the bundle's name and
+    # nothing else — frame count and fps used to ride in it, which meant a re-cut at a different
+    # rate landed beside the old bundle instead of replacing it, and both stayed installable.
+    # exports/ is the sibling of the `work` directory the capture sits under (work_root): a
+    # capture is work/<creator>-<title>/clip-NN/ now, and counting levels put exports/ in work/.
+    root = None if a.out else work_root(src)
+    if not a.out and not root:
+        sys.exit(f"export: {src} is not under work/, so there is no exports/ beside it — "
+                 f"pass --out to say where the bundle goes")
+    out = a.out or os.path.join(root, "exports", set_name(d), bundle)
     # A plain directory, not a zip: the consumer reads thumbs/ frame by frame, so compressing them
     # only to have them unpacked again bought nothing. The layout is what unzipping used to give,
     # minus the redundant <bundle>/ level the archive needed to avoid spilling on extract.
@@ -1004,6 +1122,9 @@ def main():
     e.add_argument("--fps", type=int, required=True); e.add_argument("--frames", type=int, required=True)
     e.add_argument("--start", type=tstamp, help="trim: seconds or m:ss"); e.add_argument("--end", type=tstamp, help="trim: seconds or m:ss")
     e.add_argument("--name"); e.add_argument("--out")
+    e.add_argument("--genre", help="allocate this capture's name as <genre>-NN against "
+                                   "exports/<genre>/ and record it in the video's clips.json; "
+                                   "needs --out and replaces --name")
     e.add_argument("--url", help="origin URL, when `source` is a local copy of it: the manifest is "
                                  "the only place a bundle's provenance lives")
     e.add_argument("--exaggerate", type=float, default=1.25, help="motion amplification about the mean pose (1.0 = as filmed)")

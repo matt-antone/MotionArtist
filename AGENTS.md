@@ -19,9 +19,10 @@ motion-artist/templates/sheet.html     the motion sheet: markup, CSS and player,
                                        render() fills. Edit the sheet's design here, not in the script
 .claude/skills/motion-artist           symlink to motion-artist/, so the skill loads in this repo —
                                        git-ignored, so a fresh clone has to create it (see Setup)
-work/                                  captures and downloaded video — git-ignored, never commit
-exports/<set>/                         finished bundles, one zip per capture, and the set's
-                                       clips.json — all git-ignored, never commit any of it
+work/<creator>-<title>/                one downloaded video, its split frames, meta.json,
+                                       clips.json and every capture cut from it — git-ignored
+exports/<genre>/<genre>-NN/            finished bundles, numbered within their genre — all
+                                       git-ignored, never commit any of it
 README.md                              the human-facing version of SKILL.md
 ```
 
@@ -62,31 +63,44 @@ frames instead of describing them, run the clip marker and let them mark the bou
 python3 motion-artist/scripts/clipper.py
 ```
 
-It opens `http://localhost:8765`. The user names an animation set, pastes a video URL, and the tool
-downloads it into `work/<set>/` (reusing an existing download) and splits every source frame into
-`work/<set>/frames/`. A name it has not seen is confirmed first, listing the sets that already
-exist — a set name one letter off another is a second download and a second full frame split, and
-nothing else in the flow would say so. Loading a set that already holds a **different** URL offers
-to replace it, which deletes that video and its frames; the clips survive in `exports/`, but their
-frame numbers were read off the video being replaced. They step through frames and mark in and out. Both marks sit on the frame track under the
-viewer and can be dragged to adjust, with the frame following the mark as it moves, so a boundary
-is settled by eye rather than re-marked. Loading a clip back into the player fills its name too, so
-adding it again offers to replace it rather than writing a second clip — one name is one export
-directory, and `clips.json` refuses two clips that would share it. They name each clip, pick how it
-plays back and the fps the
-clip is captured at, and the list is written to `exports/<set>/clips.json`:
+It opens `http://localhost:8765`. The user picks a video from the ones already opened here —
+listed as `Creator - Title` — or pastes a YouTube URL for a new one, and names the **genre** it belongs to
+(`hiphop`, `karate`), not a label for the video. Sources are YouTube URLs only. The tool asks
+yt-dlp for the id, title and creator before downloading, names the directory
+`work/<creator>-<title>/`, and reopens it when the id matches — so the URL of a video already here
+reopens its frames instead of fetching a second copy. There is no name to get one letter wrong and
+nothing to confirm or replace: both the name and the id come from the video, not from something
+typed. A name already held by a **different** id becomes `<creator>-<title>-2`, because a creator
+can post two videos under one title and that used to be one directory holding two videos.
+
+They step through frames and mark in and out. Both marks sit on the frame track under the viewer
+and can be dragged to adjust, with the frame following the mark as it moves, so a boundary is
+settled by eye rather than re-marked. Clips are not named — each is `clip-01`, `clip-02` … which is
+only its place in this video's list and names the directory it is captured into. **The motion number
+is not allocated here.** It cannot be: motions are numbered across every video in a genre, so this
+video's first clip may be the genre's fourth motion, and a position in one array cannot say that.
+`extract --genre` allocates it on the first cut and writes it back as `motion`. They pick how each
+clip plays back and the fps it is captured at, and the list is written to
+`work/<creator>-<title>/clips.json`:
 
 ```json
-{"set": "shuffle-3", "url": "...", "source_fps": 29.97,
- "clips": [{"name": "side-step", "in_frame": 91, "out_frame": 150, "frames": 60,
+{"video": "britney-spears-toxic", "video_id": "P4QeqpsY8v8", "url": "...",
+ "title": "Toxic", "creator": "Britney Spears", "genre": "hiphop", "source_fps": 29.97,
+ "clips": [{"in_frame": 91, "out_frame": 150, "frames": 60,
             "start": 3.003, "end": 5.005, "playback": "loop", "pingpong": false,
             "capture_fps": 12, "capture_frames": 24, "speed_factor": 1.0,
-            "export": "exports/shuffle-3/side-step"}]}
+            "capture": "work/britney-spears-toxic/clip-01"}]}
 ```
+
+`extract --genre hiphop --out work/britney-spears-toxic/clip-01` adds `"motion": "hiphop-04"` to that
+clip and uses it as the capture's name. Run it again for the same capture and it reads that back
+instead of allocating a second number — which is what makes the re-export replace the bundle. A clip
+that has been cut pins its video's genre; one only marked has no number and moves freely.
 
 Run the pipeline per clip and take every one of those numbers as given: `--start`/`--end` from
 `start`/`end`, `--playback` from `playback`, `--fps` from the clip's own `capture_fps`, `--frames`
-from `capture_frames`. Do not re-search the span and do not pick a frame count. `capture_frames` is
+from `capture_frames`, and `--out` from `capture`. The name is not chosen either: pass
+`--genre` from the file's `genre` and let it allocate. Never pass `--name` alongside it. Do not re-search the span and do not pick a frame count. `capture_frames` is
 already `capture_fps x window` for the window the marks fixed, which is the one order that makes
 the capture play at the speed it was danced — see **Timing** in the skill for what picking a frame
 count first costs.
@@ -126,20 +140,27 @@ Five steps, in order. A capture is not finished until step 5.
    generated `manifest.json` with a SHA-256 per file.
    The printed bundle path and zip digest are what a KaraokeParty-Graphics job input references.
 
-Every capture is named `<set>-<index>`. A video URL always arrives with a set name; one video is
-one set, and each unique move cut from it takes the next index from 1. That string is the capture
-directory, the bundle directory, the manifest `name` and the shipped `motion.json` `name`, so a
-bundle cannot advertise one name and say another inside. Bundles land in `exports/<set>/`, one
-directory per source video, as `<set>-<index>-<frames>f-<fps>fps-motion-source/` — an
-uncompressed directory, not an archive.
+Two axes: **work is keyed by the video, exports by genre.** Everything read off a video lives in
+`work/<creator>-<title>/` — source, frames, `meta.json`, `clips.json` and every capture cut from it.
+The directory is named to be recognisable; the YouTube id in `meta.json` is what identifies the
+video, and a name already held by a different id takes the next free `-2`. Never rename one of
+these directories by hand — `clips.json`'s `capture` paths point at it. Every motion is named `<genre>-NN`, numbered from 01 within its genre by `extract --genre` and
+recorded back into the clip it came from. That string is the bundle directory, the manifest `name`
+and the shipped `motion.json` `name`, so a bundle cannot advertise one name and say another inside.
+The *capture* directory is `clip-NN` — the clip's place under its video, a different counter. Bundles land in
+`exports/<genre>/<genre>-NN/` — an uncompressed directory, not an archive, and with no
+`-<frames>f-<fps>fps-motion-source` suffix: that suffix meant a re-cut at a different rate landed
+beside the old bundle instead of replacing it.
 
-An assigned name is an identifier in a way a descriptive label never was — "shuffle" is a genre,
-and two different dances landed on it once and one silently overwrote the other. Provenance (url,
-start second, span) rides in `manifest.json` rather than in the file name. Everything exported
-under the older `<name>-<video id>-<start>s` scheme is deprecated and removed.
+The genre is in the bundle's own name because a consumer's `motions/` is flat — `hiphop-01` and
+`karate-01` sit side by side there, where two `motion-01`s would be one directory. An assigned
+number is an identifier in a way a descriptive label never was: "shuffle" named two different
+dances once and one silently overwrote the other. Provenance (url, start second, span) rides in
+`manifest.json` rather than in the file name. Everything under `exports/` and `work/` from before
+this scheme is deprecated and removed.
 Hand off that zip as it is. Do not unpack it, and do not copy loose `motion.json`/`thumbs/` into a
 consuming repo — the zip is the unit, and its `manifest.json` is what verifies it.
-A re-cut of a move keeps its `<set>-<index>` and replaces the bundle in place, so no stale twin is
+A re-cut keeps its `<genre>-NN` and replaces the bundle in place, so no stale twin is
 left to be referenced — but the SHA-256 changes, so re-reference it in any job input that names it.
 
 **Delete `thumbs/` before re-cutting in place.** `extract` writes `f00..fNN` and overwrites, it does
