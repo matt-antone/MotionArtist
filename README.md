@@ -15,9 +15,8 @@ Demo sheets:
 ```
 motion-artist/
   SKILL.md                    # the skill (what Claude does, step by step)
-  scripts/motion_artist.py    # extract (video → motion.json + thumbs), render (→ HTML), pose-grid (→ pose grid), export (→ bundle)
+  scripts/motion_artist.py    # extract (video → motion.json + thumbs), render (→ HTML), pose-grid (→ pose grid), export (→ bundle), trace (images → landmarks)
   scripts/clipper.py          # browser tool: step a video frame by frame and mark clip in/out points
-  scripts/portrait_crop.py    # crop a landscape source to a 9:16 window around the performer, before extract
   templates/sheet.html        # the motion sheet's markup, CSS and player; render() fills its placeholders
 work/<creator>-<title>/       # one downloaded video, its split frames, meta.json and clips.json — git-ignored
 exports/<genre>/<genre>-NN/   # finished bundles, numbered within their genre — git-ignored, never committed
@@ -69,22 +68,15 @@ numbers, the seconds they correspond to, and the directory it is captured into. 
 handoff: `extract --start S --end S` takes the seconds straight from it. The tool runs no part of the
 pipeline — it only settles which frames the pipeline is pointed at.
 
-## Landscape footage
+## Thumbs
 
-A thumb is the whole frame resized to 200px wide, so a 16:9 source leaves the performer about a
-third the height a portrait source gives. That is fixable only in the pixels, before tracing:
+Each thumb is a 384×512 crop around the performer — CAG's pose card size, so it fills the card.
+`extract` takes one crop for the whole capture (the union of every frame's landmarks, padded and
+grown to 3:4), so landscape and portrait footage both work with no extra step, and the dancer's
+travel across the frame survives.
 
-```bash
-python3 motion-artist/scripts/portrait_crop.py work/britney-spears-toxic/source-P4QeqpsY8v8.mp4 --start 12 --end 20
-```
-
-It traces the performer across `--start..--end` to find where they sit in frame, then crops the
-**whole** video to a 9:16 window around them (`--aspect`, `--margin` to tune). Cropping the whole
-video is the point: every timestamp keeps its original meaning, so marks in `clips.json` and
-`extract --start/--end` stay valid and the manifest still records the true second. Tracing then
-runs on the cropped frames, so `pts`, the thumbs and the figure share one coordinate space and
-nothing downstream has to be told about the crop. A different move from the same video may sit
-elsewhere in frame and need its own crop.
+`motion_artist.py trace <images_dir> <out.json>` traces any folder of images into raw landmarks,
+so a render and the thumbs it was drawn from can be compared like for like.
 
 ## Use
 

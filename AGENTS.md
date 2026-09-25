@@ -2,19 +2,16 @@
 
 All agents must use caveman skill all the time.
 
-This repo is one skill and three scripts. `motion-artist/SKILL.md` tells an agent how to turn a video
-of a person moving into a motion source; `motion-artist/scripts/motion_artist.py` does the work,
+This repo is one skill and two scripts. `motion-artist/SKILL.md` tells an agent how to turn a video
+of a person moving into a motion source; `motion-artist/scripts/motion_artist.py` does the work, and
 `motion-artist/scripts/clipper.py` is the browser tool the user marks clip boundaries in before the
-pipeline runs, and `motion-artist/scripts/portrait_crop.py` fixes landscape footage before it is
-extracted. Everything else is docs and ignored scratch.
+pipeline runs. Everything else is docs and ignored scratch.
 
 ```
 motion-artist/SKILL.md                 the skill an agent loads
-motion-artist/scripts/motion_artist.py extract | render | pose-grid | export | selftest  (single file, ~1030 lines)
+motion-artist/scripts/motion_artist.py extract | render | pose-grid | export | trace | selftest  (single file, ~1240 lines)
 motion-artist/scripts/clipper.py       the clip marker: a local web tool that splits a video into
                                        frames and records which ones the user wants (see Marking clips)
-motion-artist/scripts/portrait_crop.py crop a landscape source to a 9:16 window around the performer
-                                       before extract, so the thumbs carry a full-size figure
 motion-artist/templates/sheet.html     the motion sheet: markup, CSS and player, with {{PLACEHOLDER}}s
                                        render() fills. Edit the sheet's design here, not in the script
 .claude/skills/motion-artist           symlink to motion-artist/, so the skill loads in this repo —
@@ -163,18 +160,20 @@ consuming repo — the zip is the unit, and its `manifest.json` is what verifies
 A re-cut keeps its `<genre>-NN` and replaces the bundle in place, so no stale twin is
 left to be referenced — but the SHA-256 changes, so re-reference it in any job input that names it.
 
-**Delete `thumbs/` before re-cutting in place.** `extract` writes `f00..fNN` and overwrites, it does
-not clean, so a re-cut to fewer frames leaves the tail of the longer one behind and `export` zips
-the lot: one bundle here shipped 32 thumbs for a 20-frame capture. `export` warns when the count
-disagrees with `frame_count` — treat that warning as a blocker, because a consumer that reads the
-directory rather than the manifest silently uses the wrong frame count, and CAG drops the pose
-reference entirely on a mismatch rather than degrading. `rm -rf <capture>/thumbs` first, every time.
+**Thumb count must equal `frame_count`.** `extract` clears `thumbs/*.jpg` before writing, so a
+re-cut to fewer frames no longer leaves a tail behind (one bundle once shipped 32 thumbs for a
+20-frame capture). `export` still warns on a mismatch — treat that warning as a blocker, because CAG
+drops the pose reference entirely on a mismatch rather than degrading.
 
-**Landscape sources need `portrait_crop.py` before `extract`.** A thumb is the whole frame at 200px
-wide, so 16:9 footage leaves the figure about 66px tall against roughly 250px from a portrait
-source — measured at 66 and 262 on two clips through identical code. A higher-resolution download
-does not help; the cap is applied after the fetch. Crop the video, not the thumbs, so the trace and
-`pts` stay in one coordinate space. SKILL.md carries the full reasoning.
+**Thumbs are 384×512 crops, one box for the whole capture.** That is CAG's pose card, which it
+never enlarges onto; the old whole-frame 200px thumb left a landscape dancer ~50px tall on it.
+`extract` prints `thumbs: crop WxH …` and flags `figure near <edge> edge` when the padded box runs
+off the frame — check that frame for a cut head or feet before handing off. No pre-crop step for
+landscape footage. SKILL.md carries the full reasoning and the numbers.
+
+**`trace <images_dir> <out.json>` is a contract CAG calls** (`cag fidelity`) to score renders
+against thumbs. Its output shape — `{i: {joint: [x·W/H, y, z]} | null}`, name order, RGBA onto
+white — is load-bearing; change it only together with CAG.
 
 The manifest carries `view_frames`, the per-frame view counts, alongside the single majority
 `view`. Screen on the counts: the majority value hides a set that is half three-quarter, or one

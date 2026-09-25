@@ -270,10 +270,95 @@ def landmarker():
     return mp, vision.PoseLandmarker.create_from_options(opts)
 
 
+def trace(a):
+    """Trace every .png/.jpg in a directory, in name order, into {i: pts} (null where no pose).
+
+    pts is {joint: [x * W/H, y, z]} straight off the image landmarks — the same keys as motion.json
+    but none of extract's rescale or exaggeration, so a render and the bundle's thumbs traced with
+    this compare like for like. Transparent PNGs are flattened onto white, like the footage.
+    """
+    import cv2, numpy as np
+    mp, lm = landmarker()
+    names = sorted(n for n in os.listdir(a.images) if n.lower().endswith((".png", ".jpg", ".jpeg")))
+    out = {}
+    for i, n in enumerate(names):
+        im = cv2.imread(os.path.join(a.images, n), cv2.IMREAD_UNCHANGED)
+        if im.ndim == 2: im = cv2.cvtColor(im, cv2.COLOR_GRAY2BGR)
+        if im.shape[2] == 4:
+            al = im[..., 3:4].astype(np.float32) / 255
+            im = (im[..., :3] * al + 255 * (1 - al)).astype(np.uint8)
+        H, W = im.shape[:2]
+        res = lm.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(im, cv2.COLOR_BGR2RGB)))
+        p = res.pose_landmarks[0] if res.pose_landmarks else None
+        out[i] = p and {k: [round(p[j].x * W / H, 4), round(p[j].y, 4), round(p[j].z, 4)] for k, j in LM.items()}
+    json.dump(out, open(a.out, "w"), indent=1)
+    print(f"{a.out}: {sum(v is not None for v in out.values())}/{len(out)} traced")
+
+
 def portable(p):
     """A bundle is handed to other machines: never bake an absolute home path into it."""
     ap = os.path.abspath(p)
     return os.path.relpath(ap) if ap.startswith(os.getcwd() + os.sep) else os.path.basename(p)
+
+
+# CAG letterboxes each thumb onto a 384x512 portrait card, top-aligned and never enlarged
+# (cag/poses.py CARD_WIDTH/CARD_HEIGHT). The old thumb was the whole 16:9 frame at 200px wide,
+# which put a ~50px dancer in the top strip of that card. So ship the card itself.
+THUMB_W, THUMB_H = 384, 512
+THUMB_MARGIN = 0.12  # pad past the landmarks (eyes, ankles) as a share of figure height
+
+
+def fit_aspect(x0, y0, x1, y1, aspect, W, H):
+    """Grow the box to `aspect` (w/h) about its centre, then fit it inside WxH.
+
+    Growing can push the box off frame, and clamping it back can break the aspect, so
+    the box is shrunk to what the frame can hold before it is re-centred. Returns even ints.
+    """
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    w, h = x1 - x0, y1 - y0
+    if w / h < aspect:
+        w = h * aspect
+    else:
+        h = w / aspect
+    # The frame is the ceiling. Shrink to fit before positioning, keeping the aspect.
+    if w > W:
+        w, h = W, W / aspect
+    if h > H:
+        w, h = H * aspect, H
+    x = min(max(cx - w / 2, 0), W - w)
+    y = min(max(cy - h / 2, 0), H - h)
+    return (int(x) // 2 * 2, int(y) // 2 * 2, int(w) // 2 * 2, int(h) // 2 * 2)
+
+
+def write_thumbs(shots, tdir, Wpx, Hpx):
+    """One 3:4 crop around the performer for the whole capture, each frame cut to it at 384x512.
+
+    One box, not one per frame: a per-frame fit would flatten the travel and size changes the
+    sheet is there to show. The box is the union of every traced frame's landmarks, padded, grown
+    to 3:4 and fitted inside the frame. Nothing reads pts against these pixels, so the crop needs
+    no bookkeeping.
+    """
+    import cv2
+    xs = [x for _, _, pts in shots for x, _ in pts]
+    ys = [y for _, _, pts in shots for _, y in pts]
+    pad = (max(ys) - min(ys)) * THUMB_MARGIN
+    box = (min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad)
+    x, y, w, h = fit_aspect(*box, THUMB_W / THUMB_H, Wpx, Hpx)
+    # A padded box past the frame edge means the performer runs off it: head or feet may be cut.
+    cut = [s for s, over in (("top", box[1] < 0), ("bottom", box[3] > Hpx),
+                             ("left", box[0] < 0), ("right", box[2] > Wpx)) if over]
+    print(f"thumbs: crop {w}x{h} at +{x}+{y} of {Wpx:.0f}x{Hpx:.0f}"
+          f"{' (upscaled)' if w < THUMB_W else ''}{' | figure near ' + '/'.join(cut) + ' edge' if cut else ''}")
+    for f in os.listdir(tdir):  # a re-cut with fewer frames must not leave stale thumbs behind
+        if f.endswith(".jpg"): os.remove(os.path.join(tdir, f))
+    for i, bgr, _ in shots:
+        crop = bgr[y:y + h, x:x + w]
+        th = cv2.resize(crop, (THUMB_W, THUMB_H),
+                        interpolation=cv2.INTER_AREA if w >= THUMB_W else cv2.INTER_CUBIC)
+        # quality 60 put JPEG artefacts on the limb edges, which is the one thing CAG's generator
+        # reads off these: they are its pose reference, not a preview.
+        cv2.imwrite(os.path.join(tdir, f"f{i:02d}.jpg"), th, [cv2.IMWRITE_JPEG_QUALITY, 88])
+    return x, y, w, h
 
 
 def extract(a):
@@ -330,7 +415,7 @@ def extract(a):
     span = end - start
     speed = span / (a.frames / a.fps)  # 1.0 == real time; 2.0 == source played at 2x
 
-    frames, missing = [], []
+    frames, missing, shots = [], [], []
     for i, t in enumerate(sample_times(start, span, a.frames)):
         cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
         ok, bgr = cap.read()
@@ -341,14 +426,11 @@ def extract(a):
         img, wld = res.pose_landmarks[0], res.pose_world_landmarks[0]
         P = {k: [img[j].x * Wpx / Hpx, img[j].y] for k, j in LM.items()}   # aspect-corrected, y down
         W = {k: [wld[j].x, wld[j].y, wld[j].z] for k, j in LM.items()}
-        th = cv2.resize(bgr, (200, int(200 * Hpx / Wpx)))
-        # quality 60 put JPEG artefacts on the limb edges, which is the one thing CAG's generator
-        # reads off these: they are its pose reference, not a preview. 200px is the width every
-        # amplitude measurement was taken at, and CAG pastes them at native size, so it stays.
-        cv2.imwrite(os.path.join(out, "thumbs", f"f{i:02d}.jpg"), th, [cv2.IMWRITE_JPEG_QUALITY, 88])
+        shots.append((i, bgr, [(v.x * Wpx, v.y * Hpx) for v in img]))
         frames.append(dict(i=i, t=round(t, 3), P=P, W=W))
     if len(frames) < 2:
         sys.exit(f"pose not found in enough frames (missing {missing}); try --start/--end on a clearer span")
+    write_thumbs(shots, os.path.join(out, "thumbs"), Wpx, Hpx)
 
     # constant scale: camera zoom / distance must not change body size. Per-frame pixels-per-metre =
     # summed image bone length / summed metric (world) bone length projected to the same plane, so
@@ -834,6 +916,14 @@ def selftest():
         assert work_root("/nowhere/near/a/capture") is None
     assert portable(os.path.join(os.getcwd(), "work", "x.mp4")) == os.path.join("work", "x.mp4")
     assert portable("/somewhere/else/x.mp4") == "x.mp4"
+    # fit_aspect: a wide box grows tall and slides back into frame; a too-tall one shrinks to the
+    # frame; one already at the aspect stays put; every result is even (the thumb crop's box).
+    assert fit_aspect(100, 100, 500, 300, 9 / 16, 1280, 720) == (100, 0, 400, 710)
+    x, y, w, h = fit_aspect(600, -200, 700, 900, 9 / 16, 1280, 720)
+    assert (w, h) == (404, 720) and y == 0 and 0 <= x and x + w <= 1280
+    assert fit_aspect(0, 0, 360, 640, 9 / 16, 1280, 720) == (0, 0, 360, 640)
+    for b in ((10, 10, 33, 77), (5, 5, 101, 203), (0, 0, 1279, 719)):
+        assert all(v % 2 == 0 for v in fit_aspect(*b, THUMB_W / THUMB_H, 1280, 720))
     print("selftest ok")
 
 
@@ -1142,9 +1232,10 @@ def main():
     sp.add_argument("--no-labels", action="store_true", help="omit the per-cell frame-number text (nothing for an image generator to copy into the art)")
     x = sub.add_parser("export"); x.add_argument("json"); x.add_argument("--out")
     x.add_argument("--sheet", help="motion sheet HTML (default <name>-motion.html beside the json)")
+    t = sub.add_parser("trace"); t.add_argument("images"); t.add_argument("out")
     sub.add_parser("selftest")
     a = ap.parse_args()
-    {"extract": extract, "render": render, "pose-grid": pose_grid, "export": export,
+    {"extract": extract, "render": render, "pose-grid": pose_grid, "export": export, "trace": trace,
      "selftest": lambda _: selftest()}[a.cmd](a)
 
 
