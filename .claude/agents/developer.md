@@ -36,7 +36,8 @@ on. Think before editing, and verify after.
 - The script is one file of about 1000 lines by choice. Match its comment density: it
   explains *why* a number is what it is, usually with the measurement behind it. A
   constant without its reason is a future wrong answer.
-- `work/`, `exports/` and downloaded video are git-ignored. Never commit a capture.
+- No output is written into the repo: captures and bundles are stored on the Drive at
+  `kadrive:MotionArtist/`, staged in `~/.cache/motion-artist`. Never commit a capture.
 
 ## Facts that cross a repo boundary
 
