@@ -11,6 +11,27 @@ Video of a person moving → `motion.json` + a self-contained HTML motion sheet.
 **motion source** for the KaraokeParty-Graphics `motion_director` / `animation_keyframe_artist`
 roles: it controls motion only, never character scale, identity, view or prop hand.
 
+## Where motions are stored
+
+**Every output is stored on the user's Google Drive, at `$MOTION_ARTIST_REMOTE` (default
+`kadrive:MotionArtist`, an rclone remote). Nothing is written into the repo, and there is no `work/`
+tree.** On the Drive:
+
+- `<set>/captures/<set>-<index>/` — the capture: `motion.json`, `thumbs/`, the motion sheet HTML
+  and the pose grid. `extract`, `render` and `pose-grid` each push it right after they write.
+- `<set>/<set>-<index>-<frames>f-<fps>fps-motion-source/` — the bundle `export` makes.
+- `<set>/clips.json` — clipper's marks, pushed on every save.
+
+Local disk holds only `$MOTION_ARTIST_CACHE` (default `~/.cache/motion-artist`): `sources/<set>/`
+has the downloads and clipper frames, which are inputs and never pushed, and `captures/` and
+`bundles/` are the staging copy each command writes before it pushes. The cache is disposable; the
+Drive copy is the stored one. **A command whose push fails exits non-zero** and keeps the staged
+copy: fix rclone (`rclone about kadrive:` checks the token) and re-run the command. When the cache
+no longer holds a capture, pull it back before `render` or `export`:
+`rclone copy kadrive:MotionArtist/<set>/captures/<name> "$MA/captures/<name>"`. Every command
+refuses an output path inside the checkout, `--out` included. `MOTION_ARTIST_REMOTE=` (empty) turns
+pushing off, for offline tests only. `MA` below is `${MOTION_ARTIST_CACHE:-~/.cache/motion-artist}`.
+
 ## Inputs (ask for anything missing)
 
 | Input | Required | Notes |
@@ -40,12 +61,12 @@ sample it to find the usable span, then search inside that span with `--window`.
 A set is one video, so the usual job is "extract as many unique moves from this URL as it holds".
 The procedure that worked:
 
-1. **Download once.** `yt-dlp` into `work/src/`, then run every `extract` against that local file with
+1. **Download once.** `yt-dlp` into `"$MA/sources/<set>/"`, then run every `extract` against that local file with
    `--url` so the origin still reaches the manifest. Passing the URL to `extract` per move
    re-downloads the video once per move.
    When the user would rather point at frames than describe them, `clipper.py` is the faster path
    to the same list: they mark in and out per move in a browser and it writes
-   `exports/<set>/clips.json`, whose `start`, `end`, `playback`, `capture_fps` and `capture_frames`
+   `clips.json` (on the Drive at `<set>/clips.json`), whose `start`, `end`, `playback`, `capture_fps` and `capture_frames`
    are all taken as given — it derives the frame count from the marked window the right way round,
    so do not recompute it. Steps 2 and 3 are how you find the boundaries when nobody has marked
    them for you.
@@ -252,8 +273,8 @@ cut them. `hip-hop-1` as a set name yields `hip-hop-1-1`, `hip-hop-1-2` and so o
 trailing digit is part of the set, not a move index. Unique means a different move, not a different
 cut of the same one: a re-cut of move 3 stays `<set>-3` and replaces it.
 
-Everything follows the name. The capture directory is `work/<set>-<index>/`, the bundle inside the
-zip is `<set>-<index>/`, and the zip lands in **`exports/<set>/`** — one directory per source video,
+Everything follows the name. The capture directory is `<set>/captures/<set>-<index>/`, and the bundle
+lands in **`<set>/`** on the Drive — one directory per source video,
 never flat. `set_name()` derives the set by stripping the trailing `-<index>`, so nothing needs a
 second flag.
 
@@ -413,7 +434,7 @@ over-driving the source to compensate.
    python3 "$SKILL/scripts/motion_artist.py" extract URL --fps 4 --frames 16 --start 0:16 --end 0:20 --name dance
    ```
    It prints a `snap:` line first — the span it moved to inside `--margin`, its seam and energy
-   score, and the runners-up — then writes `work/<name>/motion.json`, `work/<name>/thumbs/`, and
+   score, and the runners-up — then writes `$MA/captures/<name>/motion.json` and `thumbs/`, stores them on the Drive, and prints
    one line per frame:
    index, source time, role (`key` = hold/extreme, `pilot` = fastest transition, `inbetween`),
    pace, and the generated pose cue. Frame 0 is always a key. Check `missing` is empty and the
@@ -441,7 +462,7 @@ over-driving the source to compensate.
    per limb), and the cue names which leg is behind whenever the legs overlap.
 3. Render:
    ```bash
-   python3 "$SKILL/scripts/motion_artist.py" render work/dance/motion.json
+   python3 "$SKILL/scripts/motion_artist.py" render "$MA/captures/dance/motion.json"
    ```
    The sheet always holds exactly `--frames` cells, and the player loops them forever — a seam is
    reviewed by watching, never by drawing the cycle twice. Add `--pingpong` to walk those same cells
@@ -457,14 +478,14 @@ over-driving the source to compensate.
    The sheet is rendered from `motion-artist/templates/sheet.html` — markup, CSS and player in one
    file, with `{{PLACEHOLDER}}`s the script fills. Change how a sheet looks by editing that template;
    pass `--template FILE` to render into a different one.
-   Output `work/dance/dance-motion.html`: masthead (frames, fps, lap, playback, view, key and pilot
+   Output `$MA/captures/dance/dance-motion.html`, stored beside the capture on the Drive: masthead (frames, fps, lap, playback, view, key and pilot
    indices), a stage holding the traced frame and its cue, a transport (play/scrub, rate, mirror),
    the frame strip, the pose grid, the arc, a fixed "for the artist agent" brief, and
    the full frame-note table. A `<script type="application/json" id="motion">` block carries the
    data for machine readers.
 4. Build the pose grid — the one image you hand a generator the whole set in:
    ```bash
-   python3 "$SKILL/scripts/motion_artist.py" pose-grid work/dance/motion.json
+   python3 "$SKILL/scripts/motion_artist.py" pose-grid "$MA/captures/dance/motion.json"
    ```
    Tiles `thumbs/` — the footage, never drawn figures; see above for why — **four across and twelve
    to a sheet**. The twelve is this tool's own number now: it mirrored CAG's render grid when that
@@ -481,13 +502,11 @@ over-driving the source to compensate.
 5. Show it: open the HTML in the browser, or publish it as an Artifact when the user wants a link.
 6. Export — always finish here. The capture is not done until it is bundled:
    ```bash
-   python3 "$SKILL/scripts/motion_artist.py" export work/dance/motion.json
+   python3 "$SKILL/scripts/motion_artist.py" export "$MA/captures/dance/motion.json"
    ```
    One motion is one bundle, however many frames it has.
-   Writes `exports/hip-hop-1/hip-hop-1-3-24f-4fps-motion-source/` — an uncompressed directory,
-   always `exports/<set>/` at
-   the repo root, never inside
-   the capture dir: `motion.json`, the sheet HTML, `thumbs/` (the pose reference — see above), any
+   Stores `kadrive:MotionArtist/hip-hop-1/hip-hop-1-3-24f-4fps-motion-source/` — an uncompressed
+   directory, never inside the capture dir. The export is not done until it prints `stored`: `motion.json`, the sheet HTML, `thumbs/` (the pose reference — see above), any
    pose grid images and their sidecar, and a
    generated `manifest.json` (fps, frame count, playback, view, `seam` and `seam_ratio`, source, and
    a SHA-256 per file), all under a `<name>/` folder. The sidecar's grid rides in the manifest as a
@@ -500,7 +519,8 @@ over-driving the source to compensate.
 
 ## Hand-off to KaraokeParty-Graphics
 
-Copy `exports/<set>/<set>-<index>-<frames>f-<fps>fps-motion-source/` into that repo's ignored
+The stored copy is `kadrive:MotionArtist/<set>/<set>-<index>-<frames>f-<fps>fps-motion-source/`.
+Copy it with `rclone copy` into that repo's ignored
 `work/<character>/motion-source/` and reference it by path and by the manifest SHA-256 the export printed,
 as the authorized motion source in the motion-director job input. A spec names **one** bundle per
 animation (`spec.motions[set_name]` → one bundle directory); CAG chunks it across renders itself.

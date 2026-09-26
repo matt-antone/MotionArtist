@@ -4,24 +4,22 @@
   motion_artist/scripts/clipper.py [--port 8765]
 
 Open http://localhost:8765, name an animation set, paste a video URL. The tool
-downloads it into work/<set>/, splits every source frame into work/<set>/frames/,
+downloads it into the local cache ($MOTION_ARTIST_CACHE/sources/<set>/), splits every source frame into its frames/,
 and serves a frame-by-frame viewer. Mark in and out, drag either mark along the frame
-track to adjust it, name the clip, add it to the list. The list is saved to exports/<set>/clips.json, where each clip carries the
-exact frame numbers and the seconds they correspond to.
+track to adjust it, name the clip, add it to the list. The list is stored on the Drive as <remote>/<set>/clips.json, beside the
+set's bundles, where each clip carries the exact frame numbers and
+the seconds they correspond to.
 
 That file is the handoff: `motion_artist.py extract <url> --start S --end S ...`
 takes the seconds straight from it. This tool does not run the pipeline; it only
 settles which frames the pipeline should be pointed at.
 """
-import argparse, errno, json, os, re, shutil, subprocess, sys, urllib.parse, webbrowser
+import argparse, errno, json, os, re, shutil, subprocess, sys, threading, urllib.parse, webbrowser
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from motion_artist import fetch  # reuse the 720-capped yt-dlp download
-
-ROOT = os.getcwd()
-WORK = os.path.join(ROOT, "work")
-EXPORTS = os.path.join(ROOT, "exports")
+from motion_artist import fetch, publish  # reuse the 720-capped yt-dlp download and the Drive push
+from motion_artist import SOURCES, BUNDLES  # local cache; clips.json is stored on the Drive
 FRAME_HEIGHT = 480  # display copies; extract re-reads the source video at full resolution
 PLAYBACK = ("loop", "one-shot", "final-hold")  # extract's own --playback choices, not a second vocabulary
 # ping-pong is offered beside them but is not one of them: it is `extract --pingpong`, a
@@ -59,9 +57,9 @@ def source_of(set_dir):
 
 def known_sets():
     """Sets that have already been split, which is what the name box offers."""
-    if not os.path.isdir(WORK):
+    if not os.path.isdir(SOURCES):
         return []
-    return sorted(d for d in os.listdir(WORK) if os.path.isdir(os.path.join(WORK, d, "frames")))
+    return sorted(d for d in os.listdir(SOURCES) if os.path.isdir(os.path.join(SOURCES, d, "frames")))
 
 
 def load_set(name, url, confirmed=False):
@@ -74,17 +72,17 @@ def load_set(name, url, confirmed=False):
 
     A name that already holds a different video is the other half of that: answering yes
     replaces it, which drops the downloaded video and every split frame. The clips stay --
-    they live under exports/ -- but their frame numbers were read off the video being
+    they are stored on the Drive -- but their frame numbers were read off the video being
     replaced, so the caller is told how many are about to be left pointing at nothing.
     """
-    set_dir = os.path.join(WORK, name)
+    set_dir = os.path.join(SOURCES, name)
     src = source_of(set_dir) if os.path.isdir(set_dir) else None
     if src and url and url != url_of(set_dir):
         if not confirmed:
             return {"needs_confirm": True, "reason": "replace", "set": name,
                     "current_url": url_of(set_dir), "clips": len(read_clips(name)),
                     "sets": known_sets()}
-        shutil.rmtree(set_dir)          # only the video and its frames; exports/ is untouched
+        shutil.rmtree(set_dir)          # only the video and its frames; clips.json is untouched
         src = None
     if not src:
         if not url:
@@ -111,7 +109,12 @@ def load_set(name, url, confirmed=False):
 
 
 def clips_path(name):
-    return os.path.join(EXPORTS, name, "clips.json")
+    return os.path.join(BUNDLES, name, "clips.json")
+
+
+def push_clips(name):
+    err = publish(clips_path(name), f"{name}/clips.json")
+    if err: print(f"clipper: clips.json not on the Drive yet — {err}", file=sys.stderr)
 
 
 def read_clips(name):
@@ -184,7 +187,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, json.dumps(known_sets()))
         if u.path == "/api/frame":
             name, n = slug(q.get("set", [""])[0]), int(q.get("n", ["1"])[0])
-            p = os.path.join(WORK, name, "frames", f"{n:06d}.jpg")
+            p = os.path.join(SOURCES, name, "frames", f"{n:06d}.jpg")
             if not os.path.exists(p):
                 return self.send(404, b"", "image/jpeg")
             self.send(200, open(p, "rb").read(), "image/jpeg")
@@ -202,6 +205,8 @@ class Handler(BaseHTTPRequestHandler):
                                                           bool(body.get("confirmed")))))
             if self.path == "/api/clips":
                 saved = write_clips(name, body.get("url", ""), float(body["fps"]), body.get("clips", []))
+                # off the request thread: a Drive round trip is seconds, and a save is every edit
+                threading.Thread(target=push_clips, args=(name,), daemon=True).start()
                 return self.send(200, json.dumps({"clips": saved, "path": clips_path(name)}))
         except subprocess.CalledProcessError as e:
             return self.send(500, json.dumps({"error": (e.stderr or str(e))[-400:]}))
@@ -418,7 +423,7 @@ $('load').onclick = async () => {
                      `read off the video being replaced.` : '') +
           `\n\nReplace it?`
         : `"${j.set}" is not an existing set.\n\n` +
-          `Loading it downloads the video and splits every frame into work/${j.set}/.` +
+          `Loading it downloads the video and splits every frame into the local cache.` +
           (j.sets.length ? `\n\nSets already here:\n  ${j.sets.join('\n  ')}` : '') +
           `\n\nCreate it?`;
       if (!confirm(msg)) return;
@@ -543,8 +548,8 @@ def selftest():
     # a typo costs, and nothing else in the flow would mention it.
     import tempfile as _tf
     with _tf.TemporaryDirectory() as _w:
-        global WORK
-        WORK = _w
+        global SOURCES
+        SOURCES = _w
         ask = load_set("clube-moves", "http://x")
         assert ask == {"needs_confirm": True, "reason": "new", "set": "clube-moves", "sets": []}, ask
         assert not os.path.exists(os.path.join(_w, "clube-moves")), "asked, but made the dir anyway"
@@ -571,8 +576,8 @@ def selftest():
     # clip at 30fps spans 0.000-0.033 and extract sees a non-empty window.
     import tempfile
     with tempfile.TemporaryDirectory() as d:
-        global EXPORTS
-        EXPORTS = d
+        global BUNDLES
+        BUNDLES = d
         out = write_clips("demo", "http://x", 30.0,
                           [{"name": "Step Touch", "in": 1, "out": 1},
                            {"name": "turn", "in": 31, "out": 60, "playback": "one-shot"},
@@ -666,7 +671,7 @@ if __name__ == "__main__":
     if a.selftest:
         selftest()
         sys.exit(0)
-    os.makedirs(WORK, exist_ok=True)
+    os.makedirs(SOURCES, exist_ok=True)
     # Bind before announcing: printing the URL first claimed success and then traced back on a
     # port already held by an earlier clipper — whose page was serving fine all along.
     try:

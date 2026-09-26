@@ -58,7 +58,10 @@ worktree. Branch, capture, commit, open the PR. **When it merges, prune the work
 worktree on a dead branch is how this project twice quoted a constant that had already
 changed upstream.
 
-`work/` and `exports/` are git-ignored by design. Captures are never committed.
+Motions are stored on the user's Google Drive (`kadrive:MotionArtist/<set>/`), never in the
+repo and never in a `work/` tree. Every command stores its output there as it writes; local
+disk is only the cache (`~/.cache/motion-artist`). A step that did not print `stored` is not
+finished.
 
 ## Reporting and hand-off
 

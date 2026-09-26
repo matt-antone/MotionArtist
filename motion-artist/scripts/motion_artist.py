@@ -18,6 +18,17 @@ MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
              "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task")
 MODEL_PATH = os.path.expanduser("~/.cache/motion-artist/pose_landmarker_lite.task")
 
+# Every output is stored on the user's Google Drive at REMOTE — never in the checkout, never in a
+# work/ tree. Each command pushes what it wrote as soon as it is written, and fails if the push does.
+# CACHE is local disk only because cv2 and ffmpeg need files: the downloads and clipper frames
+# (inputs), plus a mirror of captures and bundles that is disposable, since the Drive copy is the
+# stored one. An empty MOTION_ARTIST_REMOTE turns pushing off, for offline work only.
+CACHE = os.path.expanduser(os.environ.get("MOTION_ARTIST_CACHE", "~/.cache/motion-artist"))
+SOURCES, CAPTURES, BUNDLES = (os.path.join(CACHE, d) for d in ("sources", "captures", "bundles"))
+REMOTE = os.environ.get("MOTION_ARTIST_REMOTE", "kadrive:MotionArtist").rstrip("/")
+# realpath, so a skill linked into ~/.claude/skills still knows which checkout it came from
+REPO = os.path.realpath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", ".."))
+
 # Bump when a field changes meaning or disappears, so a consumer fails loudly instead of mis-parsing.
 SCHEMA = "motion-artist/2"
 
@@ -270,6 +281,59 @@ def landmarker():
     return mp, vision.PoseLandmarker.create_from_options(opts)
 
 
+def outside_repo(p):
+    """Refuse an output path inside the checkout: motions are stored on the Drive, never in the repo."""
+    rp = os.path.realpath(p)
+    if rp == REPO or rp.startswith(REPO + os.sep):
+        sys.exit(f"refusing to write {p} inside the repo at {REPO} — outputs are stored on "
+                 f"{REMOTE or 'the Drive'}, staged in {CACHE}")
+    return p
+
+
+# rclone bounded like CharacterAssetGenerator's publish: a stalled link fails in about a minute,
+# and an encrypted config with no password fails at once instead of prompting on a captured terminal.
+# Low-level retries are 10, not CAG's 3: the shared client_id answers rateLimitExceeded often, and
+# 3 failed a first push that went through untouched a minute later.
+RCLONE_FLAGS = ["--checksum", "--retries", "1", "--low-level-retries", "10",
+                "--contimeout", "15s", "--timeout", "60s", "--ask-password=false"]
+
+
+def publish(local, rel):
+    """Copy `local` to REMOTE/rel. Returns None when it landed (or REMOTE is off), else what failed.
+
+    A directory is `rclone sync`ed, scoped to that one bundle, so a re-cut to fewer frames removes
+    the stale thumbs on the Drive exactly as `export` removes them on disk. A file is `copyto`.
+    """
+    if not REMOTE: return None
+    if not shutil.which("rclone"): return "rclone is not on PATH"
+    dst = REMOTE + ("" if REMOTE.endswith(":") else "/") + rel
+    cmd = ["rclone", "sync" if os.path.isdir(local) else "copyto", *RCLONE_FLAGS, local, dst]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        return f"`{' '.join(cmd)}` timed out"
+    # rclone prints NOTICE lines (the shared client_id retiring) even on success; the error is the rest
+    why = [l for l in r.stderr.splitlines() if "NOTICE" not in l]
+    return None if r.returncode == 0 else f"`{' '.join(cmd)}` failed: {(why or ['exit %d' % r.returncode])[-1]}"
+
+
+def store(cap_dir, name, *outs):
+    """Push a capture to REMOTE/<set>/captures/<name>/, and any output written outside it to <set>/.
+
+    Every command that writes calls this: an output that did not reach the Drive is not stored, so
+    the command fails and leaves the local copy for a re-run to push.
+    """
+    st = set_name({"name": name})
+    rel, inside = f"{st}/captures/{name}", os.path.realpath(cap_dir) + os.sep
+    errs = [publish(cap_dir, rel)] + [publish(p, f"{st}/{os.path.basename(p)}") for p in outs
+                                      if not os.path.realpath(p).startswith(inside)]
+    errs = [e for e in errs if e]
+    if errs:
+        sys.exit("not stored on the Drive — " + "; ".join(errs) +
+                 f"\nThe local copy is at {cap_dir}; fix rclone and re-run.")
+    if REMOTE: print(f"stored {REMOTE}/{rel}")
+
+
 def portable(p):
     """A bundle is handed to other machines: never bake an absolute home path into it."""
     ap = os.path.abspath(p)
@@ -286,10 +350,12 @@ def extract(a):
         print(f"note: {a.frames} frames is not a multiple of 4, so CAG's last render row is "
               f"part-empty. Harmless, but {a.frames - a.frames % 4} or {a.frames + 4 - a.frames % 4} "
               f"fills the grid.", file=sys.stderr)
-    out = a.out or os.path.join("work", a.name or "motion")
+    out = outside_repo(a.out or os.path.join(CAPTURES, a.name or "motion"))
     os.makedirs(os.path.join(out, "thumbs"), exist_ok=True)
     if re.match(r"https?://", a.source):
-        src, title = fetch(a.source, out)
+        # the download is an input, not an output: it stays in the cache, shared by the set's
+        # captures (yt-dlp skips a file already there), and never goes up with the capture
+        src, title = fetch(a.source, os.path.join(SOURCES, set_name({"name": a.name or "motion"})))
     else:
         src, title = a.source, os.path.basename(a.source)
     name = a.name or re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:40] or "motion"
@@ -445,6 +511,7 @@ def extract(a):
               f"re-run with a different --start/--search window for a loop that lands on its feet")
     for f in doc["frames"]:
         print(f"{f['i']:>3} {f['t']:6.2f}s {f['role']:<9} {f['pace']:<6} {f['cue']}")
+    store(out, name)
     return jp
 
 
@@ -600,7 +667,7 @@ def render(a):
     # which set the flag on the loaded doc and so on the sheet's embedded payload, but never on
     # motion.json: the bundle then shipped a sheet that bounced beside a motion.json that said it
     # did not. One writer now, `extract`; to flip an existing capture, re-cut it or edit the json.
-    out = a.out or os.path.join(os.path.dirname(a.json), f"{d['name']}-motion.html")
+    out = outside_repo(a.out or os.path.join(os.path.dirname(a.json), f"{d['name']}-motion.html"))
     tdir = os.path.join(os.path.dirname(a.json), "thumbs")
     rates = sorted({1, 4, d["fps"]})
 
@@ -645,6 +712,7 @@ def render(a):
         page = page.replace("{{" + k + "}}", v)
     open(out, "w").write(page)
     print(out)
+    store(os.path.dirname(os.path.abspath(a.json)), d["name"], out)   # the arc was written since extract
     return out
 
 
@@ -792,6 +860,13 @@ def selftest():
     assert set_name({"name": "dougie"}) == "dougie"
     assert portable(os.path.join(os.getcwd(), "work", "x.mp4")) == os.path.join("work", "x.mp4")
     assert portable("/somewhere/else/x.mp4") == "x.mp4"
+    # nothing lands in the checkout, by default or by --out
+    assert not os.path.realpath(CACHE).startswith(REPO + os.sep), f"cache {CACHE} is inside the repo"
+    assert outside_repo("/elsewhere/x") == "/elsewhere/x"
+    for p in (os.path.join(REPO, "work", "x"), os.path.join(REPO, "exports")):
+        try: outside_repo(p)
+        except SystemExit: pass
+        else: raise AssertionError(f"{p} is in the repo and was allowed")
     print("selftest ok")
 
 
@@ -808,7 +883,7 @@ def set_name(d):
 
     Names are assigned here, not derived. Each source video is given a set name, and every unique
     move cut out of it is `<set>-<index>`, index from 1 — so `hip-hop-1-3` is the third move of the
-    `hip-hop-1` set and lives in `exports/hip-hop-1/`. The name is the identifier, which means a
+    `hip-hop-1` set and is stored in `<remote>/hip-hop-1/`. The name is the identifier, which means a
     re-cut of a move overwrites that move instead of landing beside it under a different trace.
     Provenance — url, start second, span — rides in `manifest.json`, which is where a consumer
     reads it; it is no longer spelled into the file name.
@@ -893,7 +968,7 @@ def pose_grid(a):
     per_sheet = 12
     # BGR, matching templates/sheet.html's :root — key #FF74A8, pilot #A8A2FF, otherwise --muted.
     role_ink = {"key": (168, 116, 255), "pilot": (255, 162, 168)}
-    out = a.out or os.path.join(os.path.dirname(a.json), f"{d['name']}-pose-grid.png")
+    out = outside_repo(a.out or os.path.join(os.path.dirname(a.json), f"{d['name']}-pose-grid.png"))
     stem = out[:-4] if out.endswith(".png") else out
     chunks = [range(s, min(s + per_sheet, n)) for s in range(0, n, per_sheet)]
     written = []
@@ -927,6 +1002,7 @@ def pose_grid(a):
     print("\n".join(written) + f"\n{sidecar}")
     print(f"{cols} across, {per_sheet} per image, {len(chunks)} image(s), {n} frames, "
           f"{cell_w}x{cell_h}px cells")
+    store(os.path.dirname(os.path.abspath(a.json)), d["name"], *written, sidecar)
     return written[0]
 
 
@@ -960,11 +1036,11 @@ def export(a):
     # pixels back out of it.
     layout_p = os.path.join(src, f"{d['name']}-pose-grid.json")
     if os.path.exists(layout_p): man["pose_grid"] = json.load(open(layout_p))
-    # Bundles land in exports/<set>/, beside work/ and never in the capture dir: one place to hand
-    # off from, one directory per source video. The file name still carries frame count and fps —
-    # a re-cut at a different rate is a different animation from the same move.
-    exports = os.path.join(os.path.dirname(os.path.dirname(src)), "exports", set_name(d))
-    out = a.out or os.path.join(exports, f"{bundle}-{d['frame_count']}f-{d['fps']}fps-motion-source")
+    # Bundles are stored at REMOTE/<set>/, one directory per source video, staged in BUNDLES/<set>/
+    # and never in the capture dir. The file name still carries frame
+    # count and fps — a re-cut at a different rate is a different animation from the same move.
+    exports = os.path.join(BUNDLES, set_name(d))
+    out = outside_repo(a.out or os.path.join(exports, f"{bundle}-{d['frame_count']}f-{d['fps']}fps-motion-source"))
     # A plain directory, not a zip: the consumer reads thumbs/ frame by frame, so compressing them
     # only to have them unpacked again bought nothing. The layout is what unzipping used to give,
     # minus the redundant <bundle>/ level the archive needed to avoid spilling on extract.
@@ -995,6 +1071,16 @@ def export(a):
     if len(thumbs) != d["frame_count"]:
         print(f"warning: {len(thumbs)} thumbs for {d['frame_count']} frames — CAG reads them as the "
               f"pose reference, one per frame. Clear {tdir} and re-extract.")
+    # The Drive is where a motion is stored, so a bundle that did not reach it is not exported. The
+    # set's clips.json rides along when clipper wrote one. Re-running `export` retries the push.
+    rel = f"{set_name(d)}/{os.path.basename(os.path.normpath(out))}"
+    clips = os.path.join(exports, "clips.json")
+    errs = [e for e in (publish(out, rel),
+                        publish(clips, f"{set_name(d)}/clips.json") if os.path.exists(clips) else None) if e]
+    if errs:
+        sys.exit("export: not stored on the Drive — " + "; ".join(errs) +
+                 f"\nThe bundle is staged at {out}; fix rclone and re-run export.")
+    if REMOTE: print(f"stored {REMOTE}/{rel}")
 
 
 def main():

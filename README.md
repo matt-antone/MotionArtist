@@ -19,16 +19,18 @@ motion-artist/
   scripts/clipper.py          # browser tool: step a video frame by frame and mark clip in/out points
   scripts/portrait_crop.py    # crop a landscape source to a 9:16 window around the performer, before extract
   templates/sheet.html        # the motion sheet's markup, CSS and player; render() fills its placeholders
-exports/<set>/                # finished bundles and the set's clips.json — git-ignored, never committed
 AGENTS.md                     # how to work in this repo: pipeline, conventions, verification
 ```
 
 ## Install
 
 ```bash
-pip install "mediapipe<1" opencv-python   # plus yt-dlp and ffmpeg/ffprobe on PATH
+pip install "mediapipe<1" opencv-python   # plus yt-dlp, ffmpeg/ffprobe and rclone on PATH
 ln -s "$PWD/motion-artist" ~/.claude/skills/motion-artist   # or copy into a repo's .claude/skills or .agents/skills
 ```
+
+Motions are stored on Google Drive through rclone: configure a `kadrive:` remote (`rclone config`)
+or point `MOTION_ARTIST_REMOTE` at another. See **Where motions are stored** below.
 
 `mediapipe<1` is deliberate: the 1.x macOS wheel aborts in its Metal helper. The pose model is
 downloaded once to `~/.cache/motion-artist/`.
@@ -44,11 +46,11 @@ python3 motion-artist/scripts/clipper.py            # --port 8765 by default
 ```
 
 Open `http://localhost:8765`, name an animation set, paste a video URL. It downloads the video
-into `work/<set>/`, splits every source frame into `work/<set>/frames/`, and serves a
+into the local cache (`sources/<set>/`), splits every source frame into its `frames/`, and serves a
 frame-by-frame viewer. Step to the frame you want, mark in and out, drag either mark along the
 frame track to adjust it, name the clip, add it to the list.
 
-The list is saved to `exports/<set>/clips.json`, where each clip carries the exact frame numbers
+The list is stored on the Drive as `<set>/clips.json`, where each clip carries the exact frame numbers
 and the seconds they correspond to. That file is the handoff: `extract --start S --end S` takes
 the seconds straight from it. The tool runs no part of the pipeline — it only settles which frames
 the pipeline is pointed at.
@@ -59,7 +61,7 @@ A thumb is the whole frame resized to 200px wide, so a 16:9 source leaves the pe
 third the height a portrait source gives. That is fixable only in the pixels, before tracing:
 
 ```bash
-python3 motion-artist/scripts/portrait_crop.py work/<set>/video.mp4 --start 12 --end 20
+python3 motion-artist/scripts/portrait_crop.py "$MA/sources/<set>/video.mp4" --start 12 --end 20
 ```
 
 It traces the performer across `--start..--end` to find where they sit in frame, then crops the
@@ -89,7 +91,7 @@ an out mark per move and choose its playback and capture fps. A set name it has 
 confirmed before anything downloads, listing the sets you already have, because a name one letter
 off another is a whole second copy of the video and its frames. Pointing an existing set at a
 different URL offers to replace it instead. It writes
-`exports/<set>/clips.json` — frame numbers, the seconds `--start`/`--end` want, the `--playback` you
+`<set>/clips.json` on the Drive — frame numbers, the seconds `--start`/`--end` want, the `--playback` you
 chose, and `--fps`/`--frames` — and runs nothing else.
 
 The frame count is derived, never typed: `frames = fps x window`, where the window is the span your
@@ -113,9 +115,9 @@ Or by hand:
 ```bash
 python3 motion-artist/scripts/motion_artist.py extract "https://www.youtube.com/shorts/…" \
   --fps 4 --frames 16 --start 0:16 --end 0:20 --name dance
-python3 motion-artist/scripts/motion_artist.py render work/dance/motion.json
-python3 motion-artist/scripts/motion_artist.py pose-grid work/dance/motion.json
-python3 motion-artist/scripts/motion_artist.py export work/dance/motion.json
+python3 motion-artist/scripts/motion_artist.py render "$MA/captures/dance/motion.json"
+python3 motion-artist/scripts/motion_artist.py pose-grid "$MA/captures/dance/motion.json"
+python3 motion-artist/scripts/motion_artist.py export "$MA/captures/dance/motion.json"
 ```
 
 | Flag | Meaning |
@@ -131,12 +133,12 @@ python3 motion-artist/scripts/motion_artist.py export work/dance/motion.json
 | `--stabilize` | centre the hips horizontally in every frame; use for a moving camera or a travelling performer (airborne is then never called, since there is no fixed floor). Body scale is always normalised per frame from pixels-per-metre, so camera zoom never changes the traced pose's size |
 | `--playback` | `loop` (default), `one-shot`, `final-hold`. Only `loop` carries meaning downstream; the others differ only in how the span's end is chosen here |
 | `--exaggerate` | amplify each landmark's deviation from the clip-mean pose; default `1.25`, `1.0` = as filmed |
-| `--name`, `--out` | output slug and directory (default `work/<name>/`) |
+| `--name`, `--out` | output slug and directory (default `$MOTION_ARTIST_CACHE/captures/<name>/`, stored on the Drive; never inside the repo) |
 | `render --template FILE` | render into a different sheet template (default `motion-artist/templates/sheet.html`) |
 | `render --pingpong` | walk the same cells out and back; the return leg reverses the out leg, so the seam is clean and the sheet still holds only the requested frames |
 | `pose-grid --cols` | pose cards per row; default `4` |
 | `pose-grid --no-labels` | drop the frame-number band, and say so in the sidecar |
-| `export --out`, `--sheet` | bundle path (default `exports/<set>/<set>-<index>-<frames>f-<fps>fps-motion-source/`, an uncompressed directory) and the sheet HTML to include (default `<name>-motion.html` beside the json) |
+| `export --out`, `--sheet` | bundle path (default staged in `$MOTION_ARTIST_CACHE/bundles/<set>/` and stored on the Drive as `<set>/<set>-<index>-<frames>f-<fps>fps-motion-source/`, an uncompressed directory) and the sheet HTML to include (default `<name>-motion.html` beside the json) |
 
 `extract` prints one line per frame (index, source time, key / pilot / in-between, pace, pose cue)
 and writes `motion.json` plus `thumbs/`. Landmarks carry depth — `pts` is `[x, y, z]`, z negative
@@ -170,11 +172,23 @@ job input references. It warns if `arc` is empty or any frame has no pose. Two c
 move get two names, never one overwritten file, so a copy into a consuming repo removes the bundle
 it supersedes in the same step.
 
-Captures and downloaded video live under `work/`, git-ignored. Finished bundles land in
-`exports/<set>/`, beside the `clips.json` clipper writes for that set. That whole tree is
-git-ignored: the zips are build output, large and re-digested on every re-cut, and the hand-off was
-always the path and the SHA-256 the exporter prints rather than a committed file.
+## Where motions are stored
 
-`clips.json` is ignored with it, so **the frames you marked in the clipper live only in your working
-copy**. Nothing else records them — a fresh clone starts with no marks, and a discarded worktree
-takes its sets with it. Keep a copy outside the repo if a set's boundaries were expensive to find.
+**Every output is stored on the user's Google Drive, at `$MOTION_ARTIST_REMOTE` (default
+`kadrive:MotionArtist`, an rclone remote). Nothing is written into the repo, and there is no `work/`
+tree.** On the Drive:
+
+- `<set>/captures/<set>-<index>/` — the capture: `motion.json`, `thumbs/`, the motion sheet HTML
+  and the pose grid. `extract`, `render` and `pose-grid` each push it right after they write.
+- `<set>/<set>-<index>-<frames>f-<fps>fps-motion-source/` — the bundle `export` makes.
+- `<set>/clips.json` — clipper's marks, pushed on every save.
+
+Local disk holds only `$MOTION_ARTIST_CACHE` (default `~/.cache/motion-artist`): `sources/<set>/`
+has the downloads and clipper frames, which are inputs and never pushed, and `captures/` and
+`bundles/` are the staging copy each command writes before it pushes. The cache is disposable; the
+Drive copy is the stored one. **A command whose push fails exits non-zero** and keeps the staged
+copy: fix rclone (`rclone about kadrive:` checks the token) and re-run the command. When the cache
+no longer holds a capture, pull it back before `render` or `export`:
+`rclone copy kadrive:MotionArtist/<set>/captures/<name> "$MA/captures/<name>"`. Every command
+refuses an output path inside the checkout, `--out` included. `MOTION_ARTIST_REMOTE=` (empty) turns
+pushing off, for offline tests only. `MA` below is `${MOTION_ARTIST_CACHE:-~/.cache/motion-artist}`.

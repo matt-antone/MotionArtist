@@ -19,15 +19,34 @@ motion-artist/templates/sheet.html     the motion sheet: markup, CSS and player,
                                        render() fills. Edit the sheet's design here, not in the script
 .claude/skills/motion-artist           symlink to motion-artist/, so the skill loads in this repo —
                                        git-ignored, so a fresh clone has to create it (see Setup)
-work/                                  captures and downloaded video — git-ignored, never commit
-exports/<set>/                         finished bundles, one zip per capture, and the set's
-                                       clips.json — all git-ignored, never commit any of it
 README.md                              the human-facing version of SKILL.md
 ```
 
+## Where motions are stored
+
+**Every output is stored on the user's Google Drive, at `$MOTION_ARTIST_REMOTE` (default
+`kadrive:MotionArtist`, an rclone remote). Nothing is written into the repo, and there is no `work/`
+tree.** On the Drive:
+
+- `<set>/captures/<set>-<index>/` — the capture: `motion.json`, `thumbs/`, the motion sheet HTML
+  and the pose grid. `extract`, `render` and `pose-grid` each push it right after they write.
+- `<set>/<set>-<index>-<frames>f-<fps>fps-motion-source/` — the bundle `export` makes.
+- `<set>/clips.json` — clipper's marks, pushed on every save.
+
+Local disk holds only `$MOTION_ARTIST_CACHE` (default `~/.cache/motion-artist`): `sources/<set>/`
+has the downloads and clipper frames, which are inputs and never pushed, and `captures/` and
+`bundles/` are the staging copy each command writes before it pushes. The cache is disposable; the
+Drive copy is the stored one. **A command whose push fails exits non-zero** and keeps the staged
+copy: fix rclone (`rclone about kadrive:` checks the token) and re-run the command. When the cache
+no longer holds a capture, pull it back before `render` or `export`:
+`rclone copy kadrive:MotionArtist/<set>/captures/<name> "$MA/captures/<name>"`. Every command
+refuses an output path inside the checkout, `--out` included. `MOTION_ARTIST_REMOTE=` (empty) turns
+pushing off, for offline tests only. `MA` below is `${MOTION_ARTIST_CACHE:-~/.cache/motion-artist}`.
+
 ## Setup
 
-`python3` with `opencv-python` and `mediapipe<1`, plus `yt-dlp` on PATH. Pin mediapipe below 1.x:
+`python3` with `opencv-python` and `mediapipe<1`, plus `yt-dlp` and `rclone` (with a `kadrive:`
+remote) on PATH. Pin mediapipe below 1.x:
 the 1.x wheel crashes in the Metal helper on macOS. The pose model is cached at
 `~/.cache/motion-artist/` on first run.
 
@@ -63,18 +82,18 @@ python3 motion-artist/scripts/clipper.py
 ```
 
 It opens `http://localhost:8765`. The user names an animation set, pastes a video URL, and the tool
-downloads it into `work/<set>/` (reusing an existing download) and splits every source frame into
-`work/<set>/frames/`. A name it has not seen is confirmed first, listing the sets that already
+downloads it into the cache at `sources/<set>/` (reusing an existing download) and splits every
+source frame into its `frames/`. A name it has not seen is confirmed first, listing the sets that already
 exist — a set name one letter off another is a second download and a second full frame split, and
 nothing else in the flow would say so. Loading a set that already holds a **different** URL offers
-to replace it, which deletes that video and its frames; the clips survive in `exports/`, but their
+to replace it, which deletes that video and its frames; the clips survive on the Drive, but their
 frame numbers were read off the video being replaced. They step through frames and mark in and out. Both marks sit on the frame track under the
 viewer and can be dragged to adjust, with the frame following the mark as it moves, so a boundary
 is settled by eye rather than re-marked. Loading a clip back into the player fills its name too, so
 adding it again offers to replace it rather than writing a second clip — one name is one export
 directory, and `clips.json` refuses two clips that would share it. They name each clip, pick how it
 plays back and the fps the
-clip is captured at, and the list is written to `exports/<set>/clips.json`:
+clip is captured at, and the list is stored on the Drive as `<set>/clips.json`:
 
 ```json
 {"set": "shuffle-3", "url": "...", "source_fps": 29.97,
@@ -116,7 +135,7 @@ runs the pipeline and never writes a bundle.
 
 Five steps, in order. A capture is not finished until step 5.
 
-1. `extract` — video → `work/<name>/motion.json` + `thumbs/`, and a printed frame table.
+1. `extract` — video → the capture (`motion.json` + `thumbs/`, stored on the Drive), and a printed frame table.
 2. Author the arc — fill `arc`, and per-frame `note` only where the generated cue misses intent.
 3. `render` — `motion.json` → the self-contained HTML motion sheet.
 4. `pose-grid` — `thumbs/` → the pose grid: traced frames as pose cards, four across, twelve per
@@ -129,8 +148,8 @@ Five steps, in order. A capture is not finished until step 5.
 Every capture is named `<set>-<index>`. A video URL always arrives with a set name; one video is
 one set, and each unique move cut from it takes the next index from 1. That string is the capture
 directory, the bundle directory, the manifest `name` and the shipped `motion.json` `name`, so a
-bundle cannot advertise one name and say another inside. Bundles land in `exports/<set>/`, one
-directory per source video, as `<set>-<index>-<frames>f-<fps>fps-motion-source/` — an
+bundle cannot advertise one name and say another inside. Bundles are stored on the Drive at
+`kadrive:MotionArtist/<set>/`, one directory per source video, as `<set>-<index>-<frames>f-<fps>fps-motion-source/` — an
 uncompressed directory, not an archive.
 
 An assigned name is an identifier in a way a descriptive label never was — "shuffle" is a genre,
@@ -192,8 +211,9 @@ The rules that bind work in this repo:
 
 - `python3 motion-artist/scripts/motion_artist.py selftest` — pose-description heuristics, timestamp
   parsing, manifest and digest. Fast, no video needed. Extend it when you add logic.
-- `work/sample/` holds a real capture. Re-render or re-export it to check a change end to end
-  without re-downloading anything.
+- A capture in the cache (`~/.cache/motion-artist/captures/`) can be re-rendered or re-exported to
+  check a change end to end without re-downloading anything. Point `MOTION_ARTIST_REMOTE` at a
+  scratch folder (or set it empty) so a test does not overwrite a stored motion.
 - Changing geometry (scale, floor, stabilize, seam scoring)? Look at the rendered sheet. The
   heuristics are guidance for an artist, not measurements, and only the drawing shows a regression.
 
@@ -216,8 +236,8 @@ Match what is there rather than introducing a second style.
 - Commit subjects are imperative and describe the behaviour: "Pin the planted ankle to one floor
   line when stabilized", not "fix". Body explains why, wrapped at ~76 columns. Small, atomic commits.
 - PRs target `main` and are merged with a merge commit.
-- Never commit anything under `work/` or `exports/`, and no `.mp4`. Both trees are git-ignored;
-  a bundle and the `clips.json` beside it are working-copy artefacts, never repo content.
+- Never write outputs into the repo and never commit a capture, a bundle, `clips.json` or an
+  `.mp4`. `work/` and `exports/` stay git-ignored as a backstop for anything older.
 
 ## graft skill
 
