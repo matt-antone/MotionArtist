@@ -1168,11 +1168,12 @@ def export(a):
     # pixels back out of it.
     layout_p = os.path.join(src, f"{d['name']}-pose-grid.json")
     if os.path.exists(layout_p): man["pose_grid"] = json.load(open(layout_p))
-    # Bundles are stored at REMOTE/<set>/, one directory per source video, staged in BUNDLES/<set>/
-    # and never in the capture dir. The file name still carries frame
-    # count and fps — a re-cut at a different rate is a different animation from the same move.
+    # Bundles are stored at REMOTE/<set>/<set>-<index>/, staged in BUNDLES/<set>/ and never in the
+    # capture dir. The directory is the name and nothing else, so it equals the manifest's and
+    # motion.json's `name` and cag installs it without renaming. Frames and fps live in the manifest;
+    # the directory used to carry them too, and a consumer had to strip them to find the name.
     exports = os.path.join(BUNDLES, set_name(d))
-    out = outside_repo(a.out or os.path.join(exports, f"{bundle}-{d['frame_count']}f-{d['fps']}fps-motion-source"))
+    out = outside_repo(a.out or os.path.join(exports, bundle))
     # A plain directory, not a zip: the consumer reads thumbs/ frame by frame, so compressing them
     # only to have them unpacked again bought nothing. The layout is what unzipping used to give,
     # minus the redundant <bundle>/ level the archive needed to avoid spilling on extract.

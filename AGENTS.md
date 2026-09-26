@@ -30,7 +30,7 @@ tree.** On the Drive:
 
 - `<set>/captures/<set>-<index>/` — the capture: `motion.json`, `thumbs/`, the motion sheet HTML
   and the pose grid. `extract`, `render` and `pose-grid` each push it right after they write.
-- `<set>/<set>-<index>-<frames>f-<fps>fps-motion-source/` — the bundle `export` makes.
+- `<set>/<set>-<index>/` — the bundle `export` makes.
 - `<set>/clips.json` — clipper's marks, pushed on every save.
 
 Local disk holds only `$MOTION_ARTIST_CACHE` (default `~/.cache/motion-artist`): `sources/<set>/`
@@ -152,8 +152,10 @@ Every capture is named `<set>-<index>`. A video URL always arrives with a set na
 one set, and each unique move cut from it takes the next index from 1. That string is the capture
 directory, the bundle directory, the manifest `name` and the shipped `motion.json` `name`, so a
 bundle cannot advertise one name and say another inside. Bundles are stored on the Drive at
-`kadrive:MotionArtist/<set>/`, one directory per source video, as `<set>-<index>-<frames>f-<fps>fps-motion-source/` — an
-uncompressed directory, not an archive.
+`kadrive:MotionArtist/<set>/`, one directory per source video, as `<set>-<index>/` — an
+uncompressed directory, not an archive. The directory is the name alone — frame count and fps are
+in the manifest — so cag installs it as `motions/<set>/<set>-<index>/` without renaming it, and a
+re-cut at a new rate replaces the bundle like any other re-cut.
 
 An assigned name is an identifier in a way a descriptive label never was — "shuffle" is a genre,
 and two different dances landed on it once and one silently overwrote the other. Provenance (url,

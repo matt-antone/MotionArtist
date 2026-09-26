@@ -19,7 +19,7 @@ tree.** On the Drive:
 
 - `<set>/captures/<set>-<index>/` — the capture: `motion.json`, `thumbs/`, the motion sheet HTML
   and the pose grid. `extract`, `render` and `pose-grid` each push it right after they write.
-- `<set>/<set>-<index>-<frames>f-<fps>fps-motion-source/` — the bundle `export` makes.
+- `<set>/<set>-<index>/` — the bundle `export` makes.
 - `<set>/clips.json` — clipper's marks, pushed on every save.
 
 Local disk holds only `$MOTION_ARTIST_CACHE` (default `~/.cache/motion-artist`): `sources/<set>/`
@@ -551,7 +551,7 @@ over-driving the source to compensate.
    python3 "$SKILL/scripts/motion_artist.py" export "$MA/captures/dance/motion.json"
    ```
    One motion is one bundle, however many frames it has.
-   Stores `kadrive:MotionArtist/hip-hop-1/hip-hop-1-3-24f-4fps-motion-source/` — an uncompressed
+   Stores `kadrive:MotionArtist/hip-hop-1/hip-hop-1-3/` — an uncompressed
    directory, never inside the capture dir. The export is not done until it prints `stored`: `motion.json`, the sheet HTML, `thumbs/` (the pose reference — see above), any
    pose grid images and their sidecar, `clip.mp4`, `mask.mp4`, `heads.json`, and a
    generated `manifest.json` (fps, frame count, playback, view, `seam` and `seam_ratio`, source, the
@@ -565,7 +565,7 @@ over-driving the source to compensate.
 
 ## Hand-off to KaraokeParty-Graphics
 
-The stored copy is `kadrive:MotionArtist/<set>/<set>-<index>-<frames>f-<fps>fps-motion-source/`.
+The stored copy is `kadrive:MotionArtist/<set>/<set>-<index>/`.
 Copy it with `rclone copy` into that repo's ignored
 `work/<character>/motion-source/` and reference it by path and by the manifest SHA-256 the export printed,
 as the authorized motion source in the motion-director job input. A spec names **one** bundle per

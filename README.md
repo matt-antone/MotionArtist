@@ -138,7 +138,7 @@ python3 motion-artist/scripts/motion_artist.py export "$MA/captures/dance/motion
 | `render --pingpong` | walk the same cells out and back; the return leg reverses the out leg, so the seam is clean and the sheet still holds only the requested frames |
 | `pose-grid --cols` | pose cards per row; default `4` |
 | `pose-grid --no-labels` | drop the frame-number band, and say so in the sidecar |
-| `export --out`, `--sheet` | bundle path (default staged in `$MOTION_ARTIST_CACHE/bundles/<set>/` and stored on the Drive as `<set>/<set>-<index>-<frames>f-<fps>fps-motion-source/`, an uncompressed directory) and the sheet HTML to include (default `<name>-motion.html` beside the json) |
+| `export --out`, `--sheet` | bundle path (default staged in `$MOTION_ARTIST_CACHE/bundles/<set>/` and stored on the Drive as `<set>/<set>-<index>/`, an uncompressed directory) and the sheet HTML to include (default `<name>-motion.html` beside the json) |
 
 `extract` prints one line per frame (index, source time, key / pilot / in-between, pace, pose cue)
 and writes `motion.json`, `thumbs/` and `clip.mp4` — the traced span plus 0.5 s each side at the
@@ -183,7 +183,7 @@ tree.** On the Drive:
 
 - `<set>/captures/<set>-<index>/` — the capture: `motion.json`, `thumbs/`, the motion sheet HTML
   and the pose grid. `extract`, `render` and `pose-grid` each push it right after they write.
-- `<set>/<set>-<index>-<frames>f-<fps>fps-motion-source/` — the bundle `export` makes.
+- `<set>/<set>-<index>/` — the bundle `export` makes.
 - `<set>/clips.json` — clipper's marks, pushed on every save.
 
 Local disk holds only `$MOTION_ARTIST_CACHE` (default `~/.cache/motion-artist`): `sources/<set>/`
