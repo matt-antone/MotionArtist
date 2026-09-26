@@ -406,6 +406,40 @@ on the CAG side with a positive costume sentence — nothing to do here. Worth c
 lesson though: telling the model to *ignore* the clothing did not work. Negation is weak; naming the
 right thing positively is what held. That applies to any prompt text this skill generates.
 
+## `clip.mp4` is the source clip cag animates from
+
+cag draws a traced set from video, not only from `thumbs/`: it cuts a drive video from the source
+clip and animates the character along it. `extract` therefore writes `clip.mp4` into the capture —
+the traced span plus 0.5 s either side, from the exact file it traced (after any `portrait_crop.py`),
+uncropped, at the source's native frame rate, constant frame rate, h264 CRF 18, no audio. The frames
+are read with the same decoder the trace used and piped to ffmpeg, so clip frame `k` is source frame
+`clip_start_frame + k` by construction.
+
+- `motion.json` and the manifest carry a `clip` block, with exactly the keys cag's `read_clip`
+  reads: `file` (`clip.mp4`), `start` (source second of clip frame 0), `fps`, `frame_count`,
+  `size` `[w, h]`, `box` `[x, y, w, h]` (always the whole frame: thumbs are the whole frame too),
+  `t_offset` (`0.0`) and `sha256`.
+- Every traced frame carries `clip_frame`, the clip frame it was traced from, beside `t`. Use it
+  rather than recomputing from `t`: `t` is the seek target, `clip_frame` is the frame the seek
+  landed on.
+- `clip.mp4` is **not** in the manifest's `files`. cag git-ignores footage and commits the
+  manifest, so the clip is hashed in its own block instead.
+
+Checked on club-01's source: the clip matched cag's own backfilled clip (same start, fps and 83
+frames), and each `clip_frame` was the best pixel match for its thumb among the five frames around it.
+
+## Footage that works for cag
+
+cag's video path is what limits a set now, so choose footage for it:
+
+- **One person in frame.** The mask pass picks the earliest, largest figure; a second dancer
+  can take its place.
+- **Static camera, whole body in every frame, feet visible.** `--stabilize` rescues a pan for the
+  trace, but the drive video still carries the camera motion.
+- **A light, plain backdrop** when there is a choice: cag then skips its mask pass entirely.
+- **The performer facing the set's view** (front, 3/4 or left). A frame is drawn for the facing it
+  shows, never mirrored into another.
+
 ## `--exaggerate` cannot repair downstream compression
 
 When a render comes back smaller than the reference, raising `--exaggerate` is the obvious reach and
@@ -434,7 +468,7 @@ over-driving the source to compensate.
    python3 "$SKILL/scripts/motion_artist.py" extract URL --fps 4 --frames 16 --start 0:16 --end 0:20 --name dance
    ```
    It prints a `snap:` line first — the span it moved to inside `--margin`, its seam and energy
-   score, and the runners-up — then writes `$MA/captures/<name>/motion.json` and `thumbs/`, stores them on the Drive, and prints
+   score, and the runners-up — then writes `$MA/captures/<name>/motion.json`, `thumbs/` and `clip.mp4`, stores them on the Drive, and prints
    one line per frame:
    index, source time, role (`key` = hold/extreme, `pilot` = fastest transition, `inbetween`),
    pace, and the generated pose cue. Frame 0 is always a key. Check `missing` is empty and the
@@ -507,9 +541,9 @@ over-driving the source to compensate.
    One motion is one bundle, however many frames it has.
    Stores `kadrive:MotionArtist/hip-hop-1/hip-hop-1-3-24f-4fps-motion-source/` — an uncompressed
    directory, never inside the capture dir. The export is not done until it prints `stored`: `motion.json`, the sheet HTML, `thumbs/` (the pose reference — see above), any
-   pose grid images and their sidecar, and a
-   generated `manifest.json` (fps, frame count, playback, view, `seam` and `seam_ratio`, source, and
-   a SHA-256 per file), all under a `<name>/` folder. The sidecar's grid rides in the manifest as a
+   pose grid images and their sidecar, `clip.mp4`, and a
+   generated `manifest.json` (fps, frame count, playback, view, `seam` and `seam_ratio`, source, the
+   `clip` block, and a SHA-256 per file), all under a `<name>/` folder. The sidecar's grid rides in the manifest as a
    `pose_grid` block. CAG itself no longer reads either one — it takes the loose `thumbs/` and tiles
    its own grid at render time — so the sheets ride along for anyone handing a generator the whole
    pose set directly, and cost the consumer nothing. Prints the bundle path and the zip's own

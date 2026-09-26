@@ -135,14 +135,16 @@ runs the pipeline and never writes a bundle.
 
 Five steps, in order. A capture is not finished until step 5.
 
-1. `extract` — video → the capture (`motion.json` + `thumbs/`, stored on the Drive), and a printed frame table.
+1. `extract` — video → the capture (`motion.json` + `thumbs/` + `clip.mp4`, stored on the Drive), and a
+   printed frame table. `clip.mp4` is the source clip cag animates from; SKILL.md has its contract.
 2. Author the arc — fill `arc`, and per-frame `note` only where the generated cue misses intent.
 3. `render` — `motion.json` → the self-contained HTML motion sheet.
 4. `pose-grid` — `thumbs/` → the pose grid: traced frames as pose cards, four across, twelve per
    image — this tool's own grid, not the consumer's batch size, which is 8 and which no longer
    reads the grid. Traced frames are the only pose reference; nothing in this repo draws a figure.
 5. `export` — zip the motion sheet, the HTML, the traced frames, any pose grid images and a
-   generated `manifest.json` with a SHA-256 per file.
+   generated `manifest.json` with a SHA-256 per file. `clip.mp4` rides beside them with its own
+   hash in the manifest's `clip` block, outside `files`.
    The printed bundle path and zip digest are what a KaraokeParty-Graphics job input references.
 
 Every capture is named `<set>-<index>`. A video URL always arrives with a set name; one video is
@@ -180,7 +182,7 @@ carrying rear frames inside a near-tie. A `back` frame is fatal downstream; a si
 not, and some moves turn in every window they have.
 
 Read the printed table, not `motion.json` — the JSON is large and mostly landmarks. Never hand-edit
-`cue`, `role`, `pts`, `depth` or `t`; they are extractor output. Re-run `extract` instead.
+`cue`, `role`, `pts`, `depth`, `t`, `clip_frame` or `clip`; they are extractor output. Re-run `extract` instead.
 
 Since `motion-artist/2`, `pts` values are `[x, y, z]`: z comes from the MediaPipe world landmarks,
 rescaled to the same units as x, negative toward the camera, hips at zero. Each frame also carries

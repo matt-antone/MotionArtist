@@ -393,6 +393,7 @@ def extract(a):
         cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
         ok, bgr = cap.read()
         if not ok: missing.append(i); continue
+        sf = int(cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1   # the source frame the seek actually landed on
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         res = lm.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
         if not res.pose_landmarks: missing.append(i); continue
@@ -404,7 +405,7 @@ def extract(a):
         # reads off these: they are its pose reference, not a preview. 200px is the width every
         # amplitude measurement was taken at, and CAG pastes them at native size, so it stays.
         cv2.imwrite(os.path.join(out, "thumbs", f"f{i:02d}.jpg"), th, [cv2.IMWRITE_JPEG_QUALITY, 88])
-        frames.append(dict(i=i, t=round(t, 3), P=P, W=W))
+        frames.append(dict(i=i, t=round(t, 3), sf=sf, P=P, W=W))
     if len(frames) < 2:
         sys.exit(f"pose not found in enough frames (missing {missing}); try --start/--end on a clearer span")
 
@@ -496,6 +497,11 @@ def extract(a):
                           for k, v in f["P"].items()})
                 for f in frames],
         floor_y=round(floor, 4), body_h=round(body_h, 4))
+    # The source clip: the video cag drives its animation from, cut from the exact file traced.
+    # `clip_frame` pins each traced frame to a clip frame, so a consumer needs no arithmetic on `t`.
+    c0, c1 = clip_window(start, end, cap.get(cv2.CAP_PROP_FPS) or 30, int(cap.get(cv2.CAP_PROP_FRAME_COUNT)))
+    doc["clip"] = cut_clip(src, c0, c1, os.path.join(out, "clip.mp4"))
+    for f, g in zip(doc["frames"], frames): f["clip_frame"] = g["sf"] - c0
     jp = os.path.join(out, "motion.json")
     kept = carry_over_writing(jp, doc)
     json.dump(doc, open(jp, "w"), indent=1)
@@ -545,6 +551,49 @@ def carry_over_writing(jp, doc):
 
 
 def pose_dist(a, b): return sum(dist(a[k], b[k]) for k in CORE) / len(CORE)
+
+
+# Source seconds the clip carries either side of the traced span: slack for a consumer that
+# re-times the move, and the same pad cag's own backfill cut, so both clips cover one window.
+CLIP_PAD = 0.5
+
+
+def clip_window(start, end, fps, n):
+    """First and last source frame of the clip: the traced span plus CLIP_PAD, inside the video."""
+    return max(0, round((start - CLIP_PAD) * fps)), min(n - 1, round((end + CLIP_PAD) * fps))
+
+
+def cut_clip(src, c0, c1, path):
+    """Write source frames c0..c1 to `path` as h264 at the native rate, and return its `clip` block.
+
+    The frames are read with cv2, the decoder the trace used, and piped to ffmpeg, rather than
+    cut by ffmpeg from the file: then clip frame k is source frame c0 + k by construction, and a
+    traced frame's `clip_frame` is exact instead of a second decoder's idea of the same index.
+    """
+    import cv2
+    rate = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                           "stream=r_frame_rate", "-of", "csv=p=0", src],
+                          capture_output=True, text=True, check=True).stdout.strip()
+    num, den = (int(x) for x in rate.split("/"))
+    cap = cv2.VideoCapture(src)
+    W, H = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, c0)
+    # yuv420p wants even sides; pad rather than scale, so `box` still names the traced pixels
+    enc = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24",
+                            "-s", f"{W}x{H}", "-r", rate, "-i", "-", "-an",
+                            "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-crf", "18",
+                            "-pix_fmt", "yuv420p", "-fps_mode", "cfr", path], stdin=subprocess.PIPE)
+    n = 0
+    for _ in range(c0, c1 + 1):
+        ok, bgr = cap.read()
+        if not ok: break
+        enc.stdin.write(bgr.tobytes()); n += 1
+    enc.stdin.close()
+    if enc.wait(): sys.exit(f"extract: ffmpeg failed writing {path}")
+    if n != c1 - c0 + 1:
+        print(f"warning: clip holds {n} frames, expected {c1 - c0 + 1} — the source ended early")
+    return dict(file="clip.mp4", start=round(c0 * den / num, 6), fps=num / den, frame_count=n,
+                size=[W + W % 2, H + H % 2], box=[0, 0, W, H], t_offset=0.0, sha256=sha256(path))
 
 
 def sample_times(start, span, n):
@@ -860,6 +909,9 @@ def selftest():
     assert set_name({"name": "dougie"}) == "dougie"
     assert portable(os.path.join(os.getcwd(), "work", "x.mp4")) == os.path.join("work", "x.mp4")
     assert portable("/somewhere/else/x.mp4") == "x.mp4"
+    # the clip is the traced span plus half a second each side, clamped to the video
+    assert clip_window(10.0, 12.0, 30, 10000) == (285, 375)
+    assert clip_window(0.2, 1.0, 30, 40) == (0, 39)
     # nothing lands in the checkout, by default or by --out
     assert not os.path.realpath(CACHE).startswith(REPO + os.sep), f"cache {CACHE} is inside the repo"
     assert outside_repo("/elsewhere/x") == "/elsewhere/x"
@@ -1052,6 +1104,14 @@ def export(a):
         dst = os.path.join(out, rel)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copy2(p, dst)
+    # The clip rides beside the files, not in `files`: cag git-ignores the footage and keeps the
+    # manifest, so the clip carries its own sha256 in its block instead of in the file list.
+    clip = d.get("clip")
+    if clip and os.path.exists(os.path.join(src, clip["file"])):
+        shutil.copy2(os.path.join(src, clip["file"]), os.path.join(out, clip["file"]))
+        man["clip"] = dict(clip, sha256=sha256(os.path.join(out, clip["file"])))
+    elif clip:
+        print(f"warning: motion.json names {clip['file']} but the capture has none — re-extract to cut it")
     manifest_p = os.path.join(out, "manifest.json")
     json.dump(man, open(manifest_p, "w"), indent=1)
     ratio = man["seam_ratio"]
