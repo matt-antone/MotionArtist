@@ -18,6 +18,16 @@ MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
              "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task")
 MODEL_PATH = os.path.expanduser("~/.cache/motion-artist/pose_landmarker_lite.task")
 
+# Every output is stored on the user's Google Drive at REMOTE and never written into the checkout.
+# HOME is local disk only because cv2 and ffmpeg need files: work/ holds downloads, split frames
+# and each capture as it is made, exports/ each bundle as it is built. Both are a staging copy;
+# every command pushes what it wrote as soon as it is written, and fails if the push does. The
+# commands run from HOME, so a relative `work/...` or `exports/...` path always means HOME's.
+HOME = os.path.expanduser(os.environ.get("MOTION_ARTIST_HOME", "~/.cache/motion-artist"))
+REMOTE = os.environ.get("MOTION_ARTIST_REMOTE", "kadrive:MotionArtist").rstrip("/")
+# realpath, so a skill linked into ~/.claude/skills still knows which checkout it came from
+REPO = os.path.realpath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", ".."))
+
 # Bump when a field changes meaning or disappears, so a consumer fails loudly instead of mis-parsing.
 SCHEMA = "motion-artist/2"
 
@@ -247,18 +257,23 @@ def fetch(url, out_dir):
     the generator draws from, so that halves the resolution of the one input
     that matters. Measured on three sources: portrait 360x640 -> 720x1280,
     landscape 1280x720 -> 1280x720 (unchanged, and no run-up to 4K).
+
+    h264 is sorted ahead of the cap: YouTube serves AV1 in mp4 too, and the opencv-python wheel
+    cannot decode it ("Failed to get pixel format"), so every seek came back empty and extract
+    reported the pose missing in all frames — on vDILnrn1Qnw, the country-01 source.
     """
     os.makedirs(out_dir, exist_ok=True)
     tmpl = os.path.join(out_dir, "source-%(id)s.%(ext)s")
     r = subprocess.run(["yt-dlp", "-q", "--no-warnings", "--no-simulate",
-                        "-f", "bv*[ext=mp4]/bv*/b", "-S", "res:720",
+                        "-f", "bv*[ext=mp4]/bv*/b", "-S", "vcodec:h264,res:720",
                         "--print", "after_move:%(filepath)s\t%(title)s", "-o", tmpl, url],
                        capture_output=True, text=True, check=True)
     path, title = r.stdout.strip().splitlines()[-1].split("\t", 1)
     return path, title
 
 
-def landmarker():
+def landmarker(video=False):
+    """IMAGE mode for the trace's random seeks; VIDEO mode, with masks, for the clip's straight run."""
     import mediapipe as mp
     from mediapipe.tasks import python as mpt
     from mediapipe.tasks.python import vision
@@ -266,7 +281,8 @@ def landmarker():
         os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
         urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
     opts = vision.PoseLandmarkerOptions(base_options=mpt.BaseOptions(model_asset_path=MODEL_PATH, delegate=mpt.BaseOptions.Delegate.CPU),
-                                        running_mode=vision.RunningMode.IMAGE, num_poses=1)
+                                        running_mode=vision.RunningMode.VIDEO if video else vision.RunningMode.IMAGE,
+                                        num_poses=1, output_segmentation_masks=video)
     return mp, vision.PoseLandmarker.create_from_options(opts)
 
 
@@ -293,6 +309,84 @@ def trace(a):
         out[i] = p and {k: [round(p[j].x * W / H, 4), round(p[j].y, 4), round(p[j].z, 4)] for k, j in LM.items()}
     json.dump(out, open(a.out, "w"), indent=1)
     print(f"{a.out}: {sum(v is not None for v in out.values())}/{len(out)} traced")
+
+
+def outside_repo(p):
+    """Refuse an output path inside the checkout: motions are stored on the Drive, never in the repo."""
+    rp = os.path.realpath(p)
+    if rp == REPO or rp.startswith(REPO + os.sep):
+        sys.exit(f"refusing to write {p} inside the repo at {REPO} — outputs are stored on "
+                 f"{REMOTE or 'the Drive'}, staged in {HOME}")
+    return p
+
+
+# rclone bounded like CharacterAssetGenerator's publish: a stalled link fails in about a minute,
+# and an encrypted config with no password fails at once instead of prompting on a captured terminal.
+# Low-level retries are 10, not CAG's 3: rclone's shared client_id answered rateLimitExceeded often
+# enough that 3 failed a push which went through untouched a minute later.
+RCLONE_FLAGS = ["--checksum", "--retries", "1", "--low-level-retries", "10",
+                "--contimeout", "15s", "--timeout", "60s", "--ask-password=false"]
+
+
+def publish(local, rel):
+    """Copy `local` to REMOTE/rel. Returns None when it landed (or REMOTE is off), else what failed.
+
+    A directory is `rclone sync`ed, scoped to that one capture or bundle, so a re-cut to fewer
+    frames removes the stale thumbs on the Drive exactly as it does on disk. A file is `copyto`.
+    """
+    if not REMOTE: return None
+    if not shutil.which("rclone"): return "rclone is not on PATH"
+    dst = REMOTE + ("" if REMOTE.endswith(":") else "/") + rel
+    cmd = ["rclone", "sync" if os.path.isdir(local) else "copyto", *RCLONE_FLAGS, local, dst]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        return f"`{' '.join(cmd)}` timed out"
+    # rclone prints NOTICE lines even on success; the error is the rest
+    why = [l for l in r.stderr.splitlines() if "NOTICE" not in l]
+    return None if r.returncode == 0 else f"`{' '.join(cmd)}` failed: {(why or ['exit %d' % r.returncode])[-1]}"
+
+
+def stored(errs, local):
+    """Fail the command when anything did not reach the Drive: an output not stored is not done."""
+    errs = [e for e in errs if e]
+    if errs:
+        sys.exit("not stored on the Drive — " + "; ".join(errs) +
+                 f"\nThe local copy is at {local}; fix rclone and re-run.")
+
+
+def store_capture(cap_dir, *outs):
+    """Push a capture to REMOTE/captures/<video>/<clip>/, with its video's clips.json beside it.
+
+    Only the capture directory goes up — never the downloaded video or the split frames beside it
+    in work/<video>/, which are inputs. An output written outside the capture goes up beside it.
+    """
+    cap_dir = os.path.abspath(cap_dir)
+    work = os.path.join(os.path.abspath(HOME), "work") + os.sep
+    rel = cap_dir[len(work):].replace(os.sep, "/") if cap_dir.startswith(work) else os.path.basename(cap_dir)
+    errs = [publish(cap_dir, f"captures/{rel}")]
+    clips = os.path.join(os.path.dirname(cap_dir), "clips.json")
+    if "/" in rel and os.path.exists(clips):
+        errs.append(publish(clips, f"captures/{os.path.dirname(rel)}/clips.json"))
+    errs += [publish(p, f"captures/{os.path.dirname(rel) + '/' if '/' in rel else ''}{os.path.basename(p)}")
+             for p in outs if not os.path.abspath(p).startswith(cap_dir + os.sep)]
+    stored(errs, cap_dir)
+    if REMOTE: print(f"stored {REMOTE}/captures/{rel}")
+
+
+def remote_motions(genre):
+    """Motion numbers already stored on the Drive under this genre, so a wiped cache cannot reuse one.
+
+    A failed listing stops the allocation rather than guessing: a reused number would sync over a
+    stored bundle, and the Drive copy is the only one.
+    """
+    if not REMOTE: return set()
+    r = subprocess.run(["rclone", "lsf", "--dirs-only", *RCLONE_FLAGS[1:], f"{REMOTE}/{genre}"],
+                       capture_output=True, text=True, timeout=120)
+    if r.returncode == 3: return set()   # rclone's "directory not found": the genre's first motion
+    if r.returncode: sys.exit(f"--genre could not list {REMOTE}/{genre} to allocate a number: "
+                              f"{r.stderr.strip().splitlines()[-1] if r.stderr.strip() else r.returncode}")
+    return {n for d in r.stdout.split() if (n := motion_num(d.rstrip("/"), genre)) is not None}
 
 
 def portable(p):
@@ -361,6 +455,97 @@ def write_thumbs(shots, tdir, Wpx, Hpx):
     return x, y, w, h
 
 
+# Source seconds the clip carries either side of the traced span: slack for a consumer that
+# re-times the move, and the same pad cag's own backfill cut, so both clips cover one window.
+CLIP_PAD = 0.5
+# Pose landmarks 0..10: nose, eyes (inner, centre, outer), ears, mouth corners.
+FACE = range(11)
+
+
+def clip_window(start, end, fps, n):
+    """First and last source frame of the clip: the traced span plus CLIP_PAD, inside the video."""
+    return max(0, round((start - CLIP_PAD) * fps)), min(n - 1, round((end + CLIP_PAD) * fps))
+
+
+def head_box(lms, W, H):
+    """[x0, y0, x1, y1] in clip pixels around the head, or None when too little of the face shows.
+
+    # ponytail: an estimate from the pose model's face points, sized for a blur, not a head
+    # outline. The points sit in the lower middle of the head, so the box is 2.4x their spread and
+    # reaches further up (the crown) than down: 1.8x, drawn over club-01, stopped at the hairline
+    # and was narrower than the head. A profile shows one ear, so its spread is about half a head
+    # and the box comes out tighter; a face landmarker would measure it properly.
+    """
+    pts = [(lms[j].x * W, lms[j].y * H) for j in FACE if (lms[j].visibility or 0) > 0.5]
+    if len(pts) < 3: return None
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+    side = 2.4 * max(max(xs) - min(xs), max(ys) - min(ys))
+    box = [max(0, cx - side / 2), max(0, cy - 0.6 * side), min(W, cx + side / 2), min(H, cy + 0.4 * side)]
+    return [round(v) for v in box] if box[2] > box[0] and box[3] > box[1] else None
+
+
+def encoder(path, W, H, rate, pix_fmt, quality):
+    """An ffmpeg process taking raw frames on stdin; yuv420p wants even sides, so pad, never scale."""
+    return subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", pix_fmt,
+                             "-s", f"{W}x{H}", "-r", rate, "-i", "-", "-an",
+                             "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", *quality,
+                             "-pix_fmt", "yuv420p", "-fps_mode", "cfr", path], stdin=subprocess.PIPE)
+
+
+def cut_clip(src, c0, c1, path, box):
+    """Write source frames c0..c1 to `path` as h264 at the native rate, and return its `clip` block.
+
+    The frames are read with cv2, the decoder the trace used, and piped to ffmpeg, rather than
+    cut by ffmpeg from the file: then clip frame k is source frame c0 + k by construction, and a
+    traced frame's `clip_frame` is exact instead of a second decoder's idea of the same index.
+
+    The same pass writes the performer mask (`mask.mp4`) and a head box per frame (`heads.json`)
+    beside it, frame for frame, from one VIDEO-mode landmarker run: cag masks and blurs the
+    drive video from them instead of running SAM3 and guessing the head from the silhouette.
+    `box` is the thumbs' crop, which cag centres its drive crop on.
+    """
+    import cv2
+    rate = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                           "stream=r_frame_rate", "-of", "csv=p=0", src],
+                          capture_output=True, text=True, check=True).stdout.strip()
+    num, den = (int(x) for x in rate.split("/"))
+    cap = cv2.VideoCapture(src)
+    W, H = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, c0)
+    d = os.path.dirname(path)
+    mask_p, heads_p = os.path.join(d, "mask.mp4"), os.path.join(d, "heads.json")
+    enc = encoder(path, W, H, rate, "bgr24", ["-crf", "18"])
+    # qp 0 is lossless, so the mask stays two-valued instead of growing grey codec fringes
+    menc = encoder(mask_p, W, H, rate, "gray", ["-qp", "0"])
+    mp, lm = landmarker(video=True)
+    n, heads, empty = 0, [], 0
+    for _ in range(c0, c1 + 1):
+        ok, bgr = cap.read()
+        if not ok: break
+        enc.stdin.write(bgr.tobytes())
+        res = lm.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)),
+                                  round(n * 1000 * den / num))
+        # ponytail: the pose model's own mask, thresholded at 0.5 — soft at hair and fingers. Against
+        # SAM3 on country-01 (a cluttered shop aisle) it scored IoU 0.93 min / 0.95 median.
+        m = (res.segmentation_masks[0].numpy_view().reshape(H, W) > 0.5) if res.segmentation_masks else None
+        menc.stdin.write((m.astype("uint8") * 255).tobytes() if m is not None else bytes(W * H))
+        empty += m is None
+        heads.append(head_box(res.pose_landmarks[0], W, H) if res.pose_landmarks else None)
+        n += 1
+    for e in (enc, menc): e.stdin.close()
+    if enc.wait() or menc.wait(): sys.exit(f"extract: ffmpeg failed writing {path} or {mask_p}")
+    json.dump(heads, open(heads_p, "w"))
+    if n != c1 - c0 + 1:
+        print(f"warning: clip holds {n} frames, expected {c1 - c0 + 1} — the source ended early")
+    if empty or heads.count(None):
+        print(f"note: clip has {empty} frame(s) with no mask and {heads.count(None)} with no head box")
+    return dict(file="clip.mp4", start=round(c0 * den / num, 6), fps=num / den, frame_count=n,
+                size=[W + W % 2, H + H % 2], box=list(box), t_offset=0.0, sha256=sha256(path),
+                mask=dict(file="mask.mp4", sha256=sha256(mask_p)),
+                heads=dict(file="heads.json", sha256=sha256(heads_p)))
+
+
 def extract(a):
     import cv2
     # CAG renders 8 figures per image on a 4-wide grid (FRAME_SHEET_SIZE, renamed from SHEET_FRAMES
@@ -378,11 +563,12 @@ def extract(a):
         sys.exit("--genre allocates the name; pass one or the other, not both")
     if a.genre and not a.out:
         sys.exit("--genre needs --out: the capture's directory is how its clip is found")
-    out = a.out or os.path.join("work", a.name or "motion")
+    out = outside_repo(a.out or os.path.join("work", a.name or "motion"))
     name = allocate_motion(a.genre, out) if a.genre else a.name
     os.makedirs(os.path.join(out, "thumbs"), exist_ok=True)
     if re.match(r"https?://", a.source):
-        src, title = fetch(a.source, out)
+        # the download is an input, not an output: it stays local, out of the capture that is pushed
+        src, title = fetch(a.source, "sources")
     else:
         src, title = a.source, os.path.basename(a.source)
     name = name or re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:40] or "motion"
@@ -420,6 +606,7 @@ def extract(a):
         cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
         ok, bgr = cap.read()
         if not ok: missing.append(i); continue
+        sf = int(cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1   # the source frame the seek actually landed on
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         res = lm.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
         if not res.pose_landmarks: missing.append(i); continue
@@ -427,10 +614,10 @@ def extract(a):
         P = {k: [img[j].x * Wpx / Hpx, img[j].y] for k, j in LM.items()}   # aspect-corrected, y down
         W = {k: [wld[j].x, wld[j].y, wld[j].z] for k, j in LM.items()}
         shots.append((i, bgr, [(v.x * Wpx, v.y * Hpx) for v in img]))
-        frames.append(dict(i=i, t=round(t, 3), P=P, W=W))
+        frames.append(dict(i=i, t=round(t, 3), sf=sf, P=P, W=W))
     if len(frames) < 2:
         sys.exit(f"pose not found in enough frames (missing {missing}); try --start/--end on a clearer span")
-    write_thumbs(shots, os.path.join(out, "thumbs"), Wpx, Hpx)
+    crop = write_thumbs(shots, os.path.join(out, "thumbs"), Wpx, Hpx)
 
     # constant scale: camera zoom / distance must not change body size. Per-frame pixels-per-metre =
     # summed image bone length / summed metric (world) bone length projected to the same plane, so
@@ -520,6 +707,11 @@ def extract(a):
                           for k, v in f["P"].items()})
                 for f in frames],
         floor_y=round(floor, 4), body_h=round(body_h, 4))
+    # The source clip: the video cag drives its animation from, cut from the exact file traced.
+    # `clip_frame` pins each traced frame to a clip frame, so a consumer needs no arithmetic on `t`.
+    c0, c1 = clip_window(start, end, cap.get(cv2.CAP_PROP_FPS) or 30, int(cap.get(cv2.CAP_PROP_FRAME_COUNT)))
+    doc["clip"] = cut_clip(src, c0, c1, os.path.join(out, "clip.mp4"), crop)
+    for f, g in zip(doc["frames"], frames): f["clip_frame"] = g["sf"] - c0
     jp = os.path.join(out, "motion.json")
     kept = carry_over_writing(jp, doc)
     json.dump(doc, open(jp, "w"), indent=1)
@@ -535,6 +727,7 @@ def extract(a):
               f"re-run with a different --start/--search window for a loop that lands on its feet")
     for f in doc["frames"]:
         print(f"{f['i']:>3} {f['t']:6.2f}s {f['role']:<9} {f['pace']:<6} {f['cue']}")
+    store_capture(out)
     return jp
 
 
@@ -733,8 +926,9 @@ def render(a):
         THUMBS=json.dumps(thumbs), DATA=json.dumps(payload).replace("</", "<\\/"),
     ).items():
         page = page.replace("{{" + k + "}}", v)
-    open(out, "w").write(page)
+    open(outside_repo(out), "w").write(page)
     print(out)
+    store_capture(os.path.dirname(os.path.abspath(a.json)), out)   # the arc was written since extract
     return out
 
 
@@ -916,6 +1110,24 @@ def selftest():
         assert work_root("/nowhere/near/a/capture") is None
     assert portable(os.path.join(os.getcwd(), "work", "x.mp4")) == os.path.join("work", "x.mp4")
     assert portable("/somewhere/else/x.mp4") == "x.mp4"
+    # nothing lands in the checkout, by default or by --out
+    assert not os.path.realpath(HOME).startswith(REPO + os.sep), f"HOME {HOME} is inside the repo"
+    assert outside_repo("/elsewhere/x") == "/elsewhere/x"
+    for p in (os.path.join(REPO, "work", "x"), os.path.join(REPO, "exports")):
+        try: outside_repo(p)
+        except SystemExit: pass
+        else: raise AssertionError(f"{p} is in the repo and was allowed")
+    # the clip is the traced span plus half a second each side, clamped to the video
+    assert clip_window(10.0, 12.0, 30, 10000) == (285, 375)
+    assert clip_window(0.2, 1.0, 30, 40) == (0, 39)
+    # a head box is None with under 3 visible face points, and stays inside the frame near an edge
+    class _L:
+        def __init__(self, x, y, v=0.9): self.x, self.y, self.visibility = x, y, v
+    face = [_L(0.5 + 0.01 * (j % 3), 0.1 + 0.01 * (j // 3)) for j in range(11)] + [_L(0, 0, 0)] * 22
+    b = head_box(face, 1000, 1000)
+    assert b and 0 <= b[0] < b[2] <= 1000 and 0 <= b[1] < b[3] <= 1000 and b[1] < 100 < b[3], b
+    assert head_box([_L(0.5, 0.5, 0.1)] * 33, 1000, 1000) is None
+    assert head_box([_L(0.001 * j, 0.001 * j) for j in range(33)], 1000, 1000)[:2] == [0, 0]
     # fit_aspect: a wide box grows tall and slides back into frame; a too-tall one shrinks to the
     # frame; one already at the aspect stays put; every result is even (the thumb crop's box).
     assert fit_aspect(100, 100, 500, 300, 9 / 16, 1280, 720) == (100, 0, 400, 710)
@@ -998,7 +1210,7 @@ def allocate_motion(genre, capture_dir):
     # every number already spoken for: exported as a directory, or claimed by any video's
     # clips.json. A number becomes a directory only on export, so exports/ alone would hand
     # the same 01 to two videos cut in the same genre before either one was exported.
-    used = set()
+    used = remote_motions(genre)
     gdir = os.path.join(root, "exports", genre)
     if os.path.isdir(gdir):
         used |= {n for d in os.listdir(gdir) if (n := motion_num(d, genre)) is not None}
@@ -1129,6 +1341,7 @@ def pose_grid(a):
     print("\n".join(written) + f"\n{sidecar}")
     print(f"{cols} across, {per_sheet} per image, {len(chunks)} image(s), {n} frames, "
           f"{cell_w}x{cell_h}px cells")
+    store_capture(os.path.dirname(os.path.abspath(a.json)), *written, sidecar)
     return written[0]
 
 
@@ -1172,7 +1385,7 @@ def export(a):
     if not a.out and not root:
         sys.exit(f"export: {src} is not under work/, so there is no exports/ beside it — "
                  f"pass --out to say where the bundle goes")
-    out = a.out or os.path.join(root, "exports", set_name(d), bundle)
+    out = outside_repo(a.out or os.path.join(root, "exports", set_name(d), bundle))
     # A plain directory, not a zip: the consumer reads thumbs/ frame by frame, so compressing them
     # only to have them unpacked again bought nothing. The layout is what unzipping used to give,
     # minus the redundant <bundle>/ level the archive needed to avoid spilling on extract.
@@ -1184,6 +1397,19 @@ def export(a):
         dst = os.path.join(out, rel)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copy2(p, dst)
+    # The clip, mask and head boxes ride beside the files, not in `files`: cag git-ignores footage
+    # and commits the manifest, so each is hashed in the `clip` block instead of the file list.
+    clip = d.get("clip")
+    if clip:
+        parts = [clip] + [clip[k] for k in ("mask", "heads") if clip.get(k)]
+        lost = [b["file"] for b in parts if not os.path.exists(os.path.join(src, b["file"]))]
+        if lost:
+            print(f"warning: motion.json names {', '.join(lost)} but the capture has none — re-extract")
+        else:
+            for b in parts: shutil.copy2(os.path.join(src, b["file"]), os.path.join(out, b["file"]))
+            def dig(b): return sha256(os.path.join(out, b["file"]))
+            man["clip"] = dict(clip, sha256=dig(clip),
+                               **{k: dict(clip[k], sha256=dig(clip[k])) for k in ("mask", "heads") if clip.get(k)})
     manifest_p = os.path.join(out, "manifest.json")
     json.dump(man, open(manifest_p, "w"), indent=1)
     ratio = man["seam_ratio"]
@@ -1203,6 +1429,11 @@ def export(a):
     if len(thumbs) != d["frame_count"]:
         print(f"warning: {len(thumbs)} thumbs for {d['frame_count']} frames — CAG reads them as the "
               f"pose reference, one per frame. Clear {tdir} and re-extract.")
+    # The Drive is where a motion is stored, so a bundle that did not reach it is not exported.
+    # Re-running `export` retries the push.
+    rel = f"{set_name(d)}/{os.path.basename(os.path.normpath(out))}"
+    stored([publish(out, rel)], out)
+    if REMOTE: print(f"stored {REMOTE}/{rel}")
 
 
 def main():
@@ -1235,6 +1466,15 @@ def main():
     t = sub.add_parser("trace"); t.add_argument("images"); t.add_argument("out")
     sub.add_parser("selftest")
     a = ap.parse_args()
+    # Every command runs from HOME, so work/ and exports/ are HOME's and nothing lands in the
+    # checkout. A path given on the command line that exists here is an input and is made absolute
+    # first; any other relative path is read under HOME.
+    for k in ("source", "json", "template", "sheet", "images"):
+        v = getattr(a, k, None)
+        if v and os.path.exists(v): setattr(a, k, os.path.abspath(v))
+    if a.cmd == "trace": a.out = os.path.abspath(a.out)   # trace writes cag's file, where cag says
+    if a.cmd != "selftest":
+        os.makedirs(HOME, exist_ok=True); os.chdir(HOME)
     {"extract": extract, "render": render, "pose-grid": pose_grid, "export": export, "trace": trace,
      "selftest": lambda _: selftest()}[a.cmd](a)
 

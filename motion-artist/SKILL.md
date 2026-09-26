@@ -11,6 +11,28 @@ Video of a person moving → `motion.json` + a self-contained HTML motion sheet.
 **motion source** for the KaraokeParty-Graphics `motion_director` / `animation_keyframe_artist`
 roles: it controls motion only, never character scale, identity, view or prop hand.
 
+## Where motions are stored
+
+**Every output is stored on the user's Google Drive, at `$MOTION_ARTIST_REMOTE` (default
+`kadrive:MotionArtist`, an rclone remote on the Karaoke Arcade Workspace account — the same account
+CharacterAssetGenerator publishes to). Nothing is written into the repo.** On the Drive:
+
+- `<genre>/<genre>-NN/` — each bundle, as `export` makes it. cag pulls it straight into its own
+  `motions/<genre>/<genre>-NN/`.
+- `captures/<creator>-<title>/clip-NN/` — each capture (`motion.json`, `thumbs/`, sheet, pose grid,
+  clip, mask, head boxes). `extract`, `render` and `pose-grid` each push it right after they write.
+- `captures/<creator>-<title>/clips.json` — the marks, pushed by clipper on every save and by every
+  capture push.
+
+Every command runs from `$MOTION_ARTIST_HOME` (default `~/.cache/motion-artist`), so **`work/` and
+`exports/` in this skill always mean that directory's**, never a path in a checkout. They are local
+staging only: `work/` also holds the downloaded video and split frames, which are inputs and never
+pushed. A command whose push fails exits non-zero and keeps the staged copy — fix rclone (`rclone
+about kadrive:` checks the token) and re-run it. Every command refuses an output path inside the
+repo, `--out` included. `extract --genre` also reads the Drive's `<genre>/` before numbering, so a
+wiped cache cannot hand out a number a stored bundle already holds. `MOTION_ARTIST_REMOTE=` (empty)
+turns pushing off, for offline tests only.
+
 ## Inputs (ask for anything missing)
 
 | Input | Required | Notes |
@@ -419,6 +441,41 @@ on the CAG side with a positive costume sentence — nothing to do here. Worth c
 lesson though: telling the model to *ignore* the clothing did not work. Negation is weak; naming the
 right thing positively is what held. That applies to any prompt text this skill generates.
 
+## `clip.mp4`, `mask.mp4` and `heads.json`: what cag animates from
+
+cag draws a traced set from video: it cuts a drive video from the source clip, masks the performer,
+blurs her face and animates the character along it. `extract` therefore writes three more files
+into the capture, from one pass over the clip:
+
+- `clip.mp4` — the traced span plus 0.5 s either side, from the exact file traced, uncropped, at
+  the source's native frame rate, constant frame rate, h264 CRF 18, no audio. Frames are read with
+  the decoder the trace used and piped to ffmpeg, so clip frame `k` is source frame `c0 + k` by
+  construction.
+- `mask.mp4` — the performer mask, same frames: the pose model's segmentation thresholded at 0.5,
+  white on black, lossless so it stays two-valued. Against SAM3 on country-01 (a cluttered shop
+  aisle) it scored IoU 0.93 min / 0.95 median, and cag now skips SAM3 when a bundle carries it.
+  A frame with no pose is all black.
+- `heads.json` — one `[x0, y0, x1, y1]` or `null` per clip frame, in clip pixels: a box around the
+  head from the pose model's 11 face points, sized for cag's face blur, not as an outline.
+
+`motion.json` and the manifest carry a `clip` block with exactly the keys cag's `read_clip` reads —
+`file`, `start` (source second of clip frame 0), `fps`, `frame_count`, `size` `[w, h]`, `box`
+`[x, y, w, h]` (the thumbs' 3:4 crop, which cag centres its drive crop on), `t_offset` (`0.0`),
+`sha256` — plus `"mask": {"file", "sha256"}` and `"heads": {"file", "sha256"}`. Every traced frame
+carries `clip_frame`, the clip frame it was traced from; use it rather than recomputing from `t`,
+which is the seek target. None of the three files is in the manifest's `files`: cag git-ignores
+footage and commits the manifest, so each is hashed in the block instead.
+
+## Footage that works for cag
+
+- **One person in frame.** The mask follows the one pose the model tracks; a second dancer can
+  take its place.
+- **Static camera, whole body in every frame, feet visible.** `--stabilize` rescues a pan for the
+  trace, but the drive video still carries the camera motion.
+- **A light, plain backdrop** when there is a choice.
+- **The performer facing the set's view** (front, 3/4 or left). A frame is drawn for the facing it
+  shows, never mirrored into another.
+
 ## `--exaggerate` cannot repair downstream compression
 
 When a render comes back smaller than the reference, raising `--exaggerate` is the obvious reach and
@@ -523,11 +580,12 @@ over-driving the source to compensate.
    python3 "$SKILL/scripts/motion_artist.py" export work/britney-spears-toxic/clip-01/motion.json
    ```
    One motion is one bundle, however many frames it has.
-   Writes `exports/hiphop/hiphop-07/` — an uncompressed directory, always `exports/<genre>/` at
-   the repo root beside `work/`, never inside the capture dir: `motion.json`, the sheet HTML, `thumbs/` (the pose reference — see above), any
-   pose grid images and their sidecar, and a
-   generated `manifest.json` (fps, frame count, playback, view, `seam` and `seam_ratio`, source, and
-   a SHA-256 per file), all under a `<name>/` folder. The sidecar's grid rides in the manifest as a
+   Writes `exports/hiphop/hiphop-07/` and stores it at `kadrive:MotionArtist/hiphop/hiphop-07/` — an
+   uncompressed directory, never inside the capture dir; the export is not done until it prints
+   `stored`: `motion.json`, the sheet HTML, `thumbs/` (the pose reference — see above), any
+   pose grid images and their sidecar, `clip.mp4`, `mask.mp4`, `heads.json`, and a
+   generated `manifest.json` (fps, frame count, playback, view, `seam` and `seam_ratio`, source, the
+   `clip` block, and a SHA-256 per file), all under a `<name>/` folder. The sidecar's grid rides in the manifest as a
    `pose_grid` block. CAG itself no longer reads either one — it takes the loose `thumbs/` and tiles
    its own grid at render time — so the sheets ride along for anyone handing a generator the whole
    pose set directly, and cost the consumer nothing. Prints the bundle path and the zip's own
@@ -537,7 +595,8 @@ over-driving the source to compensate.
 
 ## Hand-off to KaraokeParty-Graphics
 
-Copy `exports/<genre>/<genre>-NN/` into that repo's ignored
+The stored copy is `kadrive:MotionArtist/<genre>/<genre>-NN/`; cag installs it with
+`cag motions pull <genre>/<genre>-NN`. For another consumer, `rclone copy` it into that repo's ignored
 `work/<character>/motion-source/` and reference it by path and by the manifest SHA-256 the export printed,
 as the authorized motion source in the motion-director job input. A spec names **one** bundle per
 animation (`spec.motions[set_name]` → one bundle directory); CAG chunks it across renders itself.

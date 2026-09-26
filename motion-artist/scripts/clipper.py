@@ -31,13 +31,15 @@ the seconds straight from it, and each clip names the directory it is captured i
 This tool does not run the pipeline; it only settles which frames the pipeline should be
 pointed at.
 """
-import argparse, errno, json, os, re, subprocess, sys, urllib.parse, webbrowser
+import argparse, errno, json, os, re, subprocess, sys, threading, urllib.parse, webbrowser
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from motion_artist import fetch  # reuse the 720-capped yt-dlp download
+from motion_artist import fetch, publish, HOME  # the 720-capped download, the Drive push
 
-ROOT = os.getcwd()
+# HOME, not the checkout: work/ (downloads, frames, marks) and exports/ are local staging, and
+# the marks are stored on the Drive beside the captures cut from them.
+ROOT = HOME
 WORK = os.path.join(ROOT, "work")
 EXPORTS = os.path.join(ROOT, "exports")
 FRAME_HEIGHT = 480  # display copies; extract re-reads the source video at full resolution
@@ -125,6 +127,11 @@ def clips_path(key):
     videos -- so a genre-keyed clips file is one video overwriting another's marks.
     """
     return os.path.join(video_dir(key), "clips.json")
+
+
+def push_clips(key):
+    err = publish(clips_path(key), f"captures/{key}/clips.json")
+    if err: print(f"clipper: clips.json not on the Drive yet — {err}", file=sys.stderr)
 
 
 def read_clips(key):
@@ -322,6 +329,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not meta:
                     raise ValueError("open a video first")
                 saved = write_clips(key, meta, float(body["fps"]), body.get("clips", []))
+                # off the request thread: a Drive round trip is seconds, and a save is every edit
+                threading.Thread(target=push_clips, args=(key,), daemon=True).start()
                 return self.send(200, json.dumps({"clips": saved, "path": clips_path(key)}))
         except subprocess.CalledProcessError as e:
             return self.send(500, json.dumps({"error": (e.stderr or str(e))[-400:]}))

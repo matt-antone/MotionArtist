@@ -18,15 +18,13 @@ motion-artist/
   scripts/motion_artist.py    # extract (video → motion.json + thumbs), render (→ HTML), pose-grid (→ pose grid), export (→ bundle), trace (images → landmarks)
   scripts/clipper.py          # browser tool: step a video frame by frame and mark clip in/out points
   templates/sheet.html        # the motion sheet's markup, CSS and player; render() fills its placeholders
-work/<creator>-<title>/       # one downloaded video, its split frames, meta.json and clips.json — git-ignored
-exports/<genre>/<genre>-NN/   # finished bundles, numbered within their genre — git-ignored, never committed
 AGENTS.md                     # how to work in this repo: pipeline, conventions, verification
 ```
 
 ## Install
 
 ```bash
-pip install "mediapipe<1" opencv-python   # plus yt-dlp and ffmpeg/ffprobe on PATH
+pip install "mediapipe<1" opencv-python   # plus yt-dlp, ffmpeg/ffprobe and rclone on PATH
 ln -s "$PWD/motion-artist" ~/.claude/skills/motion-artist   # or copy into a repo's .claude/skills or .agents/skills
 ```
 
@@ -149,7 +147,8 @@ python3 motion-artist/scripts/motion_artist.py export work/britney-spears-toxic/
 | `export --out`, `--sheet` | bundle path (default `exports/<genre>/<genre>-NN/`, an uncompressed directory, resolved against the `work/` the capture sits under) and the sheet HTML to include (default `<name>-motion.html` beside the json) |
 
 `extract` prints one line per frame (index, source time, key / pilot / in-between, pace, pose cue)
-and writes `motion.json` plus `thumbs/`. Landmarks carry depth — `pts` is `[x, y, z]`, z negative
+and writes `motion.json`, `thumbs/`, and `clip.mp4`, `mask.mp4` and `heads.json` — the source clip,
+performer mask and head boxes cag animates from (see SKILL.md). Landmarks carry depth — `pts` is `[x, y, z]`, z negative
 toward the camera with the hips at zero — and every frame adds a `depth` block naming the near
 side and each limb's `near` / `far` / `level`, so a 2D consumer can sort bones instead of guessing. Between `extract` and `render`, fill `arc` and any
 per-frame `note` in `motion.json`; the sheet renders them. `selftest` checks the pose heuristics
@@ -180,12 +179,18 @@ job input references. It warns if `arc` is empty or any frame has no pose. A re-
 `<genre>-NN` and replaces that bundle in place, so no stale twin is left behind to be referenced —
 but the SHA-256 changes, so re-reference it rather than assuming the old digest still holds.
 
-Downloaded video, split frames, captures and `clips.json` all live under `work/<creator>-<title>/`,
-git-ignored. Finished bundles land in `exports/<genre>/`, also git-ignored: they are build output,
-large and re-digested on every re-cut, and the hand-off was always the path and the SHA-256 the
-exporter prints rather than a committed file.
+## Where motions are stored
 
-`clips.json` is ignored with them, so **the frames you marked in the clipper live only in your
-working copy**. Nothing else records them — a fresh clone starts with no marks, and a discarded
-worktree takes its videos with it. Keep a copy outside the repo if a video's boundaries were
-expensive to find.
+Nothing is written into the repo. Every command runs from `$MOTION_ARTIST_HOME` (default
+`~/.cache/motion-artist`), so the `work/` and `exports/` paths above are that directory's: local
+staging for downloads, split frames, captures and bundles. Every output is stored on Google Drive
+through rclone, at `$MOTION_ARTIST_REMOTE` (default `kadrive:MotionArtist`, the Karaoke Arcade
+account CharacterAssetGenerator also uses):
+
+- bundles at `<genre>/<genre>-NN/`, pushed by `export`;
+- captures at `captures/<creator>-<title>/clip-NN/`, pushed by `extract`, `render` and `pose-grid`;
+- the clipper's marks at `captures/<creator>-<title>/clips.json`, pushed on every save.
+
+A command whose push fails exits non-zero and keeps the local copy; re-run it once rclone works.
+Every command refuses an output path inside the checkout. `MOTION_ARTIST_REMOTE=` (empty) turns
+pushing off for offline tests.

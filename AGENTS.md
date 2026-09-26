@@ -16,16 +16,23 @@ motion-artist/templates/sheet.html     the motion sheet: markup, CSS and player,
                                        render() fills. Edit the sheet's design here, not in the script
 .claude/skills/motion-artist           symlink to motion-artist/, so the skill loads in this repo —
                                        git-ignored, so a fresh clone has to create it (see Setup)
-work/<creator>-<title>/                one downloaded video, its split frames, meta.json,
-                                       clips.json and every capture cut from it — git-ignored
-exports/<genre>/<genre>-NN/            finished bundles, numbered within their genre — all
-                                       git-ignored, never commit any of it
 README.md                              the human-facing version of SKILL.md
 ```
 
+## Where motions are stored
+
+**No output is written into this repo. Motions are stored on the user's Google Drive**, at
+`$MOTION_ARTIST_REMOTE` (default `kadrive:MotionArtist`, the Karaoke Arcade Workspace account —
+the same one CharacterAssetGenerator publishes to): bundles at `<genre>/<genre>-NN/`, captures at
+`captures/<creator>-<title>/clip-NN/`, marks at `captures/<creator>-<title>/clips.json`. Every
+command runs from `$MOTION_ARTIST_HOME` (default `~/.cache/motion-artist`), so `work/` and
+`exports/` below are that directory's local staging, never the checkout's. Each command pushes
+what it wrote and exits non-zero if the push fails; each refuses an output path inside the repo.
+
 ## Setup
 
-`python3` with `opencv-python` and `mediapipe<1`, plus `yt-dlp` on PATH. Pin mediapipe below 1.x:
+`python3` with `opencv-python` and `mediapipe<1`, plus `yt-dlp`, `ffmpeg` and `rclone` (with a
+`kadrive:` remote) on PATH. Pin mediapipe below 1.x:
 the 1.x wheel crashes in the Metal helper on macOS. The pose model is cached at
 `~/.cache/motion-artist/` on first run.
 
@@ -127,14 +134,16 @@ runs the pipeline and never writes a bundle.
 
 Five steps, in order. A capture is not finished until step 5.
 
-1. `extract` — video → `work/<name>/motion.json` + `thumbs/`, and a printed frame table.
+1. `extract` — video → the capture (`motion.json`, `thumbs/`, and `clip.mp4` + `mask.mp4` +
+   `heads.json`, what cag animates from; SKILL.md has their contract), and a printed frame table.
 2. Author the arc — fill `arc`, and per-frame `note` only where the generated cue misses intent.
 3. `render` — `motion.json` → the self-contained HTML motion sheet.
 4. `pose-grid` — `thumbs/` → the pose grid: traced frames as pose cards, four across, twelve per
    image — this tool's own grid, not the consumer's batch size, which is 8 and which no longer
    reads the grid. Traced frames are the only pose reference; nothing in this repo draws a figure.
 5. `export` — zip the motion sheet, the HTML, the traced frames, any pose grid images and a
-   generated `manifest.json` with a SHA-256 per file.
+   generated `manifest.json` with a SHA-256 per file. The clip, mask and head boxes ride beside
+   them, each hashed in the manifest's `clip` block, outside `files`. Then pushed to the Drive.
    The printed bundle path and zip digest are what a KaraokeParty-Graphics job input references.
 
 Two axes: **work is keyed by the video, exports by genre.** Everything read off a video lives in
@@ -181,7 +190,7 @@ carrying rear frames inside a near-tie. A `back` frame is fatal downstream; a si
 not, and some moves turn in every window they have.
 
 Read the printed table, not `motion.json` — the JSON is large and mostly landmarks. Never hand-edit
-`cue`, `role`, `pts`, `depth` or `t`; they are extractor output. Re-run `extract` instead.
+`cue`, `role`, `pts`, `depth`, `t`, `clip_frame` or `clip`; they are extractor output. Re-run `extract` instead.
 
 Since `motion-artist/2`, `pts` values are `[x, y, z]`: z comes from the MediaPipe world landmarks,
 rescaled to the same units as x, negative toward the camera, hips at zero. Each frame also carries
@@ -212,8 +221,9 @@ The rules that bind work in this repo:
 
 - `python3 motion-artist/scripts/motion_artist.py selftest` — pose-description heuristics, timestamp
   parsing, manifest and digest. Fast, no video needed. Extend it when you add logic.
-- `work/sample/` holds a real capture. Re-render or re-export it to check a change end to end
-  without re-downloading anything.
+- A capture in `~/.cache/motion-artist/work/` can be re-rendered or re-exported to check a change
+  end to end without re-downloading anything. Point `MOTION_ARTIST_REMOTE` at a scratch folder (or
+  set it empty) so a test does not overwrite a stored motion.
 - Changing geometry (scale, floor, stabilize, seam scoring)? Look at the rendered sheet. The
   heuristics are guidance for an artist, not measurements, and only the drawing shows a regression.
 
@@ -236,8 +246,8 @@ Match what is there rather than introducing a second style.
 - Commit subjects are imperative and describe the behaviour: "Pin the planted ankle to one floor
   line when stabilized", not "fix". Body explains why, wrapped at ~76 columns. Small, atomic commits.
 - PRs target `main` and are merged with a merge commit.
-- Never commit anything under `work/` or `exports/`, and no `.mp4`. Both trees are git-ignored;
-  a bundle and the `clips.json` beside it are working-copy artefacts, never repo content.
+- Never write outputs into the repo and never commit a capture, a bundle, `clips.json` or an
+  `.mp4`. `work/` and `exports/` stay git-ignored as a backstop.
 
 ## graft skill
 
