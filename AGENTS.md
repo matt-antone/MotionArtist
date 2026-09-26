@@ -135,7 +135,8 @@ runs the pipeline and never writes a bundle.
 
 Five steps, in order. A capture is not finished until step 5.
 
-1. `extract` — video → the capture (`motion.json` + `thumbs/` + `clip.mp4`, stored on the Drive), and a
+1. `extract` — video → the capture (`motion.json` + `thumbs/` + `clip.mp4` + `mask.mp4` + `heads.json`,
+   stored on the Drive), and a
    printed frame table. `clip.mp4` is the source clip cag animates from; SKILL.md has its contract.
 2. Author the arc — fill `arc`, and per-frame `note` only where the generated cue misses intent.
 3. `render` — `motion.json` → the self-contained HTML motion sheet.
@@ -143,8 +144,8 @@ Five steps, in order. A capture is not finished until step 5.
    image — this tool's own grid, not the consumer's batch size, which is 8 and which no longer
    reads the grid. Traced frames are the only pose reference; nothing in this repo draws a figure.
 5. `export` — zip the motion sheet, the HTML, the traced frames, any pose grid images and a
-   generated `manifest.json` with a SHA-256 per file. `clip.mp4` rides beside them with its own
-   hash in the manifest's `clip` block, outside `files`.
+   generated `manifest.json` with a SHA-256 per file. `clip.mp4`, `mask.mp4` and `heads.json` ride
+   beside them, each hashed in the manifest's `clip` block, outside `files`.
    The printed bundle path and zip digest are what a KaraokeParty-Graphics job input references.
 
 Every capture is named `<set>-<index>`. A video URL always arrives with a set name; one video is

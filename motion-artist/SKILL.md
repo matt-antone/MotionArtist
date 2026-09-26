@@ -417,12 +417,24 @@ are read with the same decoder the trace used and piped to ffmpeg, so clip frame
 
 - `motion.json` and the manifest carry a `clip` block, with exactly the keys cag's `read_clip`
   reads: `file` (`clip.mp4`), `start` (source second of clip frame 0), `fps`, `frame_count`,
-  `size` `[w, h]`, `box` `[x, y, w, h]` (always the whole frame: thumbs are the whole frame too),
-  `t_offset` (`0.0`) and `sha256`.
+  `size` `[w, h]`, `box` `[x, y, w, h]`, `t_offset` (`0.0`) and `sha256`, plus `mask` and `heads`
+  (below). `box` is the performer's extent over the whole clip: the union of the pose landmarks'
+  extents in every clip frame, padded 8% of body height, clamped to the frame. cag centres its drive
+  crop on it; with the whole frame, a landscape clip's crop sat on the frame's centre and cut off
+  wide arm moves of an off-centre performer.
 - Every traced frame carries `clip_frame`, the clip frame it was traced from, beside `t`. Use it
   rather than recomputing from `t`: `t` is the seek target, `clip_frame` is the frame the seek
   landed on.
-- `clip.mp4` is **not** in the manifest's `files`. cag git-ignores footage and commits the
+- `mask.mp4` is the performer mask: same frames as the clip, white on black, one person, the pose
+  model's own segmentation thresholded at 0.5 and encoded lossless so it stays two-valued. It is soft
+  at hair and fingers; cag checks it before trusting it over its SAM3 pass. A frame with no pose is
+  all black.
+- `heads.json` is one `[x0, y0, x1, y1]` or `null` per clip frame, in clip pixels: a box around the
+  head from the pose model's 11 face points, sized for cag's face blur rather than as an outline.
+  `null` when fewer than 3 face points are visible.
+- Both come from one VIDEO-mode landmarker pass over the clip, and the `clip` block names each with
+  its own hash: `"mask": {"file": "mask.mp4", "sha256": …}`, `"heads": {"file": "heads.json", …}`.
+- `clip.mp4`, `mask.mp4` and `heads.json` are **not** in the manifest's `files`. cag git-ignores footage and commits the
   manifest, so the clip is hashed in its own block instead.
 
 Checked on club-01's source: the clip matched cag's own backfilled clip (same start, fps and 83
@@ -468,7 +480,7 @@ over-driving the source to compensate.
    python3 "$SKILL/scripts/motion_artist.py" extract URL --fps 4 --frames 16 --start 0:16 --end 0:20 --name dance
    ```
    It prints a `snap:` line first — the span it moved to inside `--margin`, its seam and energy
-   score, and the runners-up — then writes `$MA/captures/<name>/motion.json`, `thumbs/` and `clip.mp4`, stores them on the Drive, and prints
+   score, and the runners-up — then writes `$MA/captures/<name>/motion.json`, `thumbs/`, `clip.mp4`, `mask.mp4` and `heads.json`, stores them on the Drive, and prints
    one line per frame:
    index, source time, role (`key` = hold/extreme, `pilot` = fastest transition, `inbetween`),
    pace, and the generated pose cue. Frame 0 is always a key. Check `missing` is empty and the
@@ -541,7 +553,7 @@ over-driving the source to compensate.
    One motion is one bundle, however many frames it has.
    Stores `kadrive:MotionArtist/hip-hop-1/hip-hop-1-3-24f-4fps-motion-source/` — an uncompressed
    directory, never inside the capture dir. The export is not done until it prints `stored`: `motion.json`, the sheet HTML, `thumbs/` (the pose reference — see above), any
-   pose grid images and their sidecar, `clip.mp4`, and a
+   pose grid images and their sidecar, `clip.mp4`, `mask.mp4`, `heads.json`, and a
    generated `manifest.json` (fps, frame count, playback, view, `seam` and `seam_ratio`, source, the
    `clip` block, and a SHA-256 per file), all under a `<name>/` folder. The sidecar's grid rides in the manifest as a
    `pose_grid` block. CAG itself no longer reads either one — it takes the loose `thumbs/` and tiles

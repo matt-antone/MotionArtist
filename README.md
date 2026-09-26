@@ -143,7 +143,8 @@ python3 motion-artist/scripts/motion_artist.py export "$MA/captures/dance/motion
 `extract` prints one line per frame (index, source time, key / pilot / in-between, pace, pose cue)
 and writes `motion.json`, `thumbs/` and `clip.mp4` — the traced span plus 0.5 s each side at the
 source's native rate, described by a `clip` block and pinned per frame by `clip_frame`, which is
-what cag animates from. Landmarks carry depth — `pts` is `[x, y, z]`, z negative
+what cag animates from — plus `mask.mp4`, the performer mask frame for frame, and `heads.json`, a
+head box per clip frame. Landmarks carry depth — `pts` is `[x, y, z]`, z negative
 toward the camera with the hips at zero — and every frame adds a `depth` block naming the near
 side and each limb's `near` / `far` / `level`, so a 2D consumer can sort bones instead of guessing. Between `extract` and `render`, fill `arc` and any
 per-frame `note` in `motion.json`; the sheet renders them. `selftest` checks the pose heuristics

@@ -269,7 +269,8 @@ def fetch(url, out_dir):
     return path, title
 
 
-def landmarker():
+def landmarker(video=False):
+    """IMAGE mode for the trace's random seeks; VIDEO mode, with masks, for the clip's straight run."""
     import mediapipe as mp
     from mediapipe.tasks import python as mpt
     from mediapipe.tasks.python import vision
@@ -277,7 +278,8 @@ def landmarker():
         os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
         urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
     opts = vision.PoseLandmarkerOptions(base_options=mpt.BaseOptions(model_asset_path=MODEL_PATH, delegate=mpt.BaseOptions.Delegate.CPU),
-                                        running_mode=vision.RunningMode.IMAGE, num_poses=1)
+                                        running_mode=vision.RunningMode.VIDEO if video else vision.RunningMode.IMAGE,
+                                        num_poses=1, output_segmentation_masks=video)
     return mp, vision.PoseLandmarker.create_from_options(opts)
 
 
@@ -563,12 +565,60 @@ def clip_window(start, end, fps, n):
     return max(0, round((start - CLIP_PAD) * fps)), min(n - 1, round((end + CLIP_PAD) * fps))
 
 
+# Pose landmarks 0..10: nose, eyes (inner, centre, outer), ears, mouth corners.
+FACE = range(11)
+
+
+def head_box(lms, W, H):
+    """[x0, y0, x1, y1] in clip pixels around the head, or None when too little of the face shows.
+
+    # ponytail: an estimate from the pose model's face points, sized for a blur, not a head
+    # outline. The points sit in the lower middle of the head, so the box is 2.4x their spread and
+    # reaches further up (the crown) than down: 1.8x, drawn over club-01, stopped at the hairline
+    # and was narrower than the head. A profile shows one ear, so its spread is about
+    # half a head and the box comes out tighter; a face landmarker would measure it properly.
+    """
+    pts = [(lms[j].x * W, lms[j].y * H) for j in FACE if (lms[j].visibility or 0) > 0.5]
+    if len(pts) < 3: return None
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+    side = 2.4 * max(max(xs) - min(xs), max(ys) - min(ys))
+    box = [max(0, cx - side / 2), max(0, cy - 0.6 * side), min(W, cx + side / 2), min(H, cy + 0.4 * side)]
+    return [round(v) for v in box] if box[2] > box[0] and box[3] > box[1] else None
+
+
+def performer_box(spans, W, H):
+    """[x, y, w, h]: the union of per-frame landmark extents, padded 8% of body height, in the frame.
+
+    cag centres its drive crop on `box`, so on a landscape clip the whole frame put the crop on
+    the frame's centre and cut off wide arm moves on the far side of an off-centre performer.
+    Landmarks stop at the wrists and the face, so the pad is what reaches the hands and hair.
+    """
+    if not spans: return [0, 0, W, H]
+    pad = 0.08 * max(y1 - y0 for _, y0, _, y1 in spans)
+    x0, y0 = max(0, min(b[0] for b in spans) - pad), max(0, min(b[1] for b in spans) - pad)
+    x1, y1 = min(W, max(b[2] for b in spans) + pad), min(H, max(b[3] for b in spans) + pad)
+    return [round(x0), round(y0), round(x1 - x0), round(y1 - y0)]
+
+
+def encoder(path, W, H, rate, pix_fmt, quality):
+    """An ffmpeg process taking raw frames on stdin; yuv420p wants even sides, so pad, never scale."""
+    return subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", pix_fmt,
+                             "-s", f"{W}x{H}", "-r", rate, "-i", "-", "-an",
+                             "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", *quality,
+                             "-pix_fmt", "yuv420p", "-fps_mode", "cfr", path], stdin=subprocess.PIPE)
+
+
 def cut_clip(src, c0, c1, path):
     """Write source frames c0..c1 to `path` as h264 at the native rate, and return its `clip` block.
 
     The frames are read with cv2, the decoder the trace used, and piped to ffmpeg, rather than
     cut by ffmpeg from the file: then clip frame k is source frame c0 + k by construction, and a
     traced frame's `clip_frame` is exact instead of a second decoder's idea of the same index.
+
+    The same pass writes the performer mask (`mask.mp4`) and a head box per frame (`heads.json`)
+    beside it, frame for frame, from one VIDEO-mode landmarker run: cag masks and blurs the
+    drive video from them instead of running SAM3 and guessing the head from the silhouette.
     """
     import cv2
     rate = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
@@ -578,22 +628,40 @@ def cut_clip(src, c0, c1, path):
     cap = cv2.VideoCapture(src)
     W, H = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     cap.set(cv2.CAP_PROP_POS_FRAMES, c0)
-    # yuv420p wants even sides; pad rather than scale, so `box` still names the traced pixels
-    enc = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24",
-                            "-s", f"{W}x{H}", "-r", rate, "-i", "-", "-an",
-                            "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-crf", "18",
-                            "-pix_fmt", "yuv420p", "-fps_mode", "cfr", path], stdin=subprocess.PIPE)
-    n = 0
+    d = os.path.dirname(path)
+    mask_p, heads_p = os.path.join(d, "mask.mp4"), os.path.join(d, "heads.json")
+    enc = encoder(path, W, H, rate, "bgr24", ["-crf", "18"])
+    # qp 0 is lossless, so the mask stays two-valued instead of growing grey codec fringes
+    menc = encoder(mask_p, W, H, rate, "gray", ["-qp", "0"])
+    mp, lm = landmarker(video=True)
+    n, heads, empty, spans = 0, [], 0, []
     for _ in range(c0, c1 + 1):
         ok, bgr = cap.read()
         if not ok: break
-        enc.stdin.write(bgr.tobytes()); n += 1
-    enc.stdin.close()
-    if enc.wait(): sys.exit(f"extract: ffmpeg failed writing {path}")
+        enc.stdin.write(bgr.tobytes())
+        res = lm.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)),
+                                  round(n * 1000 * den / num))
+        # ponytail: the pose model's own mask, thresholded at 0.5 — soft at hair and fingers.
+        # cag checks it (figure fraction, largest component, overlap) before trusting it over SAM3.
+        m = (res.segmentation_masks[0].numpy_view().reshape(H, W) > 0.5) if res.segmentation_masks else None
+        menc.stdin.write((m.astype("uint8") * 255).tobytes() if m is not None else bytes(W * H))
+        empty += m is None
+        heads.append(head_box(res.pose_landmarks[0], W, H) if res.pose_landmarks else None)
+        if res.pose_landmarks:
+            xs, ys = [l.x * W for l in res.pose_landmarks[0]], [l.y * H for l in res.pose_landmarks[0]]
+            spans.append((min(xs), min(ys), max(xs), max(ys)))
+        n += 1
+    for e in (enc, menc): e.stdin.close()
+    if enc.wait() or menc.wait(): sys.exit(f"extract: ffmpeg failed writing {path} or {mask_p}")
+    json.dump(heads, open(heads_p, "w"))
     if n != c1 - c0 + 1:
         print(f"warning: clip holds {n} frames, expected {c1 - c0 + 1} — the source ended early")
+    if empty or heads.count(None):
+        print(f"note: clip has {empty} frame(s) with no mask and {heads.count(None)} with no head box")
     return dict(file="clip.mp4", start=round(c0 * den / num, 6), fps=num / den, frame_count=n,
-                size=[W + W % 2, H + H % 2], box=[0, 0, W, H], t_offset=0.0, sha256=sha256(path))
+                size=[W + W % 2, H + H % 2], box=performer_box(spans, W, H), t_offset=0.0, sha256=sha256(path),
+                mask=dict(file="mask.mp4", sha256=sha256(mask_p)),
+                heads=dict(file="heads.json", sha256=sha256(heads_p)))
 
 
 def sample_times(start, span, n):
@@ -912,6 +980,18 @@ def selftest():
     # the clip is the traced span plus half a second each side, clamped to the video
     assert clip_window(10.0, 12.0, 30, 10000) == (285, 375)
     assert clip_window(0.2, 1.0, 30, 40) == (0, 39)
+    # a head box is None with under 3 visible face points, and stays inside the frame near an edge
+    class _L:
+        def __init__(self, x, y, v=0.9): self.x, self.y, self.visibility = x, y, v
+    face = [_L(0.5 + 0.01 * (j % 3), 0.1 + 0.01 * (j // 3)) for j in range(11)] + [_L(0, 0, 0)] * 22
+    b = head_box(face, 1000, 1000)
+    assert b and 0 <= b[0] < b[2] <= 1000 and 0 <= b[1] < b[3] <= 1000 and b[1] < 100 < b[3], b
+    assert head_box([_L(0.5, 0.5, 0.1)] * 33, 1000, 1000) is None
+    # the performer box is the union of the spans, padded 8% of the tallest, clamped to the frame
+    assert performer_box([(400, 100, 500, 600), (450, 120, 700, 610)], 1280, 720) == [360, 60, 380, 590]
+    assert performer_box([(0, 0, 1280, 720)], 1280, 720) == [0, 0, 1280, 720]
+    assert performer_box([], 1280, 720) == [0, 0, 1280, 720]
+    assert head_box([_L(0.001 * j, 0.001 * j) for j in range(33)], 1000, 1000)[:2] == [0, 0]
     # nothing lands in the checkout, by default or by --out
     assert not os.path.realpath(CACHE).startswith(REPO + os.sep), f"cache {CACHE} is inside the repo"
     assert outside_repo("/elsewhere/x") == "/elsewhere/x"
@@ -1106,12 +1186,18 @@ def export(a):
         shutil.copy2(p, dst)
     # The clip rides beside the files, not in `files`: cag git-ignores the footage and keeps the
     # manifest, so the clip carries its own sha256 in its block instead of in the file list.
+    # The mask and head boxes ride the same way, each named and hashed inside the clip block.
     clip = d.get("clip")
-    if clip and os.path.exists(os.path.join(src, clip["file"])):
-        shutil.copy2(os.path.join(src, clip["file"]), os.path.join(out, clip["file"]))
-        man["clip"] = dict(clip, sha256=sha256(os.path.join(out, clip["file"])))
-    elif clip:
-        print(f"warning: motion.json names {clip['file']} but the capture has none — re-extract to cut it")
+    if clip:
+        parts = [clip] + [clip[k] for k in ("mask", "heads") if clip.get(k)]
+        lost = [b["file"] for b in parts if not os.path.exists(os.path.join(src, b["file"]))]
+        if lost:
+            print(f"warning: motion.json names {', '.join(lost)} but the capture has none — re-extract")
+        else:
+            for b in parts: shutil.copy2(os.path.join(src, b["file"]), os.path.join(out, b["file"]))
+            def dig(b): return sha256(os.path.join(out, b["file"]))
+            man["clip"] = dict(clip, sha256=dig(clip),
+                               **{k: dict(clip[k], sha256=dig(clip[k])) for k in ("mask", "heads") if clip.get(k)})
     manifest_p = os.path.join(out, "manifest.json")
     json.dump(man, open(manifest_p, "w"), indent=1)
     ratio = man["seam_ratio"]
