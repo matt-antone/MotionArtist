@@ -79,6 +79,7 @@ footer a{color:inherit}
 <div><dt>Frames</dt><dd>{{N}}</dd></div><div><dt>Rate</dt><dd id="specRate">{{FPS}} fps</dd></div>
 <div><dt>Lap</dt><dd id="specLap">{{LAP}}</dd></div><div><dt>Playback</dt><dd>{{PLAYBACK}}</dd></div>
 <div><dt>View</dt><dd>{{VIEW}}</dd></div><div><dt>Keys</dt><dd>{{KEYS}}</dd></div><div><dt>Pilots</dt><dd>{{PILOTS}}</dd></div>
+<div><dt>Gender</dt><dd>{{GENDER}}</dd></div>
 </dl></header>
 
 <section class="stage">
@@ -123,7 +124,7 @@ footer a{color:inherit}
 
 <section class="map"><h2>Frame notes</h2><div class="maprows">{{ROWS}}</div></section>
 
-<footer><p>Source: <a href="{{URL}}">{{URL}}</a>. Poses estimated with MediaPipe; treat joint angles as guidance, not measurement.</p></footer>
+<footer><p>Source: {{SOURCE}}. Poses estimated with MediaPipe; treat joint angles as guidance, not measurement.</p></footer>
 </div>
 <script type="application/json" id="motion">{{DATA}}</script>
 <script>

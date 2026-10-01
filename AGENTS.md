@@ -9,7 +9,7 @@ pipeline runs. Everything else is docs and ignored scratch.
 
 ```
 motion-artist/SKILL.md                 the skill an agent loads
-motion-artist/scripts/motion_artist.py extract | render | pose-grid | export | trace | selftest  (single file, ~1240 lines)
+motion-artist/scripts/motion_artist.py generate | extract | render | pose-grid | export | trace | selftest  (single file, ~1240 lines)
 motion-artist/scripts/clipper.py       the clip marker: a local web tool that splits a video into
                                        frames and records which ones the user wants (see Marking clips)
 motion-artist/templates/sheet.html     the motion sheet: markup, CSS and player, with {{PLACEHOLDER}}s
@@ -69,7 +69,11 @@ python3 motion-artist/scripts/clipper.py
 
 It opens `http://localhost:8765`. The user picks a video from the ones already opened here —
 listed as `Creator - Title` — or pastes a YouTube URL for a new one, and names the **genre** it belongs to
-(`hiphop`, `karate`), not a label for the video. Sources are YouTube URLs only. The tool asks
+(`hiphop`, `karate`), not a label for the video. Sources are YouTube URLs or approved local videos.
+`clipper --source FILE --genre GENRE [--title TITLE]` imports local sources; `/api/open` accepts
+`source`, `genre` and optional `title` too. Local identity is content SHA-256, with no invented
+YouTube id. Generated videos appear as Local AI – Title and preserve verified generation provenance.
+AI previews from `generate` stay local until approved; only marks, captures and bundles go to Drive. The tool asks
 yt-dlp for the id, title and creator before downloading, names the directory
 `work/<creator>-<title>/`, and reopens it when the id matches — so the URL of a video already here
 reopens its frames instead of fetching a second copy. There is no name to get one letter wrong and
@@ -104,7 +108,8 @@ that has been cut pins its video's genre; one only marked has no number and move
 Run the pipeline per clip and take every one of those numbers as given: `--start`/`--end` from
 `start`/`end`, `--playback` from `playback`, `--fps` from the clip's own `capture_fps`, `--frames`
 from `capture_frames`, and `--out` from `capture`. The name is not chosen either: pass
-`--genre` from the file's `genre` and let it allocate. Never pass `--name` alongside it. Do not re-search the span and do not pick a frame count. `capture_frames` is
+`--genre` from the file's `genre` and let it allocate. Never pass `--name` alongside it. Always pass `--margin 0`. Do not re-search the span and do not pick a frame count.
+Generation source frame counts never set capture frame counts. `capture_frames` is
 already `capture_fps x window` for the window the marks fixed, which is the one order that makes
 the capture play at the speed it was danced — see **Timing** in the skill for what picking a frame
 count first costs.
@@ -130,6 +135,13 @@ back off 1.0 is worth handing back to be nudged rather than captured as it stand
 `frames` is how many **source** frames the clip spans, not the capture's count. The marker never
 runs the pipeline and never writes a bundle.
 
+Each clip also records `gender`: user-assigned character compatibility (`male`, `female`, `any`,
+or `null` for unclassified). The marker's Gender control edits it; extraction inherits it and
+preserves it on re-cuts. `--gender unclassified` clears it explicitly. The same value reaches
+`motion.json` and the manifest under `motion-artist/2`. Never infer it from footage or `performer`,
+and never turn an unknown into `any`. CAG owns compatibility filtering and warnings; explicit
+motion assignments always win.
+
 ## The pipeline
 
 Five steps, in order. A capture is not finished until step 5.
@@ -141,10 +153,10 @@ Five steps, in order. A capture is not finished until step 5.
 4. `pose-grid` — `thumbs/` → the pose grid: traced frames as pose cards, four across, twelve per
    image — this tool's own grid, not the consumer's batch size, which is 8 and which no longer
    reads the grid. Traced frames are the only pose reference; nothing in this repo draws a figure.
-5. `export` — zip the motion sheet, the HTML, the traced frames, any pose grid images and a
+5. `export` — bundle the motion sheet, the HTML, the traced frames, any pose grid images and a
    generated `manifest.json` with a SHA-256 per file. The clip, mask and head boxes ride beside
    them, each hashed in the manifest's `clip` block, outside `files`. Then pushed to the Drive.
-   The printed bundle path and zip digest are what a KaraokeParty-Graphics job input references.
+   The printed bundle directory and manifest digest are what a KaraokeParty-Graphics job input references.
 
 Two axes: **work is keyed by the video, exports by genre.** Everything read off a video lives in
 `work/<creator>-<title>/` — source, frames, `meta.json`, `clips.json` and every capture cut from it.
@@ -164,8 +176,8 @@ number is an identifier in a way a descriptive label never was: "shuffle" named 
 dances once and one silently overwrote the other. Provenance (url, start second, span) rides in
 `manifest.json` rather than in the file name. Everything under `exports/` and `work/` from before
 this scheme is deprecated and removed.
-Hand off that zip as it is. Do not unpack it, and do not copy loose `motion.json`/`thumbs/` into a
-consuming repo — the zip is the unit, and its `manifest.json` is what verifies it.
+Hand off the bundle directory as it is through `cag motions pull <genre>/<genre>-NN`.
+The directory is the unit, and its `manifest.json` verifies every file.
 A re-cut keeps its `<genre>-NN` and replaces the bundle in place, so no stale twin is
 left to be referenced — but the SHA-256 changes, so re-reference it in any job input that names it.
 
