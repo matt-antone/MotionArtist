@@ -156,7 +156,17 @@ numbers, the seconds they correspond to, and the directory it is captured into. 
 handoff: `extract --start S --end S --margin 0` takes the seconds straight from it. The tool runs no part of the
 pipeline — it only settles which frames the pipeline is pointed at.
 
+To remove a video, open it and click **Delete video**. A confirmation alert names the video and
+explains that its local source, frames, marks and captures will move to
+`$MOTION_ARTIST_HOME/trash/videos/`. Cancel leaves everything in place. Published bundles and
+Drive copies are kept. After deletion, the marker shows the recovery directory; move its video
+folder back into `work/` to restore it when that name is free.
+
 ## Thumbs
+
+When the padded performer cannot fit a 3:4 crop inside the source frame, extraction keeps the
+full source rectangle and letterboxes it into each 384×512 pose card. The clip's `box` records
+that source rectangle; head, hands and feet are not trimmed just to fill the card.
 
 Each thumb is a 384×512 crop around the performer — CAG's pose card size, so it fills the card.
 `extract` takes one crop for the whole capture (the union of every frame's landmarks, padded and
