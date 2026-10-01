@@ -382,6 +382,13 @@ imports it by content SHA-256 and removes the temporary copy. An interrupted upl
 existing footage and marks. For a new AI preview, use its source path so the adjacent generation
 record is imported too; browser uploads of already-imported footage retain its verified provenance.
 
+After opening a video, **Delete video** shows a confirmation alert naming the video and the scope.
+Confirming moves its entire local work directory (source, frames, marks and captures) into
+`$MOTION_ARTIST_HOME/trash/videos/`; cancel changes nothing. Drive copies and published bundles
+remain. The returned recovery directory can be moved back under `work/` when its original name is
+free. `/api/delete-video` requires the exact video key and `confirmed: true`; it rejects linked
+video directories. This operation does not revoke a published motion.
+
 The directory is named for the video so it can be recognised, but the **YouTube id** is what says
 whether two URLs are the same video, and it is kept in `meta.json` for exactly that.
 Local videos use their content SHA-256 as identity, without an invented YouTube id. Reimporting

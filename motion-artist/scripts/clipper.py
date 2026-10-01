@@ -176,6 +176,27 @@ def open_video(url, key, genre, source=None, title=None):
         return import_video(url, key, genre, source, title)
 
 
+def delete_video(key, confirmed=False):
+    """Remove a video from the marker, retaining its local files in recoverable trash."""
+    if confirmed is not True: raise ValueError("confirm video deletion first")
+    with VIDEO_LOCK:
+        path = outside_repo(video_dir(key))
+        if os.path.islink(video_dir(key)):
+            raise ValueError("cannot delete a linked video directory")
+        if not os.path.isdir(path) or not read_meta(key):
+            raise ValueError("video is no longer available; refresh the list")
+        trash = outside_repo(os.path.join(os.path.dirname(WORK), "trash", "videos"))
+        os.makedirs(trash, exist_ok=True)
+        destination = tempfile.mkdtemp(prefix=key + "-", dir=trash)
+        try:
+            shutil.move(path, os.path.join(destination, key))
+        except Exception:
+            if not os.listdir(destination): os.rmdir(destination)
+            raise
+        return {"deleted": key, "trash": os.path.join(destination, key),
+                "videos": videos(), "genres": genres()}
+
+
 def open_upload(stream, length, filename, genre, title=None):
     """Stage browser-selected footage locally, then use the same content identity as a path import."""
     if not slug(genre): raise ValueError("enter a motion genre before opening the video")
@@ -387,6 +408,9 @@ class Handler(BaseHTTPRequestHandler):
                                     q.get("title", [None])[0])
                 return self.send(200, json.dumps(state))
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+            if self.path == "/api/delete-video":
+                return self.send(200, json.dumps(delete_video(body.get("video", ""),
+                                                               body.get("confirmed", False))))
             if self.path == "/api/open":
                 return self.send(200, json.dumps(open_video(body.get("url", "").strip(),
                                                             os.path.basename(body.get("video", "")),
@@ -394,10 +418,10 @@ class Handler(BaseHTTPRequestHandler):
                                                             body.get("title"))))
             if self.path == "/api/clips":
                 key = os.path.basename(body.get("video", ""))
-                meta = read_meta(key)
-                if not meta:
-                    raise ValueError("open a video first")
                 with VIDEO_LOCK:
+                    meta = read_meta(key)
+                    if not meta:
+                        raise ValueError("open a video first")
                     saved = write_clips(key, meta, float(body["fps"]), body.get("clips", []))
                 # off the request thread: a Drive round trip is seconds, and a save is every edit
                 threading.Thread(target=push_clips, args=(key,), daemon=True).start()
@@ -457,6 +481,7 @@ PAGE = r"""<!doctype html><meta charset=utf-8><title>clipper</title>
   <input id=title placeholder="local title (optional)" size=18>
   <label>Motion genre <input id=genre placeholder="e.g. actions, emotes, hiphop" size=22 list=genres></label>
   <button class=go id=load>Open</button>
+  <button id=deletevideo disabled>Delete video</button>
   <span id=status></span>
 </div>
 <datalist id=genres></datalist>
@@ -539,6 +564,7 @@ function clearPlayer(){
   stopPlay();
   S = {...S, video:'', url:'', frames:0, n:1, in:null, out:null, clips:[], editing:-1};
   $('editor').hidden = true; $('img').removeAttribute('src');
+  $('deletevideo').disabled = true;
   setText('status', ''); $('saved').innerHTML = ''; err('');
 }
 $('vid').onchange = () => {
@@ -684,6 +710,22 @@ async function post(path, body){
   return j;
 }
 
+$('deletevideo').onclick = async () => {
+  const key = S.video;
+  if (!key) return;
+  stopPlay();
+  if (!confirm(`Delete “${S.title}” from clipper?\n\nIts local video, frames, saved marks and captures will move to local trash. Published Drive bundles and Drive copies are kept.\n\nContinue?`)) return;
+  $('deletevideo').disabled = $('load').disabled = true;
+  try {
+    const j = await post('/api/delete-video', {video:key, confirmed:true});
+    clearPlayer(); fillVideos(j.videos, j.genres);
+    $('vid').onchange();
+    history.replaceState(null, '', location.pathname);
+    setText('status', 'Video deleted from clipper. Recovery copy: ' + j.trash);
+  } catch(e){ err(e.message); }
+  finally { $('load').disabled = false; $('deletevideo').disabled = !S.video; }
+};
+
 $('load').onclick = async () => {
   if (!$('genre').value.trim() && !$('vid').value){
     err('Enter a motion genre, then click Open.'); $('genre').focus(); return;
@@ -702,7 +744,7 @@ $('load').onclick = async () => {
     } else j = await post('/api/open', {video: $('vid').value, url: $('url').value,
                                        source: $('local').value || null, title: $('title').value || null,
                                        genre: $('genre').value});
-    S = {...S, video:j.key, genre:j.genre, url:j.url, fps:j.fps, frames:j.frames,
+    S = {...S, video:j.key, title:j.title, genre:j.genre, url:j.url, fps:j.fps, frames:j.frames,
          in:null, out:null, editing:-1,
         clips: j.clips.map(c=>({motion:c.motion || '', in:c.in_frame, out:c.out_frame,
                                 capture:c.capture, gender:c.gender ?? null,
@@ -716,6 +758,7 @@ $('load').onclick = async () => {
     setText('status', `${j.creator ? j.creator + ' - ' : ''}${j.title} · ${j.frames} frames @ ${j.fps.toFixed(3)} fps`);
     $('gender').value = '';
     $('editor').hidden = false; marks(); rows(); editLabel(); show(1);
+    $('deletevideo').disabled = false;
   } catch(e){ setText('status',''); err(e.message); }
   finally { $('load').disabled = $('browse').disabled = false; }
 };
@@ -1119,6 +1162,36 @@ def selftest():
         except ValueError: pass
         else: raise AssertionError("changed source reopened its marks")
         assert source_metadata(os.path.join(d, "ordinary.mp4"), "https://youtube.com/watch?v=abc")["source_kind"] == "youtube"
+
+        # Deletion requires confirmation, retains recoverable files, and leaves bundles alone.
+        from pathlib import Path
+        EXPORTS = os.path.join(d, "exports")
+        bundle = Path(EXPORTS) / "test-01"; bundle.mkdir(parents=True)
+        (bundle / "manifest.json").write_text('{}')
+        doomed, _ = video("delete-test", "Delete me", "Local", "test")
+        original = Path(video_dir(doomed))
+        (original / "source.mp4").write_bytes(b"original footage")
+        before = {str(p.relative_to(original)): p.read_bytes() for p in original.rglob('*') if p.is_file()}
+        for key, confirmation in ((doomed, False), (doomed, "true"), ("..", True),
+                                   ("../outside", True), ("", True)):
+            try: delete_video(key, confirmation)
+            except ValueError: pass
+            else: raise AssertionError("unconfirmed or invalid deletion succeeded")
+            assert original.exists()
+        linked = Path(WORK) / "linked-video"; linked.symlink_to(original, target_is_directory=True)
+        try: delete_video(linked.name, True)
+        except ValueError: pass
+        else: raise AssertionError("deleted through a linked directory")
+        linked.unlink()
+        deleted = delete_video(doomed, True)
+        retained = Path(deleted["trash"])
+        assert not original.exists() and doomed not in {v["key"] for v in deleted["videos"]}
+        assert before == {str(p.relative_to(retained)): p.read_bytes() for p in retained.rglob('*') if p.is_file()}
+        assert (bundle / "manifest.json").read_text() == '{}'
+        assert read_meta(first["key"]) and os.path.isfile(ordinary)
+        try: delete_video(doomed, True)
+        except ValueError: pass
+        else: raise AssertionError("deleted an already removed video")
 
     # The custom track replaced the range input. Nothing here runs the page, but a
     # half-finished refactor leaves a dead $('scrub') that only throws in a browser.
