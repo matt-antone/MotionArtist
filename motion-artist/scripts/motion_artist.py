@@ -469,10 +469,9 @@ def fit_aspect(x0, y0, x1, y1, aspect, W, H):
 def write_thumbs(shots, tdir, Wpx, Hpx):
     """One 3:4 crop around the performer for the whole capture, each frame cut to it at 384x512.
 
-    One box, not one per frame: a per-frame fit would flatten the travel and size changes the
-    sheet is there to show. The box is the union of every traced frame's landmarks, padded, grown
-    to 3:4 and fitted inside the frame. Nothing reads pts against these pixels, so the crop needs
-    no bookkeeping.
+    One box, not one per frame: a per-frame fit would flatten travel and scale changes.
+    Grow the padded landmark bounds to 3:4 when they fit. Otherwise preserve the full source
+    rectangle and letterbox every pose card with the same scale and padding.
     """
     import cv2
     xs = [x for _, _, pts in shots for x, _ in pts]
@@ -480,6 +479,11 @@ def write_thumbs(shots, tdir, Wpx, Hpx):
     pad = (max(ys) - min(ys)) * THUMB_MARGIN
     box = (min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad)
     x, y, w, h = fit_aspect(*box, THUMB_W / THUMB_H, Wpx, Hpx)
+    # A tall figure may not fit a 3:4 crop inside portrait footage. Preserve the full
+    # source rectangle and letterbox the pose card instead of trimming head or feet.
+    wanted = (max(0, box[0]), max(0, box[1]), min(Wpx, box[2]), min(Hpx, box[3]))
+    if x > wanted[0] + 2 or y > wanted[1] + 2 or x + w < wanted[2] - 2 or y + h < wanted[3] - 2:
+        x, y, w, h = 0, 0, int(Wpx), int(Hpx)
     # A padded box past the frame edge means the performer runs off it: head or feet may be cut.
     cut = [s for s, over in (("top", box[1] < 0), ("bottom", box[3] > Hpx),
                              ("left", box[0] < 0), ("right", box[2] > Wpx)) if over]
@@ -489,8 +493,13 @@ def write_thumbs(shots, tdir, Wpx, Hpx):
         if f.endswith(".jpg"): os.remove(os.path.join(tdir, f))
     for i, bgr, _ in shots:
         crop = bgr[y:y + h, x:x + w]
-        th = cv2.resize(crop, (THUMB_W, THUMB_H),
-                        interpolation=cv2.INTER_AREA if w >= THUMB_W else cv2.INTER_CUBIC)
+        scale = min(THUMB_W / w, THUMB_H / h)
+        tw, th = max(1, round(w * scale)), max(1, round(h * scale))
+        resized = cv2.resize(crop, (tw, th),
+                             interpolation=cv2.INTER_AREA if scale <= 1 else cv2.INTER_CUBIC)
+        left, top = (THUMB_W - tw) // 2, (THUMB_H - th) // 2
+        th = cv2.copyMakeBorder(resized, top, THUMB_H - th - top,
+                                left, THUMB_W - tw - left, cv2.BORDER_CONSTANT, value=(28, 19, 20))
         # quality 60 put JPEG artefacts on the limb edges, which is the one thing CAG's generator
         # reads off these: they are its pose reference, not a preview.
         cv2.imwrite(os.path.join(tdir, f"f{i:02d}.jpg"), th, [cv2.IMWRITE_JPEG_QUALITY, 88])
@@ -1506,6 +1515,17 @@ def selftest():
     assert fit_aspect(0, 0, 360, 640, 9 / 16, 1280, 720) == (0, 0, 360, 640)
     for b in ((10, 10, 33, 77), (5, 5, 101, 203), (0, 0, 1279, 719)):
         assert all(v % 2 == 0 for v in fit_aspect(*b, THUMB_W / THUMB_H, 1280, 720))
+    # A tall portrait must retain both ends of the figure instead of forcing a shorter crop.
+    import cv2, numpy as np
+    with tempfile.TemporaryDirectory() as td:
+        portrait = np.zeros((640, 360, 3), dtype=np.uint8)
+        portrait[20:40, 160:200] = (0, 0, 255)
+        portrait[600:620, 160:200] = (0, 255, 0)
+        box = write_thumbs([(0, portrait, [(180, 30), (180, 610)])], td, 360, 640)
+        card = cv2.imread(os.path.join(td, 'f00.jpg'))
+        assert box == (0, 0, 360, 640) and card.shape == (512, 384, 3)
+        assert card[24, 192, 2] > 240 and card[488, 192, 1] > 240
+        assert abs(int(card[256, 20, 0]) - 28) < 5  # side padding, not stretched footage
     generation_selftest()
     print("selftest ok")
 

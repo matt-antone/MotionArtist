@@ -555,6 +555,11 @@ right thing positively is what held. That applies to any prompt text this skill 
 
 ## `clip.mp4`, `mask.mp4` and `heads.json`: what cag animates from
 
+The thumbnail crop normally has a 3:4 aspect. If that crop would trim the padded figure in
+portrait footage, extraction uses the full source rectangle and letterboxes every 384×512 pose
+card consistently. `clip.box` then records the full source rectangle and may have another aspect;
+it still lies inside the video frame. Preserve this box when handing off to CAG.
+
 cag draws a traced set from video: it cuts a drive video from the source clip, masks the performer,
 blurs her face and animates the character along it. `extract` therefore writes three more files
 into the capture, from one pass over the clip:

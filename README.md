@@ -164,6 +164,10 @@ folder back into `work/` to restore it when that name is free.
 
 ## Thumbs
 
+When the padded performer cannot fit a 3:4 crop inside the source frame, extraction keeps the
+full source rectangle and letterboxes it into each 384×512 pose card. The clip's `box` records
+that source rectangle; head, hands and feet are not trimmed just to fill the card.
+
 Each thumb is a 384×512 crop around the performer — CAG's pose card size, so it fills the card.
 `extract` takes one crop for the whole capture (the union of every frame's landmarks, padded and
 grown to 3:4), so landscape and portrait footage both work with no extra step, and the dancer's
