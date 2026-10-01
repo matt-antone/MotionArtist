@@ -13,7 +13,7 @@ roles: it controls motion only, never character scale, identity, view or prop ha
 
 ## Where motions are stored
 
-**Every output is stored on the user's Google Drive, at `$MOTION_ARTIST_REMOTE` (default
+**Captures, marks and motion bundles are stored on the user's Google Drive, at `$MOTION_ARTIST_REMOTE` (default
 `kadrive:MotionArtist`, an rclone remote on the Karaoke Arcade Workspace account — the same account
 CharacterAssetGenerator publishes to). Nothing is written into the repo.** On the Drive:
 
@@ -26,12 +26,87 @@ CharacterAssetGenerator publishes to). Nothing is written into the repo.** On th
 
 Every command runs from `$MOTION_ARTIST_HOME` (default `~/.cache/motion-artist`), so **`work/` and
 `exports/` in this skill always mean that directory's**, never a path in a checkout. They are local
-staging only: `work/` also holds the downloaded video and split frames, which are inputs and never
+staging only: `generations/` holds local AI previews and `work/` also holds the downloaded video and split frames, which are inputs and never
 pushed. A command whose push fails exits non-zero and keeps the staged copy — fix rclone (`rclone
 about kadrive:` checks the token) and re-run it. Every command refuses an output path inside the
-repo, `--out` included. `extract --genre` also reads the Drive's `<genre>/` before numbering, so a
+repo, `--out` included. Generated videos and their generation records are local inputs, so
+`generate` does not push them. `extract --genre` also reads the Drive's `<genre>/` before numbering, so a
 wiped cache cannot hand out a number a stored bundle already holds. `MOTION_ARTIST_REMOTE=` (empty)
 turns pushing off, for offline tests only.
+
+## Generate a local AI preview
+
+Describe motion → generate one preview → **user approves movement and framing** → user marks the
+clip → extract, author the arc, render, build the pose grid and export. V1 makes one candidate at a
+time and revises from feedback. Audio, exact choreography controls and automatic approval are outside
+this workflow. Expand the request into one full-body performer, fixed camera, plain light backdrop,
+visible hands and feet, and clear preparation, action and recovery. Use soft diffuse light, a matte
+light-gray background, balanced exposure and clear skin, arm and hand detail; the first trial's bright
+backdrop erased body detail. The command also appends these
+framing instructions and records both the requested and expanded prompts.
+With a starting image, preserve its character, outfit, proportions, visual style and plain background
+instead of imposing the text-only preview's photographic appearance. Apply user-requested lighting
+changes; otherwise retain the image's lighting. Review the full moving
+result and verify tracking, including for stylized key art.
+Prefer a plain neutral backdrop for the starting image. In the live pixel-key-art trial, the
+magenta-backed character dissolved during motion; a separately prepared neutral-background copy
+kept the body visible and tracked all 121 source frames. This does not prove style fidelity or
+complete recovery: both still need visual review. Preserve the original key art and record any
+preparation and image digests alongside the generation record.
+
+```bash
+python3 "$SKILL/scripts/motion_artist.py" generate \
+  "Victory fist pump: prepare, raise character-right fist overhead once, then recover to the starting stance" \
+  --title "Victory fist pump" --out generations/victory-01
+```
+
+| Input | Required | Notes |
+| --- | --- | --- |
+| `generate PROMPT` | yes | requested movement; the request and expanded prompt are recorded |
+| `generate --title` | yes | readable preview title, later shown as Local AI – Title |
+| `generate --out` | yes | new local preview directory; relative paths resolve under `MOTION_ARTIST_HOME`; checkout paths are refused |
+| `generate --image` | optional | starting image; letterboxed to 576×864 to preserve full framing before local upload; original and uploaded image digests are recorded |
+| `generate --duration` | default `5` | requested seconds; `4 × ceil(seconds × 24 / 4) + 1` source frames; five seconds makes 121 frames, encoded as 5.042 seconds at 24 fps |
+| `generate --seed` | default `1234` | unsigned 64-bit seed |
+| `generate --comfy-url` | default `http://127.0.0.1:8188` | shared ComfyUI server; only the default local server is started automatically |
+| `clipper --source` | optional | approved local video; copies it into the video work directory, or reopens identical content |
+| `clipper --genre` | required with `--source` | movement genre; allocated motion numbers pin it |
+| `clipper --title` | optional with `--source` | title override; defaults to generation title or filename |
+
+The native API workflow is `workflows/wan22-5b.json`, based on the
+[official Wan2.2 5B template](https://docs.comfy.org/tutorials/video/wan/wan2_2).
+It uses 576×864, 24 fps, 20 steps, CFG 5, UniPC, simple schedule and shift 8. Required nodes and
+models are checked before submission. The default local server starts through
+`~/ComfyUI/run-local16.sh`, preserving GPU selection, memory flags and sleep inhibition. It shares
+ComfyUI's queue with CAG and never cancels or interrupts jobs.
+
+`source.mp4` and `generation.json` stay local. The record carries prompts, negative prompt, seed,
+model references, input-image digests, workflow and its SHA-256, job id, observed running time and sampled memory use,
+actual video properties and source SHA-256. Submission intent is saved before the HTTP request,
+and the returned job id immediately after it. Repeat the **same command and directory** to resume
+or reuse the verified completed video. Changed settings require a new directory. A 90-minute running
+limit excludes queued time and preserves the job; a retry gives it another running allowance. Lost
+submission responses are recovered from queue/history by a unique token. If neither proves what
+happened, the command stops without resubmitting. Failed jobs require review and a new candidate
+directory. Never restart or clear ComfyUI to resolve a MotionArtist error.
+
+Show the **full moving preview** for explicit approval **before** importing it into the marker.
+A comment accepting face blur is not approval of the arms, framing or whole movement. After approval:
+
+```bash
+python3 "$SKILL/scripts/clipper.py" --source "$MOTION_ARTIST_HOME/generations/victory-01/source.mp4" --genre emote
+```
+
+An already-running marker is reused via `/api/open`. The user marks the boundaries and playback.
+Take `start`, `end`, `playback`, `capture_fps`, `capture_frames`, `capture` and `genre` exactly from
+`clips.json`; always use `--margin 0`, and add `--pingpong` when its separate flag is true.
+**Generation's source frame count never determines capture frame count.** Do not allocate a motion
+number until extraction. Continue all existing pipeline steps through export after marks are settled.
+
+The first live acceptance trial is a victory fist pump with recovery on the RX 9070. Record generation
+time and observed memory use; make no speed guarantee before it. Acceptance needs user-approved
+movement and framing, complete tracking, no rear frames, exact capture timing, one thumb per captured
+frame, an authored arc, valid bundle hashes and a successful CAG bundle/source-clip load.
 
 ## Inputs (ask for anything missing)
 
@@ -45,6 +120,7 @@ turns pushing off, for offline tests only.
 | `--name` / `--genre` | yes, one of | `--genre hiphop` is the clipper path: it allocates this capture's `<genre>-NN` against `exports/<genre>/`, records it in the video's `clips.json`, and needs `--out` so it knows which clip. `--name` is the manual path, for a capture with no clip behind it. Passing both is refused — they would be two names for one capture. See **Naming** below. |
 | `--pingpong` | optional | the capture plays out and back — `0..N-1..1` — so the seam is the motion reversed rather than a cut. Recorded in `motion.json` and the manifest as `pingpong`, and `render` walks the sheet that way off the capture, having no `--pingpong` of its own. **CAG reads the flag** (`cag/motion.py`): it folds `"playback": "loop"` plus `"pingpong": true` into the single word `pingpong`, writes its proof GIF as the bounce itself, and carries `playback` into the rendered package's manifest so the game plays the same shape. It also stops asking such a bundle about its seam, since the return leg reverses the out leg. `seam` and `seam_ratio` still measure the straight loop — the flag never edits them, because the jump is what an unaware consumer plays. Do not bake the out-and-back into the frames instead: 8 frames is one CAG render chunk, 14 is two, and the duplicated return poses come back drawn differently in the second chunk. CAG expands the bounce itself at playback time, from the N cells it drew. |
 | `--performer` | optional | `female` or `male` — the filmed performer's body, carried into `motion.json` and the manifest. It describes the trace, not the character the render must draw; omit it rather than guessing. |
+| `--gender` | optional | User-assigned character compatibility: `male`, `female`, `any`, or `unclassified` (writes JSON `null`). Omitting it reads the clip's saved classification, then the previous capture, then leaves it unclassified. A successful extraction records an explicit override back into the clip's marks. Never infer it from the footage or `performer`. |
 | `--margin` | default `0.5` s | slack around **both** `--start` and `--end`. The span you type is a guess; the move's own cut rarely lands on that exact second. Both ends are probed within the margin for the real one — matching poses for a `loop`, the stillest ending otherwise — and the winner is time-stretched onto the frame count, so the source span may come back a little shorter or longer than asked. `--margin 0` uses the span exactly as typed. Ignored with `--search`, which picks its own span. |
 | `--search` | optional | "find the best loop": slide a `frames / fps`-second window over `--start..--end` (whole video when `--end` is omitted), score each start by loop-closure distance vs motion energy, and use the tightest seam among the livelier half. Prints the top candidates. **The window slides one source frame at a time** — see below. |
 | `--window` | optional | source seconds to take, when that differs from `frames / fps` — what `--search` looks for, and the span length when `--end` is omitted. Use it when a scene cut or lost tracking leaves less usable footage than the playback length, or to run a fast move slower. The winner is stretched onto the frame count. |
@@ -69,7 +145,7 @@ worked:
    to the same list: they mark in and out per move in a browser and it writes
    `work/<creator>-<title>/clips.json`, whose `start`, `end`, `playback`, `capture_fps` and `capture_frames`
    are all taken as given — it derives the frame count from the marked window the right way round,
-   so do not recompute it. Each clip also names its own `capture` and `export` directories and the
+   so do not recompute it. Each clip also names its own `capture` directory and the
    file names the video and genre they belong to, so nothing about where a bundle goes is inferred.
    `clipper` downloads into `work/<creator>-<title>/` itself, so when clips already exist the video is
    there too and no second download is needed. Steps 2 and 3 are how you find the boundaries when
@@ -115,8 +191,25 @@ anything. The consumer can set a threshold per character; it cannot recover what
 averaged away. The one thing that is not a judgement call is a `back` frame: `cag/animation.py`
 accepts only `front`, `left`, `right` and `3/4`, so a bundle declaring `back` fails outright.
 
-Additive manifest keys are free: CAG requires exactly `fps`, `frame_count`, `view` and `files`
-and ignores everything else (`cag/motion.py`). `playback` is no longer among them — CAG treats the
+The additive `gender` field stays under `motion-artist/2`. It appears at the top level of
+`motion.json` and the manifest, and both must agree. `male`, `female` and `any` are explicit
+user classifications of which characters the motion suits. Missing or `null` means unclassified;
+never default it to `any`, copy it from `performer`, or infer it from appearance. An old input
+without the key exports an explicit `null` in both files, with a new motion-data digest.
+
+The marker's **Gender** control is per clip. Edit a clip, choose its classification, then replace
+the clip to save it; the marks and capture timing stay as selected. Extraction reads this saved
+field automatically. Reopening, re-cutting and saves from older clients that omit the field preserve
+the assignment; choosing **unclassified** clears it explicitly. The rendered motion sheet shows it.
+For metadata-only updates to a capture, an agent may set `gender` in `motion.json` and the matching
+saved clip, then render and export; never alter the extractor's frame data to classify a motion.
+
+CAG's agreed compatibility rule accepts unclassified or `any` motions for every character, and
+accepts every motion for an unspecified or `any` character. Otherwise values must match. An explicit
+motion assignment always wins, with a warning on mismatch; automatic selection filters for matches
+and falls back with a warning if none fit. CAG owns that selection behavior.
+
+Other additive manifest keys may be ignored by CAG (`cag/motion.py`). CAG treats the
 manifest as a record of the trace and reads how a set plays off `motion.json` alone, so a manifest
 may carry it for a human reader but nothing there is consulted. That is CAG's branch
 `claude/motion-playback-frame-rate-loop-afdfaf`, reported 2026-09-23 and not on their `main` — so
@@ -279,11 +372,23 @@ a shortlist, then re-extract the winner and read the real number.
 
 Two axes, and they are not the same axis. **Work is keyed by the video** — everything read off one
 lives in `work/<creator>-<title>/`: the downloaded source, every split frame, `meta.json`
-(YouTube id, url, title, creator, genre) and `clips.json`. Sources are YouTube URLs; `clipper` has
-no path for a local file.
+(source kind, identity, url where present, title, creator, genre) and `clips.json`.
+`clipper` accepts YouTube URLs and approved local videos. Local AI previews are imported only after
+user approval, through `clipper --source FILE --genre GENRE [--title TITLE]` or `/api/open` with
+`source`, `genre` and optional `title`. Sources remain local; marks and captures go to Drive.
+The browser's **Browse local video** button selects a file without requiring its path. Enter
+**Motion genre**, then click **Open**. `/api/upload` streams the file into temporary local staging,
+imports it by content SHA-256 and removes the temporary copy. An interrupted upload preserves
+existing footage and marks. For a new AI preview, use its source path so the adjacent generation
+record is imported too; browser uploads of already-imported footage retain its verified provenance.
 
 The directory is named for the video so it can be recognised, but the **YouTube id** is what says
-whether two URLs are the same video, and it is kept in `meta.json` for exactly that. A creator can
+whether two URLs are the same video, and it is kept in `meta.json` for exactly that.
+Local videos use their content SHA-256 as identity, without an invented YouTube id. Reimporting
+identical footage reopens its frames and marks even under another title. Different footage with
+the same title takes the next suffix. Generated footage is listed as **Local AI – Title**; other
+local footage is **Local – Title**. Generation provenance survives reopening and mark saves, is
+verified against the source digest on extraction, and reaches `motion.json.source` and the manifest. A creator can
 post two videos under one title and a re-upload shares both, so a name already held by a different
 id goes to `<creator>-<title>-2` rather than opening the first one's frames and reading its marks
 against them. Never rename one of these directories by hand: the name is how `clips.json`'s
@@ -499,12 +604,12 @@ over-driving the source to compensate.
 
 `$SKILL` below is this skill's directory (the folder holding this SKILL.md).
 
-1. Run the extractor (first run downloads the video ≤720p and the MediaPipe model). `--name` is the
+1. Run the extractor (first run downloads the video ≤720p and the MediaPipe model). `--genre` is the
    genre and `--out` is the clip's own `capture` directory. The name is allocated from the genre, not
    typed, and written back into `clips.json` as that clip's `motion`:
    ```bash
    python3 "$SKILL/scripts/motion_artist.py" extract URL --fps 4 --frames 16 --start 0:16 --end 0:20 \
-       --genre hiphop --out work/britney-spears-toxic/clip-01
+       --genre hiphop --margin 0 --out work/britney-spears-toxic/clip-01
    ```
    It prints the name it allocated. Every later step in this list takes its paths from that capture
    directory, so run them against `<out>/motion.json` rather than retyping a name.
@@ -539,8 +644,8 @@ over-driving the source to compensate.
    ```bash
    python3 "$SKILL/scripts/motion_artist.py" render work/britney-spears-toxic/clip-01/motion.json
    ```
-   The sheet always holds exactly `--frames` cells, and the player loops them forever — a seam is
-   reviewed by watching, never by drawing the cycle twice. Add `--pingpong` to walk those same cells
+   The motion sheet always holds exactly `--frames` cells, and the player loops them forever — a seam is
+   reviewed by watching, never by drawing the cycle twice. Extract with `--pingpong` to walk those same cells
    out and back (0..N-1 then N-2..1): the return leg is the out leg reversed, so the walk itself has
    no cut in it and the artist still draws only the frames asked for. The seam the sheet reports is
    unaffected — it is the straight loop's, because that is what a consumer ignoring the flag plays.
@@ -588,7 +693,7 @@ over-driving the source to compensate.
    `clip` block, and a SHA-256 per file), all under a `<name>/` folder. The sidecar's grid rides in the manifest as a
    `pose_grid` block. CAG itself no longer reads either one — it takes the loose `thumbs/` and tiles
    its own grid at render time — so the sheets ride along for anyone handing a generator the whole
-   pose set directly, and cost the consumer nothing. Prints the bundle path and the zip's own
+   pose set directly, and cost the consumer nothing. Prints the bundle path and the manifest's
    SHA-256 — that
    pair is what the motion-director job input references. It warns when `arc` is still empty or
    frames are missing a pose; fix those and re-export rather than handing off a warned bundle.
@@ -619,6 +724,9 @@ using it.** Never say "sprite sheet" or "skeleton" — both are retired.
 
 | term | is |
 | --- | --- |
+| AI preview | the generated local video awaiting user approval; `source.mp4` with `generation.json` |
+| generation record | `generation.json`, the job state and verified provenance for an AI preview |
+| gender | user-assigned character compatibility of a motion: `male`, `female`, `any`, or unclassified (`null`); separate from the filmed `performer` |
 | motion bundle | the exported directory, identified by its manifest |
 | manifest | `manifest.json` |
 | motion sheet | the contents of `motion.json` — the only allowed use of "sheet" unqualified |
@@ -639,7 +747,7 @@ consumer generated it from prose — a written sheet has no traced frames and so
 - Dependencies: `yt-dlp`, `python3` with `opencv-python` and `mediapipe<1` (the 1.x wheel crashes in
   the Metal helper on macOS). Model is cached at `~/.cache/motion-artist/`.
 - `selftest` runs the pose-description, span-picking, arc carry-over, figure-geometry and manifest
-  checks:
+  and fake-ComfyUI generation checks:
   `python3 "$SKILL/scripts/motion_artist.py" selftest`. Run it after touching any of them.
 - Every frame is scaled about the hips so torso length matches the clip median: camera zoom or distance never changes the traced pose's size.
 - Cues are heuristic: elbow and knee angles, girdle twist and sole pitch from the world landmarks,

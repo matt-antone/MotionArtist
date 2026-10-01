@@ -31,11 +31,11 @@ the seconds straight from it, and each clip names the directory it is captured i
 This tool does not run the pipeline; it only settles which frames the pipeline should be
 pointed at.
 """
-import argparse, errno, json, os, re, subprocess, sys, threading, urllib.parse, webbrowser
+import argparse, errno, json, os, re, shutil, subprocess, sys, tempfile, threading, urllib.parse, urllib.request, webbrowser
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from motion_artist import fetch, publish, HOME  # the 720-capped download, the Drive push
+from motion_artist import fetch, publish, HOME, outside_repo, local_source, source_rate, sha256, atomic_json, motion_gender
 
 # HOME, not the checkout: work/ (downloads, frames, marks) and exports/ are local staging, and
 # the marks are stored on the Drive beside the captures cut from them.
@@ -49,6 +49,7 @@ PLAYBACK = ("loop", "one-shot", "final-hold")  # extract's own --playback choice
 PINGPONG = "ping-pong"
 CHOICES = PLAYBACK + (PINGPONG,)
 CAPTURE_FPS = 12  # CAG's editor default; the skill keeps fps fixed across a library
+VIDEO_LOCK = threading.Lock()
 
 
 def slug(s):
@@ -58,11 +59,8 @@ def slug(s):
 
 def probe_fps(path):
     """Exact source fps as a float. ffprobe reports it as a rational ('30000/1001')."""
-    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
-                        "-show_entries", "stream=r_frame_rate", "-of", "csv=p=0", path],
-                       capture_output=True, text=True, check=True)
-    num, _, den = r.stdout.strip().partition("/")
-    return float(num) / float(den or 1)
+    num, den = source_rate(path).split("/")
+    return float(num) / float(den)
 
 
 def probe_video(url):
@@ -83,10 +81,12 @@ def probe_video(url):
 
 
 def video_dir(key):
+    if not key or key in (".", "..") or os.path.basename(key) != key:
+        raise ValueError("video key must be one directory name")
     return os.path.join(WORK, key)
 
 
-def video_key(creator, title, vid):
+def video_key(creator, title, vid, source_kind="youtube"):
     """The directory a video works in: `<creator>-<title>`, slugged.
 
     A readable name is worth having -- an id says nothing about which video it is -- but
@@ -98,11 +98,17 @@ def video_key(creator, title, vid):
     An empty title and creator leave nothing to name a directory after, which only the
     id can answer.
     """
-    base = slug(f"{creator} {title}") or vid
+    identity = vid if source_kind != "youtube" else "youtube:" + vid
+    # Content identity survives an import under another title or from another file path.
+    for existing in sorted(os.listdir(WORK)) if os.path.isdir(WORK) else []:
+        m = read_meta(existing) if os.path.isdir(video_dir(existing)) else {}
+        if m.get("identity") == identity or (source_kind == "youtube" and m.get("id") == vid):
+            return existing
+    base = slug(f"{creator} {title}") or (vid if source_kind == "youtube" else slug(vid))
     key, n = base, 1
     while True:
         m = read_meta(key)
-        if not m or m.get("id") == vid:
+        if not os.path.exists(video_dir(key)):
             return key
         n += 1
         key = f"{base}-{n}"
@@ -110,7 +116,7 @@ def video_key(creator, title, vid):
 
 def source_of(vdir):
     for f in sorted(os.listdir(vdir)):
-        if f.startswith("source-"):
+        if f == "source.mp4" or f.startswith("source-"):
             return os.path.join(vdir, f)
     return None
 
@@ -136,7 +142,9 @@ def push_clips(key):
 
 def read_clips(key):
     p = clips_path(key)
-    return json.load(open(p))["clips"] if os.path.exists(p) else []
+    clips = json.load(open(p))["clips"] if os.path.exists(p) else []
+    for c in clips: motion_gender(c.get("gender"), p)
+    return clips
 
 
 def videos():
@@ -150,6 +158,7 @@ def videos():
         m = read_meta(key)
         out.append({"key": key, "id": m.get("id", ""), "title": m.get("title") or key,
                     "creator": m.get("creator", ""), "genre": m.get("genre", ""),
+                    "source_kind": m.get("source_kind", "youtube"), "identity": m.get("identity", ""),
                     "clips": len(read_clips(key))})
     return sorted(out, key=lambda v: (v["creator"].lower(), v["title"].lower()))
 
@@ -162,7 +171,30 @@ def genres():
     return sorted(seen)
 
 
-def open_video(url, key, genre):
+def open_video(url, key, genre, source=None, title=None):
+    with VIDEO_LOCK:
+        return import_video(url, key, genre, source, title)
+
+
+def open_upload(stream, length, filename, genre, title=None):
+    """Stage browser-selected footage locally, then use the same content identity as a path import."""
+    if not slug(genre): raise ValueError("enter a motion genre before opening the video")
+    if length <= 0: raise ValueError("choose a non-empty video file")
+    filename = os.path.basename(filename.replace("\\", "/"))
+    if not filename or filename in (".", ".."): raise ValueError("choose a video file")
+    with tempfile.TemporaryDirectory(prefix=".upload-", dir=outside_repo(WORK)) as temp:
+        source = os.path.join(temp, filename)
+        with open(source, "wb") as target:
+            remaining = length
+            while remaining:
+                block = stream.read(min(remaining, 1024 * 1024))
+                if not block: raise ValueError("video upload was interrupted; choose the file again")
+                target.write(block); remaining -= len(block)
+        probe_fps(source)
+        return open_video("", "", genre, source, title)
+
+
+def import_video(url, key, genre, source=None, title=None):
     """Download (once) and split (once). Returns the viewer's state for this video.
 
     Opening by key reads back a video already here; opening by URL resolves the video
@@ -171,19 +203,30 @@ def open_video(url, key, genre):
     nothing is ever replaced: the name comes from the video, not from something typed, and
     a name already taken by a different video goes to the next free suffix.
     """
-    if not key:
+    if source and (url or key): raise ValueError("pass a local source, a URL, or a video key")
+    incoming = {}
+    if source:
+        source = os.path.abspath(os.path.expanduser(source))
+        if not os.path.isfile(source): raise ValueError(f"no local source at {source}")
+        incoming = local_source(source, title)
+        creator = "Local AI" if incoming["source_kind"] == "ai-generated" else "Local"
+        title = incoming["title"]
+        key = video_key(creator, title, incoming["identity"], incoming["source_kind"])
+        incoming.update(creator=creator, url="")
+    elif not key:
         if not url:
             raise ValueError("pick a video, or paste a YouTube URL")
         vid, title, creator = probe_video(url)
         key = video_key(creator, title, vid)
+        incoming = dict(id=vid, url=url, title=title, creator=creator,
+                        source_kind="youtube", identity="youtube:" + vid)
     else:
         m = read_meta(key)
         if not m:
             raise ValueError(f"no video here called {key!r}")
-        vid, title, creator = m.get("id", ""), m.get("title", key), m.get("creator", "")
         url = m.get("url", url)
 
-    vdir = video_dir(key)
+    vdir = outside_repo(video_dir(key))
     meta = read_meta(key)
     genre = slug(genre) or meta.get("genre", "")
     if not genre:
@@ -202,23 +245,33 @@ def open_video(url, key, genre):
     os.makedirs(vdir, exist_ok=True)
     src = source_of(vdir)
     if not src:
-        if not url:
+        if source:
+            src = outside_repo(os.path.join(vdir, "source.mp4"))
+            shutil.copyfile(source, src)
+        elif not url:
             raise ValueError("no video downloaded yet, and no URL given")
-        src, _ = fetch(url, vdir)
+        else: src, _ = fetch(url, vdir)
+    expected = meta.get("source_sha256") or incoming.get("source_sha256")
+    if expected and sha256(src) != expected:
+        raise ValueError("source video changed since import; refusing to reopen its marks")
 
-    frames_dir = os.path.join(vdir, "frames")
+    frames_dir = outside_repo(os.path.join(vdir, "frames"))
     if not os.path.isdir(frames_dir) or not os.listdir(frames_dir):
-        os.makedirs(frames_dir, exist_ok=True)
+        temp = outside_repo(os.path.join(vdir, "frames-building"))
+        if os.path.isdir(temp): shutil.rmtree(temp)
+        os.makedirs(temp)
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", src,
                         "-vf", f"scale=-2:{FRAME_HEIGHT}", "-q:v", "4",
-                        os.path.join(frames_dir, "%06d.jpg")], check=True)
+                        os.path.join(temp, "%06d.jpg")], check=True)
+        if os.path.isdir(frames_dir): os.rmdir(frames_dir)
+        os.replace(temp, frames_dir)
 
     # the id rides in meta.json, not in the directory name: it is what decides whether the
     # next URL pasted is this video, and the name is only what makes the directory legible.
-    meta = {"key": key, "id": vid, "url": url, "title": title, "creator": creator,
-            "genre": genre}
-    with open(os.path.join(vdir, "meta.json"), "w") as fh:
-        json.dump(meta, fh, indent=2)
+    meta = {**incoming, **meta, "key": key, "genre": genre}
+    if not meta.get("source_kind"):
+        meta.update(source_kind="youtube", identity="youtube:" + meta["id"])
+    atomic_json(os.path.join(vdir, "meta.json"), meta)
 
     count = len([f for f in os.listdir(frames_dir) if f.endswith(".jpg")])
     return {**meta, "frames": count, "fps": probe_fps(src), "clips": read_clips(key),
@@ -240,11 +293,18 @@ def write_clips(key, meta, fps, clips):
     writes it at marking time and a clip that has one keeps it.
     """
     genre = meta["genre"]
+    prior = read_clips(key)
+    by_capture = {c["capture"]: c for c in prior if c.get("capture")}
     out, seen = [], set()
     for i, c in enumerate(clips, 1):
         a, b = int(c["in"]), int(c["out"])
         name = f"clip-{i:02d}"
-        motion = c.get("motion") or ""
+        previous = by_capture.get(c.get("capture"), {})
+        if not previous:
+            matches = [p for p in prior if (p["in_frame"], p["out_frame"]) == (a, b)]
+            previous = matches[0] if len(matches) == 1 else {}
+        motion = c.get("motion") or previous.get("motion") or ""
+        gender = motion_gender(c.get("gender", previous.get("gender")), f"{key}/{name}")
         if motion and motion in seen:  # both would be written to the same export directory
             raise ValueError(f"two clips are numbered {motion!r}; they would share "
                              f"exports/{genre}/{motion}")
@@ -268,7 +328,7 @@ def write_clips(key, meta, fps, clips):
                              f"{cap_frames} — widen the marks or raise its fps")
         clip = {"in_frame": a, "out_frame": b, "frames": b - a + 1,
                 "start": round((a - 1) / fps, 3), "end": round(b / fps, 3),
-                "playback": pb, "pingpong": pingpong,
+                "playback": pb, "pingpong": pingpong, "gender": gender,
                 "capture_fps": cap_fps, "capture_frames": cap_frames,
                 # span / (frames/fps). extract recomputes it; 1.0 here means the marks
                 # already land on a whole frame at this fps, so no rounding is hiding.
@@ -280,10 +340,11 @@ def write_clips(key, meta, fps, clips):
             clip["motion"] = motion
         out.append(clip)
     os.makedirs(video_dir(key), exist_ok=True)
-    with open(clips_path(key), "w") as fh:
-        json.dump({"video": key, "video_id": meta.get("id", ""), "url": meta.get("url", ""),
+    outside_repo(clips_path(key))
+    atomic_json(clips_path(key), {"video": key, **({"video_id": meta["id"]} if meta.get("id") else {}), "url": meta.get("url", ""),
                    "title": meta.get("title", ""), "creator": meta.get("creator", ""),
-                   "genre": genre, "source_fps": round(fps, 4), "clips": out}, fh, indent=2)
+                   **{k: meta[k] for k in ("source_kind", "identity", "source_sha256", "generation") if k in meta},
+                   "genre": genre, "source_fps": round(fps, 4), "clips": out})
     return out
 
 
@@ -317,18 +378,27 @@ class Handler(BaseHTTPRequestHandler):
         self.send(404, json.dumps({"error": "not found"}))
 
     def do_POST(self):
-        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         try:
+            u = urllib.parse.urlparse(self.path)
+            if u.path == "/api/upload":
+                q = urllib.parse.parse_qs(u.query)
+                state = open_upload(self.rfile, int(self.headers.get("Content-Length", 0)),
+                                    q.get("filename", [""])[0], q.get("genre", [""])[0],
+                                    q.get("title", [None])[0])
+                return self.send(200, json.dumps(state))
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
             if self.path == "/api/open":
                 return self.send(200, json.dumps(open_video(body.get("url", "").strip(),
                                                             os.path.basename(body.get("video", "")),
-                                                            body.get("genre", ""))))
+                                                            body.get("genre", ""), body.get("source"),
+                                                            body.get("title"))))
             if self.path == "/api/clips":
                 key = os.path.basename(body.get("video", ""))
                 meta = read_meta(key)
                 if not meta:
                     raise ValueError("open a video first")
-                saved = write_clips(key, meta, float(body["fps"]), body.get("clips", []))
+                with VIDEO_LOCK:
+                    saved = write_clips(key, meta, float(body["fps"]), body.get("clips", []))
                 # off the request thread: a Drive round trip is seconds, and a save is every edit
                 threading.Thread(target=push_clips, args=(key,), daemon=True).start()
                 return self.send(200, json.dumps({"clips": saved, "path": clips_path(key)}))
@@ -380,7 +450,12 @@ PAGE = r"""<!doctype html><meta charset=utf-8><title>clipper</title>
 <div class=row>
   <select id=vid><option value="">— new video —</option></select>
   <input id=url placeholder="YouTube URL (new video only)" size=34>
-  <input id=genre placeholder="genre (hiphop, karate)" size=18 list=genres>
+  <button id=browse>Browse local video</button>
+  <input id=file type=file accept="video/*,.m4v,.mkv,.avi,.mov,.mp4,.webm" hidden>
+  <span id=filename></span>
+  <input id=local aria-label="Local video path" placeholder="or paste a local video path" size=34>
+  <input id=title placeholder="local title (optional)" size=18>
+  <label>Motion genre <input id=genre placeholder="e.g. actions, emotes, hiphop" size=22 list=genres></label>
   <button class=go id=load>Open</button>
   <span id=status></span>
 </div>
@@ -416,6 +491,12 @@ the straight seam is still measured, because a consumer that ignores the flag pl
       <option value=final-hold>final-hold</option>
       <option value=ping-pong>ping-pong</option>
     </select>
+    <label>Gender <select id=gender title="Which characters this motion suits; choose explicitly">
+      <option value="">unclassified</option>
+      <option value=male>male</option>
+      <option value=female>female</option>
+      <option value=any>any</option>
+    </select></label>
     <button class=go id=add>Add clip</button>
     <button id=cancel hidden>Cancel edit</button>
   </div>
@@ -423,7 +504,7 @@ the straight seam is still measured, because a consumer that ignores the flag pl
     <kbd>O</kbd> out · <kbd>space</kbd> play footage · <kbd>C</kbd> play capture · <kbd>enter</kbd> add clip ·
     drag the green marks on the track to move in and out</div>
 
-  <table><thead><tr><th>clip</th><th>motion</th><th>in</th><th>out</th><th>frames</th><th>seconds</th><th>capture</th><th>playback</th><th></th></tr></thead>
+  <table><thead><tr><th>clip</th><th>motion</th><th>in</th><th>out</th><th>frames</th><th>seconds</th><th>capture</th><th>playback</th><th>gender</th><th></th></tr></thead>
   <tbody id=list></tbody></table>
   <div class=hint id=saved></div>
 </div>
@@ -442,10 +523,10 @@ const label = v => `${v.creator ? v.creator + ' - ' : ''}${v.title}` +
 // The picker is over videos already downloaded here. Its value is the directory, not
 // anything typed, so it cannot name a video that is not the one on screen.
 function fillVideos(vs, gs, keep){
-  $('vid').innerHTML = '<option value="">— new video —</option>' +
-    vs.map(v=>`<option value="${v.key}">${label(v)}</option>`).join('');
+  $('vid').replaceChildren(new Option('— new video —', ''),
+    ...vs.map(v=>new Option(label(v), v.key)));
   $('vid').value = keep || '';
-  $('genres').innerHTML = gs.map(g=>`<option value="${g}">`).join('');
+  $('genres').replaceChildren(...gs.map(g=>new Option(g, g)));
 }
 // The URL and genre boxes only ever describe what is selected, so any change empties both:
 // "new video" starts from an empty box rather than the last video's URL — which Open would
@@ -463,8 +544,23 @@ function clearPlayer(){
 $('vid').onchange = () => {
   clearPlayer();
   $('url').value = ''; $('genre').value = '';
+  $('local').value = ''; $('title').value = '';
+  $('file').value = ''; setText('filename', '');
   $('url').disabled = !!$('vid').value;
+  $('local').disabled = $('title').disabled = !!$('vid').value;
   if (!$('vid').value) $('url').focus();
+};
+$('browse').onclick = () => $('file').click();
+$('file').onchange = () => {
+  const file = $('file').files[0];
+  if (!file) return;
+  clearPlayer(); $('vid').value = ''; $('url').value = ''; $('local').value = '';
+  $('url').disabled = $('local').disabled = $('title').disabled = false;
+  setText('filename', file.name);
+};
+for (const id of ['url', 'local']) $(id).oninput = () => {
+  $('file').value = ''; setText('filename', '');
+  $(id === 'url' ? 'local' : 'url').value = '';
 };
 
 function show(n){
@@ -548,7 +644,7 @@ function editLabel(){
   setText('add', on ? `Replace ${clipName(S.editing)}` : `Add clip (→ ${clipName(S.clips.length)})`);
   $('cancel').hidden = !on;
 }
-function endEdit(){ S.editing = -1; editLabel(); rows(); }
+function endEdit(){ S.editing = -1; $('gender').value = ''; editLabel(); rows(); }
 $('cancel').onclick = () => { S.in = S.out = null; marks(); endEdit(); };
 
 function rows(){
@@ -559,6 +655,7 @@ function rows(){
     <td class=n>${((c.in-1)/S.fps).toFixed(2)}–${(c.out/S.fps).toFixed(2)}</td>
     <td class=n>${capFrames(c.in, c.out, c.fps)}f @ ${c.fps}</td>
     <td class=n>${c.playback}</td>
+    <td>${c.gender || 'unclassified'}</td>
     <td><button data-go=${i}>edit</button> <button data-del=${i}>×</button></td></tr>`).join('');
 }
 $('list').onclick = e => {
@@ -575,6 +672,7 @@ $('list').onclick = e => {
   }
   if (go !== undefined){ const c = S.clips[+go];
     S.in = c.in; S.out = c.out; $('pmode').value = c.playback; $('capfps').value = c.fps;
+    $('gender').value = c.gender || '';
     S.editing = +go;            // re-cut: Add replaces this motion and keeps its number
     marks(); show(S.in); editLabel(); rows(); }
 };
@@ -587,21 +685,39 @@ async function post(path, body){
 }
 
 $('load').onclick = async () => {
-  clearPlayer(); setText('status', 'downloading and splitting frames…');
+  if (!$('genre').value.trim() && !$('vid').value){
+    err('Enter a motion genre, then click Open.'); $('genre').focus(); return;
+  }
+  clearPlayer(); $('load').disabled = $('browse').disabled = true;
+  const file = $('file').files[0];
+  setText('status', file ? 'opening local video and splitting frames…' :
+          $('local').value ? 'opening local video and splitting frames…' : 'opening video and splitting frames…');
   try {
-    const j = await post('/api/open', {video: $('vid').value, url: $('url').value,
+    let j;
+    if (file){
+      const query = new URLSearchParams({filename:file.name, genre:$('genre').value, title:$('title').value});
+      const r = await fetch('/api/upload?' + query, {method:'POST', body:file});
+      j = await r.json();
+      if (!r.ok) throw new Error(j.error || r.status);
+    } else j = await post('/api/open', {video: $('vid').value, url: $('url').value,
+                                       source: $('local').value || null, title: $('title').value || null,
                                        genre: $('genre').value});
     S = {...S, video:j.key, genre:j.genre, url:j.url, fps:j.fps, frames:j.frames,
          in:null, out:null, editing:-1,
-         clips: j.clips.map(c=>({motion:c.motion || '', in:c.in_frame, out:c.out_frame,
+        clips: j.clips.map(c=>({motion:c.motion || '', in:c.in_frame, out:c.out_frame,
+                                capture:c.capture, gender:c.gender ?? null,
                                 playback: c.pingpong ? 'ping-pong' : (c.playback || 'loop'),
                                 fps: c.capture_fps || 12}))};
     fillVideos(j.videos, j.genres, j.key);
     $('url').value = j.url; $('url').disabled = true; $('genre').value = j.genre;
+    $('local').value = ''; $('title').value = '';
+    $('file').value = ''; setText('filename', '');
     setText('ftot', j.frames);
     setText('status', `${j.creator ? j.creator + ' - ' : ''}${j.title} · ${j.frames} frames @ ${j.fps.toFixed(3)} fps`);
+    $('gender').value = '';
     $('editor').hidden = false; marks(); rows(); editLabel(); show(1);
   } catch(e){ setText('status',''); err(e.message); }
+  finally { $('load').disabled = $('browse').disabled = false; }
 };
 
 $('bin').onclick = () => { S.in = S.n; if (S.out && S.out < S.in) S.out = null; marks(); };
@@ -651,6 +767,7 @@ async function save(){
     const j = await post('/api/clips', {video:S.video, fps:S.fps, clips:S.clips});
     // read the list back so a motion number extract wrote in is not dropped on the next save
     S.clips = j.clips.map(c=>({motion:c.motion || '', in:c.in_frame, out:c.out_frame,
+                               capture:c.capture, gender:c.gender ?? null,
                                playback: c.pingpong ? 'ping-pong' : c.playback,
                                fps: c.capture_fps}));
     $('saved').innerHTML = `<span class=ok>saved</span> ${j.path}`;
@@ -665,7 +782,8 @@ $('add').onclick = async () => {
   const i = S.editing;
   // a re-cut keeps the motion it was already cut as, so the re-export replaces that bundle
   const clip = {motion: i >= 0 ? (S.clips[i].motion || '') : '', in:S.in, out:S.out,
-                playback: $('pmode').value, fps: capFps()};
+                capture: i >= 0 ? S.clips[i].capture : '',
+                playback: $('pmode').value, fps: capFps(), gender: $('gender').value || null};
   const prev = i >= 0 ? S.clips[i] : null;
   if (i >= 0) S.clips[i] = clip; else S.clips.push(clip);
   // write_clips can refuse a clip the marks allow. Keep the list equal to the file:
@@ -679,7 +797,8 @@ $('add').onclick = async () => {
 
 addEventListener('keydown', e => {
   if ($('editor').hidden) return;
-  const typing = /^(INPUT|TEXTAREA)$/.test(e.target.tagName);
+  if (e.target.tagName === 'SELECT') return;
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
   if (typing && e.key !== 'Enter') return;
   const step = e.shiftKey ? 10 : 1;
   if (e.key === 'ArrowLeft'){ show(S.n - step); e.preventDefault(); }
@@ -691,7 +810,15 @@ addEventListener('keydown', e => {
   else if (!typing && (e.key === 'o' || e.key === 'O')) $('bout').click();
 });
 
-fetch('/api/videos').then(r=>r.json()).then(j => fillVideos(j.videos, j.genres));
+fetch('/api/videos').then(r=>r.json()).then(j => {
+  const query = new URLSearchParams(location.search), key = query.get('video') || '';
+  fillVideos(j.videos, j.genres, key);
+  if (key) $('load').click();
+  else if (query.get('source')){
+    $('local').value = query.get('source'); $('title').value = query.get('title') || '';
+    $('genre').value = query.get('genre') || ''; $('genre').focus();
+  }
+});
 </script>
 """
 
@@ -753,6 +880,16 @@ def selftest():
                                          {"in": 120, "out": 150}])
         assert kept[0]["motion"] == "hiphop-03" and kept[0]["capture"] == "work/dojo-kata/clip-01"
         assert "motion" not in kept[1], kept[1]       # the new clip has not been cut yet
+        # An open marker may not know the number extraction just allocated. Saving its
+        # playback or replacing its marks must retain that number from the current file.
+        stale = write_clips(kb, b, 30.0, [{"motion": "", "in": 1, "out": 30},
+                                         {"in": 120, "out": 150}])
+        assert stale[0]["motion"] == "hiphop-03"
+        stale = write_clips(kb, b, 30.0, [{"in": 2, "out": 31, "capture": kept[0]["capture"]},
+                                         {"in": 120, "out": 150}])
+        assert stale[0]["motion"] == "hiphop-03"
+        write_clips(kb, b, 30.0, [{"motion": "hiphop-03", "in": 1, "out": 30},
+                                 {"in": 120, "out": 150}])
         # a clip's place shifts when one before it is deleted, and its motion rides along
         shifted = write_clips(kb, b, 30.0, [{"in": 120, "out": 150},
                                             {"motion": "hiphop-03", "in": 1, "out": 30}])
@@ -832,7 +969,7 @@ def selftest():
                            {"in": 31, "out": 60, "playback": "one-shot"},
                            {"in": 1, "out": 43}])
         assert out[0] == {"in_frame": 1, "out_frame": 1, "frames": 1,
-                          "start": 0.0, "end": 0.033, "playback": "loop", "pingpong": False,
+                          "start": 0.0, "end": 0.033, "playback": "loop", "pingpong": False, "gender": None,
                           "capture_fps": 12, "capture_frames": 1, "speed_factor": 0.4,
                           "capture": "work/demo/clip-01"}, out[0]
         assert out[1]["playback"] == "one-shot", out[1]
@@ -889,6 +1026,100 @@ def selftest():
         # a clip carries no motion and no export path until extract allocates one
         assert "motion" not in saved["clips"][0] and "export" not in saved["clips"][0], saved
 
+        # Classification survives an older client omitting the field and a re-cut moving marks.
+        from motion_artist import capture_gender, remember_gender
+        classified = write_clips("demo", meta, 30.0,
+                                 [{"in": 31, "out": 60, "gender": "female"}])[0]
+        capture = os.path.join(d, classified["capture"])
+        assert capture_gender(capture) == "female"
+        kept = write_clips("demo", meta, 30.0,
+                           [{"in": 32, "out": 60, "capture": classified["capture"]}])[0]
+        assert kept["gender"] == "female" and kept["capture_frames"] == 12
+        remember_gender(capture, "male")
+        assert read_clips("demo")[0]["gender"] == "male"
+        for value in ("any", None):
+            cleared = write_clips("demo", meta, 30.0,
+                                  [{"in": 32, "out": 60, "gender": value}])[0]
+            assert cleared["gender"] == value and capture_gender(capture) == value
+        prior_bytes = open(clips_path("demo"), "rb").read()
+        for invalid in ("unclassified", "unknown", "", 0, False, [], {}):
+            try: write_clips("demo", meta, 30.0, [{"in": 32, "out": 60, "gender": invalid}])
+            except ValueError: pass
+            else: raise AssertionError(f"accepted invalid gender {invalid!r}")
+            assert open(clips_path("demo"), "rb").read() == prior_bytes
+
+        # Local content identity reopens marks even when its filename and title change.
+        from motion_artist import source_metadata, bundle_manifest
+        ordinary = os.path.join(d, "ordinary.mp4")
+        generated_dir = os.path.join(d, "generated"); os.makedirs(generated_dir)
+        generated = os.path.join(generated_dir, "source.mp4")
+        for p, color in ((ordinary, "red"), (generated, "blue")):
+            subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", f"color={color}:s=96x128:r=24",
+                            "-frames:v", "24", "-c:v", "libx264", "-pix_fmt", "yuv420p", p], check=True)
+        first = open_video("", "", "emote", ordinary, "Victory")
+        assert first["creator"] == "Local" and "id" not in first
+        lc = write_clips(first["key"], first, 24, [{"in": 1, "out": 24, "fps": 12, "playback": "one-shot"}])
+        import io
+        payload = open(ordinary, "rb").read()
+        uploaded = open_upload(io.BytesIO(payload), len(payload), "different-name.m4v", "emote")
+        assert uploaded["key"] == first["key"] and uploaded["clips"] == lc
+        before = sorted(os.listdir(WORK))
+        for length, genre in ((0, "emote"), (len(payload), ""), (len(payload) + 1, "emote")):
+            try: open_upload(io.BytesIO(payload), length, "interrupted.mp4", genre)
+            except ValueError: pass
+            else: raise AssertionError("invalid or interrupted upload was imported")
+            assert sorted(os.listdir(WORK)) == before
+        invalid = b"not a video"
+        try: open_upload(io.BytesIO(invalid), len(invalid), "invalid.mp4", "emote")
+        except (ValueError, subprocess.CalledProcessError): pass
+        else: raise AssertionError("invalid footage was imported")
+        assert sorted(os.listdir(WORK)) == before
+        copy = os.path.join(d, "another-name.mp4"); shutil.copyfile(ordinary, copy)
+        again = open_video("", "", "emote", copy, "Another title")
+        assert again["key"] == first["key"] and again["clips"] == lc
+        assert open_video("", first["key"], "actions")["genre"] == "actions"
+        payload = open(generated, "rb").read()
+        collision = open_upload(io.BytesIO(payload), len(payload), "../../Victory.mp4", "emote")
+        assert collision["key"] == "local-victory-2"
+        assert collision["title"] == "Victory" and collision["source_sha256"] == sha256(generated)
+        assert open_video("", "", "emote", generated, "Victory")["key"] == collision["key"]
+        # A generated source carries verified provenance through reopening and saving marks.
+        ai_dir = os.path.join(d, "ai"); os.makedirs(ai_dir)
+        ai = os.path.join(ai_dir, "source.mp4")
+        subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=green:s=96x128:r=24",
+                        "-frames:v", "24", "-c:v", "libx264", "-pix_fmt", "yuv420p", ai], check=True)
+        generation = dict(status="complete", source_sha256=sha256(ai), prompt_id="job-test",
+                          settings=dict(title="Victory", source_frames=121, requested_prompt="fist pump"))
+        atomic_json(os.path.join(ai_dir, "generation.json"), generation)
+        state = open_video("", "", "emote", ai)
+        assert state["creator"] == "Local AI" and state["key"] == "local-ai-victory" and "id" not in state
+        clips = write_clips(state["key"], state, 24, [{"in": 1, "out": 24, "fps": 12}])
+        assert clips[0]["capture_frames"] == 12 and clips[0]["speed_factor"] == 1
+        marks = json.load(open(clips_path(state["key"])))
+        assert marks["generation"] == generation and "video_id" not in marks
+        reopened = open_video("", state["key"], "emote")
+        assert reopened["generation"] == generation and reopened["clips"] == clips
+        payload = open(ai, "rb").read()
+        browser_again = open_upload(io.BytesIO(payload), len(payload), "renamed.mp4", "emote")
+        assert browser_again["generation"] == generation and browser_again["clips"] == clips
+        assert browser_again["source_kind"] == "ai-generated"
+        src = source_of(video_dir(state["key"]))
+        provenance = source_metadata(src)
+        assert provenance["generation"] == generation and provenance["url"] == ""
+        clips[0]["motion"] = "emote-01"
+        atomic_json(clips_path(state["key"]), {**marks, "clips": clips})
+        try: open_video("", state["key"], "actions")
+        except ValueError as e: assert "emote-01" in str(e)
+        else: raise AssertionError("generated cut clip changed genre")
+        with open(src, "ab") as fh: fh.write(b"changed")
+        try: source_metadata(src)
+        except ValueError: pass
+        else: raise AssertionError("changed source passed provenance verification")
+        try: open_video("", state["key"], "emote")
+        except ValueError: pass
+        else: raise AssertionError("changed source reopened its marks")
+        assert source_metadata(os.path.join(d, "ordinary.mp4"), "https://youtube.com/watch?v=abc")["source_kind"] == "youtube"
+
     # The custom track replaced the range input. Nothing here runs the page, but a
     # half-finished refactor leaves a dead $('scrub') that only throws in a browser.
     for part in ("id=track", "id=band", "id=head", "id=hin", "id=hout", "id=pmode", "id=capfps",
@@ -896,7 +1127,8 @@ def selftest():
         assert part in PAGE, part
     # the select must offer exactly what write_clips accepts, or a choice the user
     # can make is a choice this file rejects
-    bare = PAGE.count("<option value=") - PAGE.count('<option value="')  # the lists are quoted
+    playback_select = re.search(r"<select id=pmode\b.*?</select>", PAGE, re.S)[0]
+    bare = playback_select.count("<option value=") - playback_select.count('<option value="')
     assert bare == len(CHOICES), bare
     for part in CHOICES:
         assert f"<option value={part}>" in PAGE, part
@@ -915,6 +1147,7 @@ def selftest():
     # preview left half-wired, or a lost return leg, shows up only in a browser.
     assert "captureFrame" not in PAGE
     assert "order.push(order[q])" in PAGE
+    assert 'type=file' in PAGE and "$('file').files[0]" in PAGE and "/api/upload?" in PAGE
     print("ok")
 
 
@@ -924,20 +1157,34 @@ if __name__ == "__main__":
     p.add_argument("--host", default="127.0.0.1",
                    help="bind address; pass 0.0.0.0 to reach it from other machines on the LAN")
     p.add_argument("--selftest", action="store_true")
+    p.add_argument("--source", help="approved local video to import or reopen")
+    p.add_argument("--genre", help="genre for --source")
+    p.add_argument("--title", help="local video title (default generation title or filename)")
     a = p.parse_args()
     if a.selftest:
         selftest()
         sys.exit(0)
-    os.makedirs(WORK, exist_ok=True)
+    outside_repo(WORK); os.makedirs(WORK, exist_ok=True)
+    if a.source and not a.genre: p.error("--source needs --genre")
+    if not a.source and (a.genre or a.title): p.error("--genre and --title need --source")
     # Bind before announcing: printing the URL first claimed success and then traced back on a
     # port already held by an earlier clipper — whose page was serving fine all along.
     try:
         srv = ThreadingHTTPServer((a.host, a.port), Handler)
     except OSError as e:
         if e.errno != errno.EADDRINUSE: raise
+        if a.source:
+            req = urllib.request.Request(f"http://127.0.0.1:{a.port}/api/open",
+                    data=json.dumps(dict(source=os.path.abspath(os.path.expanduser(a.source)), genre=a.genre, title=a.title)).encode(),
+                    headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=300) as r: state = json.load(r)
+            url = f"http://localhost:{a.port}/?video=" + urllib.parse.quote(state["key"])
+            print(url); webbrowser.open(url); sys.exit(0)
         sys.exit(f"port {a.port} is already in use — an earlier clipper is likely still serving "
                  f"http://localhost:{a.port}. Open it, or pass --port.")
     shown = "localhost" if a.host in ("127.0.0.1", "localhost") else a.host
     print(f"clipper on http://{shown}:{a.port}  (ctrl-c to stop)")
-    webbrowser.open(f"http://localhost:{a.port}")
+    initial = open_video("", "", a.genre, a.source, a.title) if a.source else None
+    url = f"http://localhost:{a.port}/" + ("?video=" + urllib.parse.quote(initial["key"]) if initial else "")
+    webbrowser.open(url)
     srv.serve_forever()

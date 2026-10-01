@@ -6,19 +6,20 @@
   motion_artist.py render DIR/motion.json [--out FILE.html] [--template FILE]
   motion_artist.py export DIR/motion.json [--out DIR] [--sheet FILE.html]
   motion_artist.py selftest
+  motion_artist.py generate PROMPT --title TITLE --out DIR [--image FILE] [--duration SECONDS]
 
 `extract` writes DIR/motion.json (+ DIR/thumbs/*.jpg) and prints a compact frame table.
 `render` turns motion.json into a self-contained HTML motion sheet.
 `export` bundles the json, sheet and thumbs with a SHA-256 manifest for hand-off.
 Between extract and render, an agent may fill `arc`, `title` and per-frame `note` in motion.json.
 """
-import argparse, base64, glob, hashlib, html, json, math, os, re, shutil, subprocess, sys, urllib.request
+import argparse, base64, fcntl, glob, hashlib, html, json, math, os, re, shutil, subprocess, sys, time, urllib.error, urllib.parse, urllib.request, uuid
 
 MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
              "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task")
 MODEL_PATH = os.path.expanduser("~/.cache/motion-artist/pose_landmarker_lite.task")
 
-# Every output is stored on the user's Google Drive at REMOTE and never written into the checkout.
+# Captures, marks and bundles are stored on Drive; generated source videos stay local.
 # HOME is local disk only because cv2 and ffmpeg need files: work/ holds downloads, split frames
 # and each capture as it is made, exports/ each bundle as it is built. Both are a staging copy;
 # every command pushes what it wrote as soon as it is written, and fails if the push does. The
@@ -30,6 +31,47 @@ REPO = os.path.realpath(os.path.join(os.path.dirname(os.path.realpath(__file__))
 
 # Bump when a field changes meaning or disappears, so a consumer fails loudly instead of mis-parsing.
 SCHEMA = "motion-artist/2"
+GENDERS = ("male", "female", "any")
+
+
+def motion_gender(value, context="motion"):
+    """User-assigned character compatibility; unknown is distinct from explicitly any."""
+    if value is not None and value not in GENDERS:
+        raise ValueError(f"{context}: invalid gender {value!r}; expected male, female, any or null")
+    return value
+
+
+def marked_capture(capture_dir):
+    """Find the saved clip by its capture path, without allocating a motion number."""
+    path = os.path.join(os.path.dirname(os.path.abspath(capture_dir)), "clips.json")
+    root = work_root(capture_dir)
+    if not root or not os.path.exists(path): return path, None, None
+    doc = json.load(open(path))
+    rel = os.path.relpath(os.path.abspath(capture_dir), root).replace(os.sep, "/")
+    clip = next((c for c in doc.get("clips", []) if c.get("capture") == rel), None)
+    return path, doc, clip
+
+
+def capture_gender(capture_dir, requested=None):
+    """Explicit flag, then marked classification, then a previous capture, then unknown."""
+    if requested is not None:
+        return motion_gender(None if requested == "unclassified" else requested, capture_dir)
+    path, _, clip = marked_capture(capture_dir)
+    if clip is not None and "gender" in clip:
+        return motion_gender(clip["gender"], path)
+    previous = os.path.join(capture_dir, "motion.json")
+    old = json.load(open(previous)) if os.path.exists(previous) else {}
+    # A deleted clip can leave another motion in this capture directory; never inherit its tag.
+    if clip is not None and (not clip.get("motion") or old.get("name") != clip["motion"]): return None
+    return motion_gender(old.get("gender"), previous)
+
+
+def remember_gender(capture_dir, gender):
+    """Keep a successful extraction's classification in its marks for the next re-cut."""
+    path, doc, clip = marked_capture(capture_dir)
+    if clip is not None:
+        clip["gender"] = motion_gender(gender, path)
+        atomic_json(outside_repo(path), doc)
 
 # MediaPipe pose indices. "L"/"R" are the person's own sides == character-left / character-right.
 LM = dict(nose=0, eyeL=2, eyeR=5, earL=7, earR=8, shL=11, shR=12, elL=13, elR=14, wrL=15, wrR=16,
@@ -493,6 +535,20 @@ def encoder(path, W, H, rate, pix_fmt, quality):
                              "-pix_fmt", "yuv420p", "-fps_mode", "cfr", path], stdin=subprocess.PIPE)
 
 
+def source_rate(src):
+    """Native rational fps; JSON keeps stream side data out of the rate value."""
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                        "stream=r_frame_rate", "-of", "json", src],
+                       capture_output=True, text=True, check=True)
+    streams = json.loads(r.stdout).get("streams", [])
+    if not streams: raise ValueError("file has no video stream")
+    num, _, den = streams[0].get("r_frame_rate", "0/1").partition("/")
+    try: num, den = int(num), int(den or 1)
+    except ValueError: raise ValueError("video has no usable frame rate") from None
+    if num <= 0 or den <= 0: raise ValueError("video has no usable frame rate")
+    return f"{num}/{den}"
+
+
 def cut_clip(src, c0, c1, path, box):
     """Write source frames c0..c1 to `path` as h264 at the native rate, and return its `clip` block.
 
@@ -506,9 +562,7 @@ def cut_clip(src, c0, c1, path, box):
     `box` is the thumbs' crop, which cag centres its drive crop on.
     """
     import cv2
-    rate = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
-                           "stream=r_frame_rate", "-of", "csv=p=0", src],
-                          capture_output=True, text=True, check=True).stdout.strip()
+    rate = source_rate(src)
     num, den = (int(x) for x in rate.split("/"))
     cap = cv2.VideoCapture(src)
     W, H = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -546,6 +600,48 @@ def cut_clip(src, c0, c1, path, box):
                 heads=dict(file="heads.json", sha256=sha256(heads_p)))
 
 
+def local_source(path, title=None):
+    """Content identity and verified generation provenance, independent of a local filename."""
+    digest = sha256(path)
+    gp = os.path.join(os.path.dirname(os.path.abspath(path)), "generation.json")
+    generation = json.load(open(gp)) if os.path.isfile(gp) else None
+    if generation and (generation.get("status") != "complete" or generation.get("source_sha256") != digest):
+        raise ValueError("generation.json does not verify this source video")
+    return dict(source_kind="ai-generated" if generation else "local", identity="sha256:" + digest,
+                source_sha256=digest, title=title or (generation or {}).get("settings", {}).get("title")
+                or os.path.splitext(os.path.basename(path))[0],
+                **({"generation": generation} if generation else {}))
+
+
+def source_metadata(path, url=None):
+    mp = os.path.join(os.path.dirname(os.path.abspath(path)), "meta.json")
+    meta = json.load(open(mp)) if os.path.isfile(mp) else {}
+    kind = meta.get("source_kind", "youtube" if meta.get("id") else "")
+    if kind in ("local", "ai-generated"):
+        verified = local_source(path, meta.get("title")) if kind == "local" else {}
+        digest = sha256(path)
+        if meta.get("identity") != "sha256:" + digest or meta.get("source_sha256") != digest:
+            raise ValueError("source video changed since its frames were marked")
+        generation = meta.get("generation")
+        if kind == "ai-generated" and (not generation or generation.get("status") != "complete"
+                                        or generation.get("source_sha256") != digest):
+            raise ValueError("imported generation provenance does not verify this source video")
+        return {**verified, **{k: meta[k] for k in ("source_kind", "identity", "source_sha256", "title", "generation") if k in meta}, "url": ""}
+    if url or meta.get("url"):
+        return dict(source_kind="youtube", url=url or meta["url"], title=meta.get("title") or os.path.basename(path),
+                    **({"identity": "youtube:" + meta["id"], "video_id": meta["id"]} if meta.get("id") else {}))
+    return {**local_source(path), "url": ""}
+
+
+def source_footer(src):
+    url = src.get("url", "")
+    if re.match(r"https?://", url):
+        safe = html.escape(url, quote=True)
+        return f'<a href="{safe}">{safe}</a>'
+    label = "Local AI" if src.get("source_kind") == "ai-generated" else "Local"
+    return html.escape(f"{label} – {src.get('title', 'video')}")
+
+
 def extract(a):
     import cv2
     # CAG renders 8 figures per image on a 4-wide grid (FRAME_SHEET_SIZE, renamed from SHEET_FRAMES
@@ -564,6 +660,7 @@ def extract(a):
     if a.genre and not a.out:
         sys.exit("--genre needs --out: the capture's directory is how its clip is found")
     out = outside_repo(a.out or os.path.join("work", a.name or "motion"))
+    gender = capture_gender(out, getattr(a, "gender", None))
     name = allocate_motion(a.genre, out) if a.genre else a.name
     os.makedirs(os.path.join(out, "thumbs"), exist_ok=True)
     if re.match(r"https?://", a.source):
@@ -571,6 +668,8 @@ def extract(a):
         src, title = fetch(a.source, "sources")
     else:
         src, title = a.source, os.path.basename(a.source)
+    provenance = source_metadata(src, a.source if re.match(r"https?://", a.source) else a.url)
+    if re.match(r"https?://", a.source): provenance["title"] = title
     name = name or re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:40] or "motion"
 
     cap = cv2.VideoCapture(src)
@@ -689,10 +788,10 @@ def extract(a):
         # is the *only* place the origin survives. Cutting several moves out of one video means
         # working from a downloaded copy — re-fetching per move would download it a dozen times —
         # and without this the capture would record a local path where the provenance should be.
-        source=dict(url=a.source if re.match(r"https?://", a.source) else (a.url or portable(a.source)),
-                    file=portable(src), title=title, start=start, end=round(end, 3),
+        source=dict(**provenance,
+                    file=portable(src), start=start, end=round(end, 3),
                     speed_factor=round(speed, 2), duration=round(dur, 2)),
-        exaggerate=a.exaggerate, stabilized=a.stabilize, performer=a.performer,
+        exaggerate=a.exaggerate, stabilized=a.stabilize, performer=a.performer, gender=gender,
         fps=a.fps, frame_count=a.frames, playback=a.playback, pingpong=a.pingpong, view=view,
         # `seam` is normalised by the median step, so 1.0 is one natural step. A loop now
         # contains `end`, and the snap search picks an `end` whose pose matches `start`, so the
@@ -715,6 +814,7 @@ def extract(a):
     jp = os.path.join(out, "motion.json")
     kept = carry_over_writing(jp, doc)
     json.dump(doc, open(jp, "w"), indent=1)
+    remember_gender(out, gender)
 
     print(kept)
     print(f"{jp}\n{title} | span {start:.2f}-{end:.2f}s | {a.frames}f @ {a.fps}fps | {a.playback} | "
@@ -876,6 +976,7 @@ def best_loop(cap, mp, lm, t0, t1, length, aspect, hz=None):
 
 def render(a):
     d = json.load(open(a.json))
+    d["gender"] = motion_gender(d.get("gender"), a.json)
     for f in d["frames"]: f.setdefault("src", f["i"])   # which source frame each cell draws from
     # The sheet holds exactly the frames the animation was specified with — one cell each, no more:
     # ping-pong is a playback question, not a drawing count, and only changes the order the player
@@ -918,10 +1019,11 @@ def render(a):
              + (' — played out and back, the return leg reversing the out leg.'
                 if d.get("pingpong") else '.')),
         N=str(n), NLAST=str(n - 1), FPS=str(d["fps"]), LAP=f"{lap:.2f} s", PLAYBACK=d["playback"] + (" · out and back" if d.get("pingpong") else ""), VIEW=html.escape(d["view"]),
+        GENDER=d["gender"] or "unclassified",
         # the manifest's verdict, printed as it stands: a ping-pong capture used to have it
         # replaced with "clean", which hid a bad straight seam from the one person reviewing it
         SEAM=d["seam"], KEYS=", ".join(map(str, keys)) or "—", PILOTS=", ".join(map(str, pilots)) or "—",
-        URL=html.escape(src["url"]), ARC=arc, ROWS=rows,
+        URL=html.escape(src.get("url", "")), SOURCE=source_footer(src), ARC=arc, ROWS=rows,
         RATES="".join(f'<button data-fps="{r}" aria-pressed="{str(r == d["fps"]).lower()}">{r} fps</button>' for r in rates),
         THUMBS=json.dumps(thumbs), DATA=json.dumps(payload).replace("</", "<\\/"),
     ).items():
@@ -937,6 +1039,239 @@ def render(a):
 TEMPLATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "templates", "sheet.html")
 
 
+# ---------------------------------------------------------------- local video generation
+VIDEO_WORKFLOW = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "workflows", "wan22-5b.json"))
+VIDEO_NEGATIVE = ("cropped head, cropped feet, cropped hands, close-up, moving camera, camera cuts, "
+                  "rear view, turning away, multiple people, cluttered background, text, watermark, "
+                  "overexposure, blown highlights, washed out skin, glowing skin, overly bright lighting, "
+                  "motion blur, ghosting, blurry details, static pose, low quality, deformed limbs, "
+                  "extra limbs, extra fingers, fused fingers")
+
+
+def atomic_json(path, data):
+    outside_repo(path); outside_repo(path + ".tmp")
+    with open(path + ".tmp", "w") as fh:
+        json.dump(data, fh, indent=2); fh.flush(); os.fsync(fh.fileno())
+    os.replace(path + ".tmp", path)
+
+
+def generation_frames(seconds):
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError("duration must be finite and positive")
+    return 4 * math.ceil(seconds * 24 / 4) + 1
+
+
+def video_properties(path):
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames",
+                        "-show_entries", "stream=width,height,avg_frame_rate,nb_read_frames,duration",
+                        "-of", "json", path], capture_output=True, text=True, check=True)
+    s = json.loads(r.stdout)["streams"][0]
+    num, den = s["avg_frame_rate"].split("/"); fps = float(num) / float(den)
+    return dict(width=int(s["width"]), height=int(s["height"]), fps=fps,
+                frame_count=int(s["nb_read_frames"]), duration=float(s["duration"]))
+
+
+def comfy_request(url, route, data=None, content_type="application/json"):
+    if isinstance(data, dict): data = json.dumps(data).encode()
+    req = urllib.request.Request(url.rstrip("/") + route, data=data,
+                                 headers={"Content-Type": content_type} if data is not None else {})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return json.load(r)
+
+
+def ensure_comfy(url):
+    try:
+        comfy_request(url, "/system_stats"); return
+    except urllib.error.HTTPError: raise  # a reachable server's error is not a request to start another
+    except (urllib.error.URLError, TimeoutError): pass
+    if url.rstrip("/") != "http://127.0.0.1:8188":
+        raise ValueError(f"ComfyUI is unavailable at {url}; start that server and resume")
+    launcher = os.path.expanduser("~/ComfyUI/run-local16.sh")
+    if not os.path.isfile(launcher): raise ValueError(f"no local ComfyUI launcher at {launcher}")
+    log = outside_repo(os.path.join(HOME, "comfy.log"))
+    with open(log, "ab") as fh:
+        proc = subprocess.Popen([launcher], stdout=fh, stderr=subprocess.STDOUT, start_new_session=True)
+    for _ in range(120):
+        try:
+            comfy_request(url, "/system_stats"); return
+        except (urllib.error.URLError, TimeoutError):
+            if proc.poll() is not None: break
+            time.sleep(1)
+    raise ValueError(f"ComfyUI did not start; see {log}")
+
+
+def video_preflight(url, graph):
+    info = comfy_request(url, "/object_info")
+    missing = sorted({n["class_type"] for n in graph.values()} - info.keys())
+    if missing: raise ValueError("ComfyUI lacks nodes: " + ", ".join(missing))
+    maximum = info["Wan22ImageToVideoLatent"]["input"]["required"].get("length", [None, {}])[1].get("max")
+    if maximum and graph["55"]["inputs"]["length"] > maximum:
+        raise ValueError(f"requested duration exceeds this ComfyUI node's {maximum} source-frame limit")
+    models = {}
+    for node, field in (("37", "unet_name"), ("38", "clip_name"), ("39", "vae_name")):
+        n = graph[node]; name = n["inputs"][field]
+        choices = info[n["class_type"]]["input"]["required"][field][0]
+        if name not in choices: raise ValueError(f"ComfyUI lacks model: {name}")
+        models[n["class_type"]] = name
+    return models
+
+
+def upload_start_image(url, image, out):
+    path = outside_repo(os.path.join(out, "start.png"))
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", image, "-frames:v", "1",
+                    "-vf", "scale=576:864:force_original_aspect_ratio=decrease,pad=576:864:(ow-iw)/2:(oh-ih)/2:color=white,setsar=1",
+                    path], check=True)
+    boundary = "motionartist" + uuid.uuid4().hex
+    data = (f'--{boundary}\r\nContent-Disposition: form-data; name="image"; filename="motion-artist-{sha256(path)}.png"\r\n'
+            'Content-Type: image/png\r\n\r\n').encode() + open(path, "rb").read() + f"\r\n--{boundary}--\r\n".encode()
+    reply = comfy_request(url, "/upload/image", data, "multipart/form-data; boundary=" + boundary)
+    return "/".join(x for x in (reply.get("subfolder"), reply["name"]) if x), sha256(path)
+
+
+def recover_generation(url, token):
+    """Recover a submission whose HTTP response was lost, without submitting another job."""
+    q = comfy_request(url, "/queue")
+    entries = q.get("queue_running", []) + q.get("queue_pending", [])
+    entries += [h.get("prompt", []) for h in comfy_request(url, "/history").values()]
+    found = [p[1] for p in entries if len(p) > 3 and p[3].get("motion_artist_job") == token]
+    if len(set(found)) > 1: raise ValueError("multiple jobs share this generation token; refusing to guess")
+    return found[0] if found else None
+
+
+def wait_generation(url, state, state_path, timeout=90 * 60, poll=5):
+    job = state["prompt_id"]
+    last, running = time.monotonic(), False
+    while True:
+        now = time.monotonic()
+        if running: state["running_seconds"] = state.get("running_seconds", 0) + now - last
+        last = now
+        h = comfy_request(url, "/history/" + urllib.parse.quote(job, safe="")).get(job, {})
+        status = h.get("status", {})
+        if status.get("status_str") == "error" or any(m[0] in ("execution_error", "execution_interrupted") for m in status.get("messages", [])):
+            state.update(status="failed", error=status); atomic_json(state_path, state)
+            raise ValueError(f"ComfyUI job {job} failed: {status}")
+        if status.get("completed"):
+            output = h.get("outputs", {}).get("58", {})
+            videos = output.get("images", []) + output.get("videos", [])
+            matches = [v for v in videos if v.get("filename", "").lower().endswith(".mp4")]
+            if len(matches) != 1: raise ValueError(f"job {job} completed without exactly one MP4 output")
+            stamps = {m[0]: m[1].get("timestamp") for m in status.get("messages", []) if isinstance(m[1], dict)}
+            if stamps.get("execution_start") and stamps.get("execution_success"):
+                state["execution_seconds"] = (stamps["execution_success"] - stamps["execution_start"]) / 1000
+            state.update(status="encoded", output=matches[0]); atomic_json(state_path, state)
+            return
+        q = comfy_request(url, "/queue")
+        running = any(p[1] == job for p in q.get("queue_running", []))
+        pending = any(p[1] == job for p in q.get("queue_pending", []))
+        state["status"] = "running" if running else "queued"
+        if running:
+            stats = comfy_request(url, "/system_stats")
+            observed = state.setdefault("observed_memory", {})
+            for device in stats.get("devices", []):
+                used = device["vram_total"] - device["vram_free"]
+                observed["peak_device_used_bytes"] = max(observed.get("peak_device_used_bytes", 0), used)
+                observed["device"] = device["name"]
+            system = stats.get("system", {})
+            if "ram_total" in system and "ram_free" in system:
+                used = system["ram_total"] - system["ram_free"]
+                observed["peak_system_ram_used_bytes"] = max(observed.get("peak_system_ram_used_bytes", 0), used)
+        atomic_json(state_path, state)
+        if running and state.get("running_seconds", 0) >= timeout:
+            raise TimeoutError(f"job {job} exceeded 90 minutes running; job preserved, rerun to resume")
+        if not running and not pending and not h:
+            # History and queue are separate snapshots; completion can fall between them.
+            if comfy_request(url, "/history/" + urllib.parse.quote(job, safe="")).get(job): continue
+            raise ValueError(f"job {job} is absent from queue and history; state preserved, no new submission")
+        time.sleep(poll)
+
+
+def generate(a):
+    out = outside_repo(os.path.abspath(os.path.join(HOME, a.out)))
+    os.makedirs(out, exist_ok=True)
+    state_path = outside_repo(os.path.join(out, "generation.json"))
+    video_path = outside_repo(os.path.join(out, "source.mp4"))
+    with open(outside_repo(os.path.join(out, "generation.lock")), "a") as lock:
+        try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError: raise ValueError("another generate command is using this output directory")
+        return generate_locked(a, out, state_path, video_path)
+
+
+def generate_locked(a, out, state_path, video_path):
+    if not a.prompt.strip() or not a.title.strip(): raise ValueError("prompt and title must not be empty")
+    if not 0 <= a.seed < 2 ** 64: raise ValueError("seed must be an unsigned 64-bit integer")
+    graph = json.load(open(VIDEO_WORKFLOW))
+    expanded = ("One full-body adult performer facing forward throughout, alone, filmed head to toe. "
+                "Fixed camera, matte light-gray background, soft diffuse studio lighting, balanced exposure, "
+                "natural skin midtones and clear arm and hand detail. Visible hands and feet with room "
+                "above the hands and below the feet. A continuous natural performance with clear preparation, "
+                "action, follow-through and recovery to a relaxed starting stance. Motion: " + a.prompt.strip())
+    if a.image:
+        expanded = ("Animate the single full-body character in the supplied starting image. Preserve the "
+                    "character's identity, proportions, clothing, colors, visual style and plain background "
+                    "from that image. Apply requested lighting changes while preserving identity and style. "
+                    "Fixed camera, character facing the camera throughout. "
+                    "Keep the complete figure, both hands and both feet visible throughout the movement, "
+                    "including the raised hand. Clear preparation, action, follow-through and recovery "
+                    "to the starting stance. Motion: " + a.prompt.strip())
+    graph["6"]["inputs"]["text"] = expanded; graph["7"]["inputs"]["text"] = VIDEO_NEGATIVE
+    graph["3"]["inputs"]["seed"] = a.seed
+    graph["55"]["inputs"]["length"] = generation_frames(a.duration)
+    settings = dict(title=a.title, requested_prompt=a.prompt, expanded_prompt=expanded, negative_prompt=VIDEO_NEGATIVE,
+                    duration=a.duration, seed=a.seed, comfy_url=a.comfy_url.rstrip("/"),
+                    input_image_sha256=sha256(a.image) if a.image else None,
+                    workflow_template_sha256=sha256(VIDEO_WORKFLOW), width=576, height=864, fps=24,
+                    source_frames=graph["55"]["inputs"]["length"])
+    state = json.load(open(state_path)) if os.path.isfile(state_path) else None
+    if state and state["settings"] != settings:
+        raise ValueError("generation settings changed; use a new output directory")
+    if state and state["status"] == "complete":
+        if not os.path.isfile(video_path) or sha256(video_path) != state["source_sha256"]:
+            raise ValueError("completed source video is missing or changed; state preserved")
+        print(f"{video_path}\n{state_path}\n{state['video']['duration']:.3f}s encoded (reused)"); return video_path
+    if state and state["status"] == "failed": raise ValueError(f"previous job failed; use a new directory: {state.get('error')}")
+    if not state and os.path.exists(video_path): raise ValueError("source.mp4 already exists without generation state; use a new directory")
+    url = settings["comfy_url"]; ensure_comfy(url)
+    if not state:
+        if a.image:
+            graph["56"] = dict(class_type="LoadImage", inputs=dict(image="start.png"))
+            graph["55"]["inputs"]["start_image"] = ["56", 0]
+        models = video_preflight(url, graph)
+        image_digest = None
+        if a.image:
+            graph["56"]["inputs"]["image"], image_digest = upload_start_image(url, a.image, out)
+        token = uuid.uuid4().hex
+        graph["58"]["inputs"]["filename_prefix"] = "motion-artist/" + token
+        state = dict(settings=settings, status="submitting", job_token=token, running_seconds=0,
+                     submitted_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                     model_references=models, uploaded_image_sha256=image_digest,
+                     workflow_sha256=hashlib.sha256(json.dumps(graph, sort_keys=True).encode()).hexdigest(), workflow=graph)
+        atomic_json(state_path, state)  # submission intent survives a crash or a lost response
+        reply = comfy_request(url, "/prompt", dict(prompt=graph, client_id=token, extra_data=dict(motion_artist_job=token)))
+        if not reply.get("prompt_id"): raise ValueError(f"ComfyUI did not return a job id: {reply}")
+        state.update(prompt_id=reply["prompt_id"], status="queued"); atomic_json(state_path, state)
+        print(f"ComfyUI job {state['prompt_id']} ({settings['source_frames']} source frames)", flush=True)
+    if not state.get("prompt_id"):
+        job = recover_generation(url, state["job_token"])
+        if not job: raise ValueError("submission outcome unknown; state preserved, refusing duplicate submission")
+        state.update(prompt_id=job, status="queued"); atomic_json(state_path, state)
+    if state["status"] != "encoded":
+        # A retry gets a fresh running allowance; cumulative observed time remains in provenance.
+        wait_generation(url, state, state_path, timeout=state.get("running_seconds", 0) + 90 * 60)
+    query = urllib.parse.urlencode({k: state["output"][k] for k in ("filename", "subfolder", "type") if k in state["output"]})
+    temp = outside_repo(video_path + ".part")
+    with urllib.request.urlopen(url + "/view?" + query, timeout=60) as r, open(temp, "wb") as fh:
+        shutil.copyfileobj(r, fh)
+    props = video_properties(temp)
+    if (props["width"], props["height"], props["fps"], props["frame_count"]) != (576, 864, 24, settings["source_frames"]):
+        raise ValueError(f"encoded video properties differ from workflow: {props}; job preserved")
+    os.replace(temp, video_path)
+    state.update(status="complete", video=props, source_sha256=sha256(video_path),
+                 completed_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    atomic_json(state_path, state)
+    print(f"{video_path}\n{state_path}\n{props['duration']:.3f}s encoded ({props['frame_count']} source frames at {props['fps']:g} fps)")
+    return video_path
+
+
 # ---------------------------------------------------------------- selftest
 def tstamp(v):
     """'83', '1:23', '1:23.5' -> seconds."""
@@ -946,6 +1281,16 @@ def tstamp(v):
 
 def selftest():
     """Synthetic poses: arm overhead + one foot lifted must be described as such."""
+    from unittest.mock import patch
+    from types import SimpleNamespace
+    # Phone footage carries stream side data; ffprobe's CSV can append a comma to its rate.
+    probe = json.dumps({"streams": [{"r_frame_rate": "60000/1001", "side_data_list": [{}]}]})
+    with patch.object(subprocess, "run", return_value=SimpleNamespace(stdout=probe)):
+        assert source_rate("phone.m4v") == "60000/1001"
+    with patch.object(subprocess, "run", return_value=SimpleNamespace(stdout='{"streams": []}')):
+        try: source_rate("audio.m4a")
+        except ValueError: pass
+        else: raise AssertionError("accepted a source without a video stream")
     def pose(wrL_y, anR_y):
         P = dict(nose=[0.5, 0.20], eyeL=[0.52, 0.19], eyeR=[0.48, 0.19], earL=[0.54, 0.20], earR=[0.46, 0.20],
                  shL=[0.60, 0.30], shR=[0.40, 0.30], elL=[0.66, 0.42], elR=[0.34, 0.42], wrL=[0.70, wrL_y], wrR=[0.30, 0.55],
@@ -1050,6 +1395,31 @@ def selftest():
     assert man["seam"] == "needs blend" and man["seam_ratio"] == 2.4, man
     # performer rides through when stated, and reads as unstated rather than guessed when it is not
     assert man["performer"] is None
+    assert man["gender"] is None
+    for value in (*GENDERS, None):
+        assert bundle_manifest({**cap, "gender": value, "performer": "female"}, [])["gender"] == value
+    for value in ("", "unknown", "unclassified", False, 1, [], {}):
+        try: bundle_manifest({**cap, "gender": value}, [])
+        except ValueError: pass
+        else: raise AssertionError(f"accepted invalid gender {value!r}")
+    with tempfile.TemporaryDirectory() as td:
+        assert capture_gender(td) is None
+        atomic_json(os.path.join(td, "motion.json"), {"gender": "female"})
+        assert capture_gender(td) == "female"
+        assert capture_gender(td, "male") == "male"
+        assert capture_gender(td, "any") == "any"
+        assert capture_gender(td, "unclassified") is None
+        capture = os.path.join(td, "work", "video", "clip-01")
+        os.makedirs(capture)
+        atomic_json(os.path.join(capture, "motion.json"), {"name": "test-01", "gender": "female"})
+        marks = os.path.join(td, "work", "video", "clips.json")
+        clip = dict(capture="work/video/clip-01", motion="test-02")
+        atomic_json(marks, {"clips": [clip]})
+        assert capture_gender(capture) is None     # another motion occupied this directory
+        clip["motion"] = "test-01"; atomic_json(marks, {"clips": [clip]})
+        assert capture_gender(capture) == "female"
+        clip["gender"] = None; atomic_json(marks, {"clips": [clip]})
+        assert capture_gender(capture) is None     # a saved clear takes priority over the capture
     # the per-frame spread rides alongside the majority `view`, and is absent rather than empty
     # when a caller has no frames to count
     assert man["view_frames"] is None, man["view_frames"]
@@ -1136,7 +1506,149 @@ def selftest():
     assert fit_aspect(0, 0, 360, 640, 9 / 16, 1280, 720) == (0, 0, 360, 640)
     for b in ((10, 10, 33, 77), (5, 5, 101, 203), (0, 0, 1279, 719)):
         assert all(v % 2 == 0 for v in fit_aspect(*b, THUMB_W / THUMB_H, 1280, 720))
+    generation_selftest()
     print("selftest ok")
+
+
+def generation_selftest():
+    """Exercise the HTTP contract with a local fake server and real encoded video/image files."""
+    import tempfile, threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    assert generation_frames(5) == 121 and generation_frames(0.1) == 5
+    for seconds in (0, -1, float("nan"), float("inf")):
+        try: generation_frames(seconds)
+        except ValueError: pass
+        else: raise AssertionError("invalid duration accepted")
+    with tempfile.TemporaryDirectory() as tmp:
+        video = os.path.join(tmp, "test.mp4")
+        subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=white:s=576x864:r=24",
+                        "-frames:v", "121", "-c:v", "libx264", "-pix_fmt", "yuv420p", video], check=True)
+        info = {n["class_type"]: {"input": {"required": {}}} for n in json.load(open(VIDEO_WORKFLOW)).values()}
+        info["LoadImage"] = {"input": {"required": {}}}
+        for kind, field, name in (("UNETLoader", "unet_name", "wan2.2_ti2v_5B_fp16.safetensors"),
+                                  ("CLIPLoader", "clip_name", "umt5_xxl_fp8_e4m3fn_scaled.safetensors"),
+                                  ("VAELoader", "vae_name", "wan2.2_vae.safetensors")):
+            info[kind]["input"]["required"][field] = [[name]]
+        fake = dict(jobs={}, submissions=0, mode="complete", uploads=[])
+
+        class FakeComfy(BaseHTTPRequestHandler):
+            def log_message(self, *args): pass
+            def reply(self, data, raw=False):
+                body = data if raw else json.dumps(data).encode()
+                self.send_response(200); self.end_headers(); self.wfile.write(body)
+            def do_GET(self):
+                if self.path == "/system_stats": return self.reply({})
+                if self.path == "/object_info": return self.reply(info)
+                if self.path == "/queue":
+                    active = [h["prompt"] for h in fake["jobs"].values()]
+                    return self.reply(dict(queue_running=active if fake["mode"] == "running" else [],
+                                           queue_pending=active if fake["mode"] == "queued" else []))
+                if self.path.startswith("/view?"): return self.reply(open(video, "rb").read(), raw=True)
+                if self.path.startswith("/history"):
+                    jobs = fake["jobs"] if fake["mode"] in ("complete", "failed") else {}
+                    if fake["mode"] == "failed":
+                        jobs = {k: {**h, "status": {"status_str": "error", "messages": [["execution_error", {"exception_message": "test failure"}]]}} for k, h in jobs.items()}
+                    job = self.path.removeprefix("/history/")
+                    return self.reply(jobs if self.path == "/history" else {k: h for k, h in jobs.items() if k == job})
+                self.send_error(404)
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers["Content-Length"]))
+                if self.path == "/upload/image":
+                    fake["uploads"].append(body); return self.reply(dict(name="start.png", subfolder=""))
+                assert self.path == "/prompt"
+                data = json.loads(body); fake["submissions"] += 1; job = str(fake["submissions"])
+                fake["jobs"][job] = dict(prompt=[0, job, data["prompt"], data["extra_data"]],
+                     status=dict(status_str="success", completed=True),
+                     outputs={"58": {"images": [dict(filename="test.mp4", subfolder="motion-artist", type="output")]}})
+                self.reply(dict(prompt_id=job))
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), FakeComfy)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        a = SimpleNamespace(prompt="victory fist pump with recovery", title="Victory", image=None,
+                            duration=5, seed=1234, comfy_url=f"http://127.0.0.1:{server.server_port}", out=os.path.join(tmp, "text"))
+        def rejected(fn):
+            try: fn()
+            except (ValueError, TimeoutError, urllib.error.URLError): pass
+            else: raise AssertionError("invalid operation accepted")
+        try:
+            info["VAELoader"]["input"]["required"]["vae_name"][0] = []
+            rejected(lambda: generate(a)); assert fake["submissions"] == 0
+            info["VAELoader"]["input"]["required"]["vae_name"][0] = ["wan2.2_vae.safetensors"]
+            saved_info = info.pop("Wan22ImageToVideoLatent")
+            rejected(lambda: generate(a)); assert fake["submissions"] == 0
+            info["Wan22ImageToVideoLatent"] = saved_info
+            generate(a); state = json.load(open(os.path.join(a.out, "generation.json")))
+            assert state["settings"]["source_frames"] == 121 and state["video"]["duration"] > 5
+            assert state["source_sha256"] == sha256(video) and "start_image" not in state["workflow"]["55"]["inputs"]
+            assert local_source(os.path.join(a.out, "source.mp4"))["source_kind"] == "ai-generated"
+            with patch(__name__ + ".ensure_comfy", side_effect=AssertionError("completed reuse contacted server")):
+                generate(a)
+            assert fake["submissions"] == 1
+            a.seed = 9; rejected(lambda: generate(a)); a.seed = 1234
+            a.out = os.path.join(tmp, "image"); a.image = os.path.join(tmp, "wide.png")
+            import cv2, numpy as np
+            cv2.imwrite(a.image, np.zeros((100, 400, 3), dtype=np.uint8))
+            generate(a); state = json.load(open(os.path.join(a.out, "generation.json")))
+            im = cv2.imread(os.path.join(a.out, "start.png"))
+            assert im.shape == (864, 576, 3) and np.all(im[0] == 255) and np.all(im[430] == 0)
+            assert state["settings"]["input_image_sha256"] == sha256(a.image) and fake["uploads"]
+            assert state["workflow"]["55"]["inputs"]["start_image"] == ["56", 0]
+            a.image = None; a.out = os.path.join(tmp, "interrupt")
+            with patch(__name__ + ".wait_generation", side_effect=KeyboardInterrupt):
+                try: generate(a)
+                except KeyboardInterrupt: pass
+            count = fake["submissions"]; generate(a); assert fake["submissions"] == count
+            a.out = os.path.join(tmp, "lost-response")
+            real_request = comfy_request
+            def lose_response(url, route, *args):
+                reply = real_request(url, route, *args)
+                if route == "/prompt": raise urllib.error.URLError("lost response")
+                return reply
+            with patch(__name__ + ".comfy_request", side_effect=lose_response): rejected(lambda: generate(a))
+            count = fake["submissions"]; generate(a); assert fake["submissions"] == count
+            a.out = os.path.join(tmp, "failure"); fake["mode"] = "failed"
+            rejected(lambda: generate(a)); count = fake["submissions"]
+            rejected(lambda: generate(a)); assert fake["submissions"] == count
+            a.out = os.path.join(tmp, "timeout"); fake["mode"] = "running"
+            real_wait = wait_generation
+            with patch(__name__ + ".wait_generation", side_effect=lambda u, s, p, **kw: real_wait(u, s, p, timeout=0, poll=0)):
+                rejected(lambda: generate(a))
+            state_path = os.path.join(a.out, "generation.json"); pending = json.load(open(state_path))
+            assert pending["prompt_id"] and pending["status"] == "running"
+            fake["mode"] = "queued"
+            ticks = iter([0, 1000, 2000])
+            with patch(__name__ + ".time.monotonic", side_effect=lambda: next(ticks)), patch(__name__ + ".time.sleep", side_effect=KeyboardInterrupt):
+                try: real_wait(a.comfy_url, pending, state_path, timeout=1, poll=0)
+                except KeyboardInterrupt: pass
+            assert pending["status"] == "queued" and pending["running_seconds"] == 0
+            fake["mode"] = "complete"; count = fake["submissions"]
+            generate(a); assert fake["submissions"] == count
+            a.out = os.path.join(tmp, "unknown")
+            with patch(__name__ + ".comfy_request", side_effect=lose_response): rejected(lambda: generate(a))
+            count = fake["submissions"]; fake["jobs"] = {}
+            rejected(lambda: generate(a)); assert fake["submissions"] == count
+            # Completion reuse verifies content instead of silently returning changed footage.
+            a.out = os.path.join(tmp, "text")
+            with open(os.path.join(a.out, "source.mp4"), "ab") as fh: fh.write(b"changed")
+            rejected(lambda: generate(a)); assert fake["submissions"] == count
+            link = os.path.join(tmp, "checkout-link"); os.symlink(REPO, link)
+            a.out = link
+            try: generate(a)
+            except SystemExit: pass
+            else: raise AssertionError("generation followed a link into checkout")
+            a.out = REPO
+            try: generate(a)
+            except SystemExit: pass
+            else: raise AssertionError("generation wrote inside checkout")
+            assert source_footer(dict(url="", source_kind="ai-generated", title="<Victory>")) == "Local AI – &lt;Victory&gt;"
+            assert '<a href="https://' in source_footer(dict(url="https://youtube.com/watch?v=123"))
+            man = bundle_manifest(dict(name="emote-01", title="Victory", fps=12, frame_count=4, view="front",
+                    frames=[], playback="one-shot", seam="n/a", source=local_source(os.path.join(tmp, "image", "source.mp4"))), [])
+            assert man["schema"] == SCHEMA and man["source"]["generation"]["source_sha256"] == sha256(video)
+        finally:
+            server.shutdown(); server.server_close(); thread.join()
 
 
 # ---------------------------------------------------------------- export
@@ -1271,6 +1783,7 @@ def bundle_manifest(d, files):
         seam=d["seam"], seam_ratio=d.get("seam_ratio"),   # the verdict, and the number behind it
         stabilized=d.get("stabilized", False), exaggerate=d.get("exaggerate"),
         performer=d.get("performer"),   # the filmed body, not the character the render must draw
+        gender=motion_gender(d.get("gender"), d["name"]),
         view_frames=view_counts(d),   # the spread `view` averages away — see below
         missing_frames=d.get("missing_frames", []), source=d["source"],
         arc_written=bool(d.get("arc", "").strip()),
@@ -1397,6 +1910,10 @@ def export(a):
         dst = os.path.join(out, rel)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copy2(p, dst)
+    if "gender" not in d:
+        # Legacy inputs export an explicit unknown in both copies of the contract.
+        atomic_json(os.path.join(out, "motion.json"), dict(d, gender=man["gender"]))
+        man["files"]["motion.json"] = sha256(os.path.join(out, "motion.json"))
     # The clip, mask and head boxes ride beside the files, not in `files`: cag git-ignores footage
     # and commits the manifest, so each is hashed in the `clip` block instead of the file list.
     clip = d.get("clip")
@@ -1439,6 +1956,11 @@ def export(a):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
+    g = sub.add_parser("generate"); g.add_argument("prompt")
+    g.add_argument("--title", required=True); g.add_argument("--out", required=True)
+    g.add_argument("--image"); g.add_argument("--duration", type=float, default=5)
+    g.add_argument("--seed", type=int, default=1234)
+    g.add_argument("--comfy-url", default="http://127.0.0.1:8188")
     e = sub.add_parser("extract"); e.add_argument("source")
     e.add_argument("--fps", type=int, required=True); e.add_argument("--frames", type=int, required=True)
     e.add_argument("--start", type=tstamp, help="trim: seconds or m:ss"); e.add_argument("--end", type=tstamp, help="trim: seconds or m:ss")
@@ -1456,6 +1978,9 @@ def main():
     e.add_argument("--playback", choices=["loop", "one-shot", "final-hold"], default="loop")
     e.add_argument("--pingpong", action="store_true", help="the capture plays out and back (0..N-1..1), so the seam is the motion reversed. Recorded in the manifest; `seam` still measures the straight loop a consumer without ping-pong will play")
     e.add_argument("--performer", choices=["female", "male"], help="the filmed performer's body, carried into the manifest; omit when it should not be stated")
+    e.add_argument("--gender", choices=[*GENDERS, "unclassified"],
+                   help="user-assigned character compatibility; unclassified writes null. "
+                        "Defaults to the saved clip or previous capture; never inferred from performer")
     r = sub.add_parser("render"); r.add_argument("json"); r.add_argument("--out")
     r.add_argument("--template", help=f"sheet template to render into (default {TEMPLATE_PATH})")
     sp = sub.add_parser("pose-grid"); sp.add_argument("json"); sp.add_argument("--out")
@@ -1469,13 +1994,13 @@ def main():
     # Every command runs from HOME, so work/ and exports/ are HOME's and nothing lands in the
     # checkout. A path given on the command line that exists here is an input and is made absolute
     # first; any other relative path is read under HOME.
-    for k in ("source", "json", "template", "sheet", "images"):
+    for k in ("source", "json", "template", "sheet", "images", "image"):
         v = getattr(a, k, None)
         if v and os.path.exists(v): setattr(a, k, os.path.abspath(v))
     if a.cmd == "trace": a.out = os.path.abspath(a.out)   # trace writes cag's file, where cag says
     if a.cmd != "selftest":
         os.makedirs(HOME, exist_ok=True); os.chdir(HOME)
-    {"extract": extract, "render": render, "pose-grid": pose_grid, "export": export, "trace": trace,
+    {"generate": generate, "extract": extract, "render": render, "pose-grid": pose_grid, "export": export, "trace": trace,
      "selftest": lambda _: selftest()}[a.cmd](a)
 
 
