@@ -630,7 +630,10 @@ over-driving the source to compensate.
    one line per frame:
    index, source time, role (`key` = hold/extreme, `pilot` = fastest transition, `inbetween`),
    pace, and the generated pose cue. Frame 0 is always a key. Check `missing` is empty and the
-   `seam` verdict; if a pose is missing or the view is wrong, re-run with a cleaner span. Watch the
+   `seam` verdict; if a pose is missing or the view is wrong, re-run with a cleaner span. An
+   instant that decodes no frame at all — a span running past the end of the video — stops
+   `extract` with an error rather than landing in `missing`: end the span on a frame inside the
+   video, and re-save a `clips.json` written before the out mark became the last traced frame. Watch the
    reported source speed too: snapping to a shorter or longer cut stretches it onto the same frame
    count, so a big margin on a short span can hand the artist noticeable slow motion. Widen the
    margin when the seam stays poor, drop it to `0` when the span is already exact (a beat grid, a

@@ -709,11 +709,11 @@ def extract(a):
     span = end - start
     speed = span / (a.frames / a.fps)  # 1.0 == real time; 2.0 == source played at 2x
 
-    frames, missing, shots = [], [], []
+    frames, missing, shots, unread = [], [], [], []
     for i, t in enumerate(sample_times(start, span, a.frames)):
         cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
         ok, bgr = cap.read()
-        if not ok: missing.append(i); continue
+        if not ok: unread.append(f"{i} at {t:.3f}s"); continue
         sf = int(cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1   # the source frame the seek actually landed on
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         res = lm.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
@@ -723,6 +723,11 @@ def extract(a):
         W = {k: [wld[j].x, wld[j].y, wld[j].z] for k, j in LM.items()}
         shots.append((i, bgr, [(v.x * Wpx, v.y * Hpx) for v in img]))
         frames.append(dict(i=i, t=round(t, 3), sf=sf, P=P, W=W))
+    # an instant that decodes no frame is a span problem, not a pose one: kept as `missing` it
+    # shipped a capture one thumb short, and CAG then drops every pose reference without a word
+    if unread:
+        sys.exit(f"no frame decoded for {', '.join(unread)} of a {dur:.3f}s video; "
+                 f"end the span on a frame inside it (an old clips.json may need re-saving)")
     if len(frames) < 2:
         sys.exit(f"pose not found in enough frames (missing {missing}); try --start/--end on a clearer span")
     crop = write_thumbs(shots, os.path.join(out, "thumbs"), Wpx, Hpx)
