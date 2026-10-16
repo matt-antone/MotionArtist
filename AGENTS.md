@@ -94,7 +94,7 @@ clip plays back and the fps it is captured at, and the list is written to
 ```json
 {"video": "britney-spears-toxic", "video_id": "P4QeqpsY8v8", "url": "...",
  "title": "Toxic", "creator": "Britney Spears", "genre": "hiphop", "source_fps": 29.97,
- "clips": [{"in_frame": 91, "out_frame": 150, "frames": 60,
+ "clips": [{"in_frame": 91, "out_frame": 151, "frames": 61,
             "start": 3.003, "end": 5.005, "playback": "loop", "pingpong": false,
             "capture_fps": 12, "capture_frames": 24, "speed_factor": 1.0,
             "capture": "work/britney-spears-toxic/clip-01"}]}
