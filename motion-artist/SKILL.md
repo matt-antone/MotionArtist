@@ -529,9 +529,14 @@ card. Belter on club-01 measured the difference: arm correlation +0.30 on the ol
 bone-angle error on the cropped ones. The quality came up from 60 because JPEG artefacts at 60 sit
 on the limb edges, which is precisely what the generator is reading off them.
 
-`extract` computes **one crop for the whole capture**: the union of every traced frame's landmarks,
-padded by 12% of figure height, grown to 3:4 and fitted inside the frame. One box, never one per
-frame, so the performer's travel and size changes survive. It prints the crop, flags `(upscaled)`
+`extract` computes **one crop for the whole capture**: the union of every traced frame's landmarks
+and silhouette bounds (the silhouette reaches the fingertips), padded by 12% of figure height and
+grown to 3:4 about its centre. One box, never one per frame, so the performer's travel and size
+changes survive. It is centred on the figure's extremes and **never slid back inside the frame or
+shrunk to fit**: singing-male-01 reaches an arm to within 15px of the source's right edge, and a box
+slid back in kept 98px on the far side and 13px beside the hand, so the animation drawn from it
+was cut off at the hand. The part past the frame is letterboxed on the pose cards and padded onto
+the clip, and the line says `padded past the frame: right 64`. It prints the crop, flags `(upscaled)`
 when the box is narrower than 384px, and `figure near <edge> edge` when the padded box runs off the
 frame — look at that frame before handing off, since feet or a head may be cut. Landscape and
 portrait sources need nothing extra; there is no separate crop step.
@@ -555,30 +560,32 @@ right thing positively is what held. That applies to any prompt text this skill 
 
 ## `clip.mp4`, `mask.mp4` and `heads.json`: what cag animates from
 
-The thumbnail crop normally has a 3:4 aspect. If that crop would trim the padded figure in
-portrait footage, extraction uses the full source rectangle and letterboxes every 384×512 pose
-card consistently. `clip.box` then records the full source rectangle and may have another aspect;
-it still lies inside the video frame. Preserve this box when handing off to CAG.
+The thumbnail crop is 3:4 (to the nearest even pixel) and centred on the figure, so it can run past
+the source frame. The clip is then padded to hold it: `clip.box` always lies inside the clip, and
+`clip.pad` says how much was added on each side. Preserve this box when handing off to CAG.
 
 cag draws a traced set from video: it cuts a drive video from the source clip, masks the performer,
 blurs her face and animates the character along it. `extract` therefore writes three more files
 into the capture, from one pass over the clip:
 
 - `clip.mp4` — the traced span plus 0.5 s either side, from the exact file traced, uncropped, at
-  the source's native frame rate, constant frame rate, h264 CRF 18, no audio. Frames are read with
+  the source's native frame rate, constant frame rate, h264 CRF 18, no audio. Where the box runs
+  past the source frame it is padded by smearing the edge pixels outward, so the drive video gains
+  no hard bars. Frames are read with
   the decoder the trace used and piped to ffmpeg, so clip frame `k` is source frame `c0 + k` by
   construction.
 - `mask.mp4` — the performer mask, same frames: the pose model's segmentation thresholded at 0.5,
   white on black, lossless so it stays two-valued. Against SAM3 on country-01 (a cluttered shop
   aisle) it scored IoU 0.93 min / 0.95 median, and cag now skips SAM3 when a bundle carries it.
-  A frame with no pose is all black.
-- `heads.json` — one `[x0, y0, x1, y1]` or `null` per clip frame, in clip pixels: a box around the
+  A frame with no pose is all black, and padding is black.
+- `heads.json` — one `[x0, y0, x1, y1]` or `null` per clip frame, in clip pixels (padding included): a box around the
   head from the pose model's 11 face points, sized for cag's face blur, not as an outline.
 
 `motion.json` and the manifest carry a `clip` block with exactly the keys cag's `read_clip` reads —
 `file`, `start` (source second of clip frame 0), `fps`, `frame_count`, `size` `[w, h]`, `box`
-`[x, y, w, h]` (the thumbs' 3:4 crop, which cag centres its drive crop on), `t_offset` (`0.0`),
-`sha256` — plus `"mask": {"file", "sha256"}` and `"heads": {"file", "sha256"}`. Every traced frame
+`[x, y, w, h]` (the thumbs' 3:4 crop in clip pixels, which cag centres its drive crop on),
+`t_offset` (`0.0`), `sha256` — plus `pad` `[left, top, right, bottom]` (pixels added past the
+source frame; source pixel `(x, y)` is clip pixel `(x + left, y + top)`), plus `"mask": {"file", "sha256"}` and `"heads": {"file", "sha256"}`. Every traced frame
 carries `clip_frame`, the clip frame it was traced from; use it rather than recomputing from `t`,
 which is the seek target. None of the three files is in the manifest's `files`: cag git-ignores
 footage and commits the manifest, so each is hashed in the block instead.

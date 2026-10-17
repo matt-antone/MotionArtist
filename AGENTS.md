@@ -188,10 +188,12 @@ drops the pose reference entirely on a mismatch rather than degrading.
 
 **Thumbs are 384×512 crops, one box for the whole capture.** That is CAG's pose card, which it
 never enlarges onto; the old whole-frame 200px thumb left a landscape dancer ~50px tall on it.
-When a 3:4 crop would trim the padded figure, preserve the full source rectangle and letterbox
-the pose cards consistently; `clip.box` records that rectangle and can have another aspect.
-`extract` prints `thumbs: crop WxH …` and flags `figure near <edge> edge` when the padded box runs
-off the frame — check that frame for a cut head or feet before handing off. No pre-crop step for
+The box is centred on the figure's widest reach on each side, so neither edge of the crop sits
+closer to the figure than the other, and it is never slid back inside the frame or shrunk to fit.
+Where it runs past the frame the pose cards are letterboxed there and `clip.mp4` / `mask.mp4` are
+padded to hold it, so `clip.box` always lies inside the clip. `extract` prints
+`thumbs: crop WxH …`, says how far it padded, and flags `figure near <edge> edge` when the padded
+figure runs off the frame — check that frame for a cut head or feet before handing off. No pre-crop step for
 landscape footage. SKILL.md carries the full reasoning and the numbers.
 
 **`trace <images_dir> <out.json>` is a contract CAG calls** (`cag fidelity`) to score renders

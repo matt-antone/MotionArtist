@@ -314,7 +314,7 @@ def fetch(url, out_dir):
     return path, title
 
 
-def landmarker(video=False):
+def landmarker(video=False, masks=False):
     """IMAGE mode for the trace's random seeks; VIDEO mode, with masks, for the clip's straight run."""
     import mediapipe as mp
     from mediapipe.tasks import python as mpt
@@ -324,7 +324,7 @@ def landmarker(video=False):
         urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
     opts = vision.PoseLandmarkerOptions(base_options=mpt.BaseOptions(model_asset_path=MODEL_PATH, delegate=mpt.BaseOptions.Delegate.CPU),
                                         running_mode=vision.RunningMode.VIDEO if video else vision.RunningMode.IMAGE,
-                                        num_poses=1, output_segmentation_masks=video)
+                                        num_poses=1, output_segmentation_masks=video or masks)
     return mp, vision.PoseLandmarker.create_from_options(opts)
 
 
@@ -444,55 +444,45 @@ THUMB_W, THUMB_H = 384, 512
 THUMB_MARGIN = 0.12  # pad past the landmarks (eyes, ankles) as a share of figure height
 
 
-def fit_aspect(x0, y0, x1, y1, aspect, W, H):
-    """Grow the box to `aspect` (w/h) about its centre, then fit it inside WxH.
-
-    Growing can push the box off frame, and clamping it back can break the aspect, so
-    the box is shrunk to what the frame can hold before it is re-centred. Returns even ints.
-    """
-    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-    w, h = x1 - x0, y1 - y0
-    if w / h < aspect:
-        w = h * aspect
-    else:
-        h = w / aspect
-    # The frame is the ceiling. Shrink to fit before positioning, keeping the aspect.
-    if w > W:
-        w, h = W, W / aspect
-    if h > H:
-        w, h = H * aspect, H
-    x = min(max(cx - w / 2, 0), W - w)
-    y = min(max(cy - h / 2, 0), H - h)
-    return (int(x) // 2 * 2, int(y) // 2 * 2, int(w) // 2 * 2, int(h) // 2 * 2)
+def frame_pad(box, W, H):
+    """[left, top, right, bottom]: how far the [x, y, w, h] box runs past a WxH frame on each side."""
+    x, y, w, h = box
+    return [max(0, -x), max(0, -y), max(0, x + w - W), max(0, y + h - H)]
 
 
 def write_thumbs(shots, tdir, Wpx, Hpx):
     """One 3:4 crop around the performer for the whole capture, each frame cut to it at 384x512.
 
     One box, not one per frame: a per-frame fit would flatten travel and scale changes.
-    Grow the padded landmark bounds to 3:4 when they fit. Otherwise preserve the full source
-    rectangle and letterbox every pose card with the same scale and padding.
+    The box is centred on the figure's extremes over the whole capture (landmarks and, where the
+    trace kept them, silhouette bounds, which reach the fingertips), so the widest reach on
+    each side sits the same distance from its edge, and it is never slid back inside the frame
+    or shrunk to fit: either put a reaching arm against one edge of the crop, and the animation
+    drawn from it was cut off there. The part past the frame is letterboxed on the pose cards,
+    and cut_clip pads the clip to match. Returns the box in source pixels; it can run past them.
     """
     import cv2
     xs = [x for _, _, pts in shots for x, _ in pts]
     ys = [y for _, _, pts in shots for _, y in pts]
     pad = (max(ys) - min(ys)) * THUMB_MARGIN
     box = (min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad)
-    x, y, w, h = fit_aspect(*box, THUMB_W / THUMB_H, Wpx, Hpx)
-    # A tall figure may not fit a 3:4 crop inside portrait footage. Preserve the full
-    # source rectangle and letterbox the pose card instead of trimming head or feet.
-    wanted = (max(0, box[0]), max(0, box[1]), min(Wpx, box[2]), min(Hpx, box[3]))
-    if x > wanted[0] + 2 or y > wanted[1] + 2 or x + w < wanted[2] - 2 or y + h < wanted[3] - 2:
-        x, y, w, h = 0, 0, int(Wpx), int(Hpx)
+    w, h = box[2] - box[0], box[3] - box[1]
+    w, h = max(w, h * THUMB_W / THUMB_H), max(h, w * THUMB_H / THUMB_W)  # grow to 3:4
+    w, h = math.ceil(w / 2) * 2, math.ceil(h / 2) * 2  # even, for yuv420p in cut_clip
+    x, y = round((box[0] + box[2] - w) / 4) * 2, round((box[1] + box[3] - h) / 4) * 2
+    over = frame_pad((x, y, w, h), int(Wpx), int(Hpx))
     # A padded box past the frame edge means the performer runs off it: head or feet may be cut.
-    cut = [s for s, over in (("top", box[1] < 0), ("bottom", box[3] > Hpx),
-                             ("left", box[0] < 0), ("right", box[2] > Wpx)) if over]
-    print(f"thumbs: crop {w}x{h} at +{x}+{y} of {Wpx:.0f}x{Hpx:.0f}"
-          f"{' (upscaled)' if w < THUMB_W else ''}{' | figure near ' + '/'.join(cut) + ' edge' if cut else ''}")
+    cut = [s for s, past in (("top", box[1] < 0), ("bottom", box[3] > Hpx),
+                             ("left", box[0] < 0), ("right", box[2] > Wpx)) if past]
+    padded = " ".join(f"{s} {v}" for s, v in zip(("left", "top", "right", "bottom"), over) if v)
+    print(f"thumbs: crop {w}x{h} at {x:+d}{y:+d} of {Wpx:.0f}x{Hpx:.0f}"
+          f"{' (upscaled)' if w < THUMB_W else ''}{' | figure near ' + '/'.join(cut) + ' edge' if cut else ''}"
+          f"{' | padded past the frame: ' + padded if padded else ''}")
     for f in os.listdir(tdir):  # a re-cut with fewer frames must not leave stale thumbs behind
         if f.endswith(".jpg"): os.remove(os.path.join(tdir, f))
     for i, bgr, _ in shots:
-        crop = bgr[y:y + h, x:x + w]
+        crop = cv2.copyMakeBorder(bgr[max(0, y):y + h, max(0, x):x + w], over[1], over[3], over[0], over[2],
+                                  cv2.BORDER_CONSTANT, value=(28, 19, 20))
         scale = min(THUMB_W / w, THUMB_H / h)
         tw, th = max(1, round(w * scale)), max(1, round(h * scale))
         resized = cv2.resize(crop, (tw, th),
@@ -568,7 +558,10 @@ def cut_clip(src, c0, c1, path, box):
     The same pass writes the performer mask (`mask.mp4`) and a head box per frame (`heads.json`)
     beside it, frame for frame, from one VIDEO-mode landmarker run: cag masks and blurs the
     drive video from them instead of running SAM3 and guessing the head from the silhouette.
-    `box` is the thumbs' crop, which cag centres its drive crop on.
+    `box` is the thumbs' crop, which cag centres its drive crop on. Where it runs past the source
+    the clip is padded to hold it, edge pixels smeared outward so the drive video gains no hard
+    bars, and the mask with black; `box` and `heads` are then in the padded clip's pixels and
+    `pad` [left, top, right, bottom] says how much was added.
     """
     import cv2
     rate = source_rate(src)
@@ -576,25 +569,29 @@ def cut_clip(src, c0, c1, path, box):
     cap = cv2.VideoCapture(src)
     W, H = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     cap.set(cv2.CAP_PROP_POS_FRAMES, c0)
+    l, t, r, b = pad = frame_pad(box, W, H)
+    PW, PH = W + l + r, H + t + b
     d = os.path.dirname(path)
     mask_p, heads_p = os.path.join(d, "mask.mp4"), os.path.join(d, "heads.json")
-    enc = encoder(path, W, H, rate, "bgr24", ["-crf", "18"])
+    enc = encoder(path, PW, PH, rate, "bgr24", ["-crf", "18"])
     # qp 0 is lossless, so the mask stays two-valued instead of growing grey codec fringes
-    menc = encoder(mask_p, W, H, rate, "gray", ["-qp", "0"])
+    menc = encoder(mask_p, PW, PH, rate, "gray", ["-qp", "0"])
     mp, lm = landmarker(video=True)
     n, heads, empty = 0, [], 0
     for _ in range(c0, c1 + 1):
         ok, bgr = cap.read()
         if not ok: break
-        enc.stdin.write(bgr.tobytes())
+        enc.stdin.write(cv2.copyMakeBorder(bgr, t, b, l, r, cv2.BORDER_REPLICATE).tobytes())
         res = lm.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)),
                                   round(n * 1000 * den / num))
         # ponytail: the pose model's own mask, thresholded at 0.5 — soft at hair and fingers. Against
         # SAM3 on country-01 (a cluttered shop aisle) it scored IoU 0.93 min / 0.95 median.
         m = (res.segmentation_masks[0].numpy_view().reshape(H, W) > 0.5) if res.segmentation_masks else None
-        menc.stdin.write((m.astype("uint8") * 255).tobytes() if m is not None else bytes(W * H))
+        menc.stdin.write(cv2.copyMakeBorder(m.astype("uint8") * 255, t, b, l, r, cv2.BORDER_CONSTANT, value=0).tobytes()
+                         if m is not None else bytes(PW * PH))
         empty += m is None
-        heads.append(head_box(res.pose_landmarks[0], W, H) if res.pose_landmarks else None)
+        hb = head_box(res.pose_landmarks[0], W, H) if res.pose_landmarks else None
+        heads.append([hb[0] + l, hb[1] + t, hb[2] + l, hb[3] + t] if hb else None)
         n += 1
     for e in (enc, menc): e.stdin.close()
     if enc.wait() or menc.wait(): sys.exit(f"extract: ffmpeg failed writing {path} or {mask_p}")
@@ -604,7 +601,8 @@ def cut_clip(src, c0, c1, path, box):
     if empty or heads.count(None):
         print(f"note: clip has {empty} frame(s) with no mask and {heads.count(None)} with no head box")
     return dict(file="clip.mp4", start=round(c0 * den / num, 6), fps=num / den, frame_count=n,
-                size=[W + W % 2, H + H % 2], box=list(box), t_offset=0.0, sha256=sha256(path),
+                size=[PW + PW % 2, PH + PH % 2], box=[box[0] + l, box[1] + t, box[2], box[3]], pad=pad,
+                t_offset=0.0, sha256=sha256(path),
                 mask=dict(file="mask.mp4", sha256=sha256(mask_p)),
                 heads=dict(file="heads.json", sha256=sha256(heads_p)))
 
@@ -685,7 +683,7 @@ def extract(a):
     dur = cap.get(cv2.CAP_PROP_FRAME_COUNT) / (cap.get(cv2.CAP_PROP_FPS) or 30)
     Wpx, Hpx = cap.get(cv2.CAP_PROP_FRAME_WIDTH), cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
     start = a.start or 0.0
-    mp, lm = landmarker()
+    mp, lm = landmarker(masks=True)  # masks widen the crop to the silhouette, see write_thumbs
     win = a.window or a.frames / a.fps   # source seconds to look for; stretched onto the frame count
     if a.search:
         start, end, best = best_loop(cap, mp, lm, start, a.end if a.end is not None else dur, win, Wpx / Hpx)
@@ -721,7 +719,11 @@ def extract(a):
         img, wld = res.pose_landmarks[0], res.pose_world_landmarks[0]
         P = {k: [img[j].x * Wpx / Hpx, img[j].y] for k, j in LM.items()}   # aspect-corrected, y down
         W = {k: [wld[j].x, wld[j].y, wld[j].z] for k, j in LM.items()}
-        shots.append((i, bgr, [(v.x * Wpx, v.y * Hpx) for v in img]))
+        pts = [(v.x * Wpx, v.y * Hpx) for v in img]
+        if res.segmentation_masks:  # the silhouette reaches past the landmarks: fingertips, hair
+            ys, xs = (res.segmentation_masks[0].numpy_view().reshape(rgb.shape[:2]) > 0.5).nonzero()
+            if len(xs): pts += [(xs.min(), ys.min()), (xs.max() + 1, ys.max() + 1)]
+        shots.append((i, bgr, pts))
         frames.append(dict(i=i, t=round(t, 3), sf=sf, P=P, W=W))
     if len(frames) < 2:
         sys.exit(f"pose not found in enough frames (missing {missing}); try --start/--end on a clearer span")
@@ -1507,25 +1509,36 @@ def selftest():
     assert b and 0 <= b[0] < b[2] <= 1000 and 0 <= b[1] < b[3] <= 1000 and b[1] < 100 < b[3], b
     assert head_box([_L(0.5, 0.5, 0.1)] * 33, 1000, 1000) is None
     assert head_box([_L(0.001 * j, 0.001 * j) for j in range(33)], 1000, 1000)[:2] == [0, 0]
-    # fit_aspect: a wide box grows tall and slides back into frame; a too-tall one shrinks to the
-    # frame; one already at the aspect stays put; every result is even (the thumb crop's box).
-    assert fit_aspect(100, 100, 500, 300, 9 / 16, 1280, 720) == (100, 0, 400, 710)
-    x, y, w, h = fit_aspect(600, -200, 700, 900, 9 / 16, 1280, 720)
-    assert (w, h) == (404, 720) and y == 0 and 0 <= x and x + w <= 1280
-    assert fit_aspect(0, 0, 360, 640, 9 / 16, 1280, 720) == (0, 0, 360, 640)
-    for b in ((10, 10, 33, 77), (5, 5, 101, 203), (0, 0, 1279, 719)):
-        assert all(v % 2 == 0 for v in fit_aspect(*b, THUMB_W / THUMB_H, 1280, 720))
-    # A tall portrait must retain both ends of the figure instead of forcing a shorter crop.
+    # The thumbs' box is centred on the figure's extremes at 3:4, even-sided, and never slid back
+    # inside the frame: a reach near the right edge (singing-male-01) gets equal margins and padding.
     import cv2, numpy as np
+    with tempfile.TemporaryDirectory() as td:
+        x, y, w, h = write_thumbs([(0, np.zeros((1280, 720, 3), np.uint8), [(212, 373), (705, 1024)])], td, 720, 1280)
+        assert abs(x + w / 2 - 458.5) <= 1 and abs((212 - x) - (x + w - 705)) <= 2, (x, w)
+        assert x + w > 720 and abs(w * 4 - h * 3) <= 8 and all(v % 2 == 0 for v in (x, y, w, h))
+    # A tall portrait keeps both ends of the figure; the part past the frame is letterboxed.
     with tempfile.TemporaryDirectory() as td:
         portrait = np.zeros((640, 360, 3), dtype=np.uint8)
         portrait[20:40, 160:200] = (0, 0, 255)
         portrait[600:620, 160:200] = (0, 255, 0)
         box = write_thumbs([(0, portrait, [(180, 30), (180, 610)])], td, 360, 640)
         card = cv2.imread(os.path.join(td, 'f00.jpg'))
-        assert box == (0, 0, 360, 640) and card.shape == (512, 384, 3)
-        assert card[24, 192, 2] > 240 and card[488, 192, 1] > 240
-        assert abs(int(card[256, 20, 0]) - 28) < 5  # side padding, not stretched footage
+        assert box == (-90, -40, 540, 720) and card.shape == (512, 384, 3), box
+        assert card[50, 192, 2] > 240 and card[462, 192, 1] > 240
+        assert abs(int(card[256, 20, 0]) - 28) < 5 and abs(int(card[10, 192, 0]) - 28) < 5  # padding, not footage
+    # cut_clip pads the clip to hold a box past the source: smeared edges, black mask, box shifted.
+    with tempfile.TemporaryDirectory() as td:
+        src = np.full((48, 64, 3), 100, np.uint8); src[:, :8] = (255, 0, 0)
+        enc = encoder(os.path.join(td, "src.mp4"), 64, 48, "12/1", "bgr24", ["-crf", "0"])
+        for _ in range(3): enc.stdin.write(src.tobytes())
+        enc.stdin.close(); assert not enc.wait()
+        clip = cut_clip(os.path.join(td, "src.mp4"), 0, 2, os.path.join(td, "clip.mp4"), (-10, -6, 40, 60))
+        assert clip["size"] == [74, 60] and clip["box"] == [0, 0, 40, 60] and clip["pad"] == [10, 6, 0, 6], clip
+        assert clip["frame_count"] == 3
+        ok, f = cv2.VideoCapture(os.path.join(td, "clip.mp4")).read()
+        assert ok and f.shape == (60, 74, 3) and f[30, 2, 0] > 200 and f[30, 60, 0] < 150  # left edge smeared out
+        ok, m = cv2.VideoCapture(os.path.join(td, "mask.mp4")).read()
+        assert ok and m.shape[:2] == (60, 74) and m.max() < 128
     generation_selftest()
     print("selftest ok")
 
