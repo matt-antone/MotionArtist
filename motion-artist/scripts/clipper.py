@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """clipper: mark clip in/out points on a video, frame by frame, in a browser.
 
-  motion_artist/scripts/clipper.py [--port 8765]
+  motion_artist/scripts/clipper.py [--port 8767]
 
-Open http://localhost:8765, pick a video you have already opened or paste a YouTube URL,
+Open http://localhost:8767, pick a video you have already opened or paste a YouTube URL,
 name the genre it belongs to, and mark clips.
 
 Work is keyed by the video, exports by genre. A video downloads once into
@@ -1226,7 +1226,7 @@ def selftest():
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--port", type=int, default=8767)
     p.add_argument("--host", default="127.0.0.1",
                    help="bind address; pass 0.0.0.0 to reach it from other machines on the LAN")
     p.add_argument("--selftest", action="store_true")
