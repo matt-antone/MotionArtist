@@ -341,14 +341,20 @@ def write_clips(key, meta, fps, clips):
         cap_fps = CAPTURE_FPS if cap_fps is None else int(cap_fps)
         if not 1 <= cap_fps <= 60:
             raise ValueError(f"capture fps {cap_fps} is outside 1..60")
-        window = (b - a + 1) / fps                      # seconds of source the marks span
-        cap_frames = max(1, round(window * cap_fps))
+        # seconds from the in frame's instant to the out frame's: extract samples both ends
+        # inclusive, so `end` is the out frame itself, not the boundary after it. That
+        # boundary is past the last frame when the out mark is the video's final frame.
+        window = (b - a) / fps
+        cap_frames = max(1, int(window * cap_fps + 0.5))  # Math.round, as the marker shows it
         if pingpong and cap_frames <= 2:
             # the sheet's player bounces only above 2 frames and says nothing when it does not
             raise ValueError(f"{name}: ping-pong needs more than 2 captured frames, this clip has "
                              f"{cap_frames} — widen the marks or raise its fps")
+        if cap_frames < 2:  # extract needs two traced frames; one would fail there blaming the pose
+            raise ValueError(f"{name}: a capture needs at least 2 frames, this clip has "
+                             f"{cap_frames} — widen the marks or raise its fps")
         clip = {"in_frame": a, "out_frame": b, "frames": b - a + 1,
-                "start": round((a - 1) / fps, 3), "end": round(b / fps, 3),
+                "start": round((a - 1) / fps, 3), "end": round((b - 1) / fps, 3),
                 "playback": pb, "pingpong": pingpong, "gender": gender,
                 "capture_fps": cap_fps, "capture_frames": cap_frames,
                 # span / (frames/fps). extract recomputes it; 1.0 here means the marks
@@ -639,7 +645,7 @@ $('track').onpointerdown = e => {
 // frames = fps x window, and the window is whatever the marks already span. The count is
 // derived here and in write_clips the same way; nothing types a frame count.
 const capFps = () => Math.min(Math.max(1, +$('capfps').value || 1), 60);
-const windowOf = (a, b) => (b - a + 1) / S.fps;
+const windowOf = (a, b) => (b - a) / S.fps;   // in frame's instant to out frame's, as write_clips
 const capFrames = (a, b, fps) => Math.max(1, Math.round(windowOf(a, b) * fps));
 
 function marks(){
@@ -678,7 +684,7 @@ function rows(){
     <td>${clipName(i)}</td><td class=n>${c.motion || '—'}</td>
     <td class=n>${c.in}</td><td class=n>${c.out}</td>
     <td class=n>${c.out-c.in+1}</td>
-    <td class=n>${((c.in-1)/S.fps).toFixed(2)}–${(c.out/S.fps).toFixed(2)}</td>
+    <td class=n>${((c.in-1)/S.fps).toFixed(2)}–${((c.out-1)/S.fps).toFixed(2)}</td>
     <td class=n>${capFrames(c.in, c.out, c.fps)}f @ ${c.fps}</td>
     <td class=n>${c.playback}</td>
     <td>${c.gender || 'unclassified'}</td>
@@ -1002,38 +1008,47 @@ def selftest():
                                           {"motion": "hiphop-11", "in": 20, "out": 29}])
         assert [c["motion"] for c in again] == ["hiphop-10", "hiphop-11"], again
 
-    # frame 1 is t=0; the out frame's end is the boundary after it, so a 1-frame
-    # clip at 30fps spans 0.000-0.033 and extract sees a non-empty window.
+    # frame 1 is t=0 and `end` is the out frame's own instant, because extract samples both
+    # ends inclusive: frame 31 is t=1.0 and frame 61 is t=2.0. A 1-frame clip has no window.
     with _t.TemporaryDirectory() as d:
         WORK, EXPORTS = os.path.join(d, "work"), os.path.join(d, "exports")
         meta = {"id": "demo", "url": "http://x", "title": "T", "creator": "C", "genre": "demo"}
+        for a, b in ((1, 1), (5, 4), (1, 2)):  # no window, a reversed one, and one that rounds to 1
+            try: write_clips("demo", meta, 30.0, [{"in": a, "out": b}])
+            except ValueError as e: assert "at least 2 frames" in str(e), e
+            else: raise AssertionError(f"capture of {a}..{b} accepted")
         out = write_clips("demo", meta, 30.0,
-                          [{"in": 1, "out": 1},
-                           {"in": 31, "out": 60, "playback": "one-shot"},
+                          [{"in": 31, "out": 61, "playback": "one-shot"},
                            {"in": 1, "out": 43}])
-        assert out[0] == {"in_frame": 1, "out_frame": 1, "frames": 1,
-                          "start": 0.0, "end": 0.033, "playback": "loop", "pingpong": False, "gender": None,
-                          "capture_fps": 12, "capture_frames": 1, "speed_factor": 0.4,
+        assert out[0] == {"in_frame": 31, "out_frame": 61, "frames": 31,
+                          "start": 1.0, "end": 2.0, "playback": "one-shot", "pingpong": False, "gender": None,
+                          "capture_fps": 12, "capture_frames": 12, "speed_factor": 1.0,
                           "capture": "work/demo/clip-01"}, out[0]
-        assert out[1]["playback"] == "one-shot", out[1]
-        # 30 source frames at 30 fps is a 1.000 s window; at 12 fps that is 12 frames and
+        # extract cuts sample_times(start, end - start, capture_frames): its first and last
+        # instants are the two marks, so the out frame is traced and nothing past it is
+        from motion_artist import sample_times
+        ts = sample_times(out[0]["start"], out[0]["end"] - out[0]["start"], out[0]["capture_frames"])
+        assert ts[0] == out[0]["start"] and abs(ts[-1] - out[0]["end"]) < 1e-9, ts
+        # frame 31 to frame 61 at 30 fps is a 1.000 s window; at 12 fps that is 12 frames and
         # 12/12 == 1.000 s, so the capture plays at the speed it was danced.
-        assert out[1]["capture_frames"] == 12 and out[1]["speed_factor"] == 1.0, out[1]
-        # 43 source frames is 1.4333 s, which is not a whole frame at 12 fps. The count is
+        assert out[0]["capture_frames"] == 12 and out[0]["speed_factor"] == 1.0, out[0]
+        # frame 1 to frame 43 is 1.4 s, which is not a whole frame at 12 fps. The count is
         # rounded and speed_factor says so rather than the distortion going unrecorded.
-        assert out[2]["capture_frames"] == 17 and out[2]["speed_factor"] != 1.0, out[2]
+        assert out[1]["capture_frames"] == 17 and out[1]["speed_factor"] != 1.0, out[1]
+        # a .5 tie rounds up, as the marker's Math.round shows it: 5/24 s at 12 fps is 2.5
+        assert write_clips("demo", meta, 24.0, [{"in": 1, "out": 6}])[0]["capture_frames"] == 3
         # fps is per clip: the same window at a different fps is a different frame count,
         # and the seconds the marks fixed do not move
         two = write_clips("demo", meta, 30.0,
-                          [{"in": 31, "out": 60, "fps": 8},
-                           {"in": 31, "out": 60, "fps": 24}])
+                          [{"in": 31, "out": 61, "fps": 8},
+                           {"in": 31, "out": 61, "fps": 24}])
         assert [c["capture_frames"] for c in two] == [8, 24], two
         assert [c["capture_fps"] for c in two] == [8, 24], two
         assert two[0]["start"] == two[1]["start"] and two[0]["end"] == two[1]["end"], two
         # ping-pong is render's flag, not a --playback value: it leaves as a loop that is
         # walked out and back, so nothing hands extract a --playback it would reject
         pp = write_clips("demo", meta, 30.0,
-                         [{"in": 31, "out": 60, "playback": "ping-pong"}])[0]
+                         [{"in": 31, "out": 61, "playback": "ping-pong"}])[0]
         assert pp["playback"] == "loop" and pp["pingpong"] is True, pp
         assert pp["capture_frames"] == 12, pp
         # the sheet's player bounces only above 2 frames and is silent when it does not, so a
@@ -1058,7 +1073,6 @@ def selftest():
             assert "looop" in str(e), e
         else:
             raise AssertionError("bad playback accepted")
-        assert out[1]["start"] == 1.0 and out[1]["end"] == 2.0 and out[1]["frames"] == 30, out[1]
         # the file holds the last write, and says which video and genre it belongs to
         saved = json.load(open(os.path.join(WORK, "demo", "clips.json")))
         assert saved["source_fps"] == 30.0 and "capture_fps" not in saved, saved
@@ -1076,7 +1090,7 @@ def selftest():
         capture = os.path.join(d, classified["capture"])
         assert capture_gender(capture) == "female"
         kept = write_clips("demo", meta, 30.0,
-                           [{"in": 32, "out": 60, "capture": classified["capture"]}])[0]
+                           [{"in": 32, "out": 61, "capture": classified["capture"]}])[0]
         assert kept["gender"] == "female" and kept["capture_frames"] == 12
         remember_gender(capture, "male")
         assert read_clips("demo")[0]["gender"] == "male"
@@ -1136,8 +1150,11 @@ def selftest():
         atomic_json(os.path.join(ai_dir, "generation.json"), generation)
         state = open_video("", "", "emote", ai)
         assert state["creator"] == "Local AI" and state["key"] == "local-ai-victory" and "id" not in state
-        clips = write_clips(state["key"], state, 24, [{"in": 1, "out": 24, "fps": 12}])
-        assert clips[0]["capture_frames"] == 12 and clips[0]["speed_factor"] == 1
+        # the out mark on the final frame is a sampled instant inside the video, not past it
+        last = write_clips(state["key"], state, 24, [{"in": 1, "out": 24, "fps": 12}])[0]
+        assert last["end"] == round(23 / 24, 3) < 24 / 24, last
+        clips = write_clips(state["key"], state, 24, [{"in": 1, "out": 23, "fps": 12}])
+        assert clips[0]["capture_frames"] == 11 and clips[0]["speed_factor"] == 1
         marks = json.load(open(clips_path(state["key"])))
         assert marks["generation"] == generation and "video_id" not in marks
         reopened = open_video("", state["key"], "emote")
