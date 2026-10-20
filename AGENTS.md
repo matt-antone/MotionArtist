@@ -67,7 +67,7 @@ frames instead of describing them, run the clip marker and let them mark the bou
 python3 motion-artist/scripts/clipper.py
 ```
 
-It opens `http://localhost:8765`. The user picks a video from the ones already opened here —
+It opens `http://localhost:8767`. The user picks a video from the ones already opened here —
 listed as `Creator - Title` — or pastes a YouTube URL for a new one, and names the **genre** it belongs to
 (`hiphop`, `karate`), not a label for the video. Sources are YouTube URLs or approved local videos.
 `clipper --source FILE --genre GENRE [--title TITLE]` imports local sources; `/api/open` accepts

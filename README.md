@@ -126,10 +126,10 @@ YouTube player is guesswork — a frame either side is a visibly different pose.
 local web tool for settling that:
 
 ```bash
-python3 motion-artist/scripts/clipper.py            # --port 8765 by default
+python3 motion-artist/scripts/clipper.py            # --port 8767 by default
 ```
 
-Open `http://localhost:8765`, pick a video you have opened before — listed as `Creator - Title` —
+Open `http://localhost:8767`, pick a video you have opened before — listed as `Creator - Title` —
 or use **Browse local video**, paste a local path, or paste a YouTube URL for a new one.
 Enter its **Motion genre** and click **Open**. Browser-selected footage uploads only to the local
 marker and keeps the same content identity as a path import. It copies or downloads the video into
@@ -191,7 +191,7 @@ To pick the boundaries by eye instead of by description, mark them first:
 python3 motion-artist/scripts/clipper.py
 ```
 
-That opens a browser at `localhost:8765`, splits the video into frames, and lets you drag an in and
+That opens a browser at `localhost:8767`, splits the video into frames, and lets you drag an in and
 an out mark per move and choose its playback and capture fps. Videos are listed by
 `Creator - Title` and keyed by that same name, with the YouTube id beside it in `meta.json`, so
 re-pasting a URL you already opened reopens those frames rather than downloading a second copy —
